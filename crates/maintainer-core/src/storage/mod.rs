@@ -8,11 +8,18 @@
 //! - emits throttled progress updates, and
 //! - ranks large files using a bounded min-heap.
 
+pub mod duplicates;
+pub mod hash;
 pub mod large_files;
 pub mod mounts;
 pub mod policy;
 pub mod traverse;
 
+pub use duplicates::{
+    DuplicateCandidate, DuplicateFile, DuplicateGroup, DuplicateIssue, DuplicateScanResult,
+    DuplicateScanner,
+};
+pub use hash::ContentDigest;
 pub use large_files::{LargeFile, LargeFileRanking};
 pub use mounts::DeviceInode;
 pub use policy::ScanPolicy;
