@@ -150,7 +150,7 @@ pub fn terminate_process(
         Ok(()) => Ok(TerminateResult::Sent),
         Err(e) if e.raw_os_error() == Some(libc::EPERM) => {
             Ok(TerminateResult::PermissionRequired(PermissionRequest {
-                action_id: "com.maintainer.app.terminate-process".into(),
+                action_id: "io.github.maintainerapp.terminate-process".into(),
                 explanation: format!("Terminate process {} (PID {})", "(foreign)", identity.pid),
             }))
         }

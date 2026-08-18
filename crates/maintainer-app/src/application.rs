@@ -1,7 +1,4 @@
 //! Application lifecycle management.
-//!
-//! Sets up the GTK Application, loads CSS design tokens, and
-//! wires the shell on activation.
 
 use std::path::PathBuf;
 
@@ -9,10 +6,11 @@ use gtk4::gdk::Display;
 use gtk4::prelude::*;
 use gtk4::{Application, CssProvider};
 
+use crate::runtime::Runtime;
 use crate::ui::shell::Shell;
 
-/// Application ID following reverse-DNS convention.
-pub const APP_ID: &str = "com.maintainer.app";
+/// Application ID following reverse-DNS convention matching packaging metadata.
+pub const APP_ID: &str = "io.github.maintainerapp.Maintainer";
 
 /// Create and configure the GTK Application.
 pub fn build_application() -> Application {
@@ -20,11 +18,14 @@ pub fn build_application() -> Application {
 }
 
 /// Load CSS design tokens at runtime from the data/styles directory.
-///
-/// Loads the light theme CSS. During development, runtime loading avoids
-/// requiring a GResource build step.
 pub fn load_css() {
-    let display = Display::default().expect("Could not connect to display");
+    let display = match Display::default() {
+        Some(d) => d,
+        None => {
+            eprintln!("warning: no display connection, skipping CSS load");
+            return;
+        }
+    };
 
     let css_path = find_css_path();
     let provider = CssProvider::new();
@@ -39,13 +40,11 @@ pub fn load_css() {
 
 /// Find the CSS file path, checking development and installed locations.
 fn find_css_path() -> PathBuf {
-    // Development: relative to the workspace root
     let dev_light = PathBuf::from("data/styles/light.css");
     if dev_light.exists() {
         return dev_light;
     }
 
-    // Try relative to the executable
     if let Ok(exe_path) = std::env::current_exe() {
         if let Some(parent) = exe_path.parent() {
             let installed = parent.join("../share/maintainer/styles/light.css");
@@ -55,7 +54,6 @@ fn find_css_path() -> PathBuf {
         }
     }
 
-    // Fallback: just use the dev path (will log a GTK warning if missing)
     dev_light
 }
 
@@ -63,7 +61,8 @@ fn find_css_path() -> PathBuf {
 pub fn run_application(app: &Application) {
     app.connect_activate(|app| {
         load_css();
-        let shell = Shell::new(app);
+        let runtime = Runtime::init();
+        let shell = Shell::new(app, runtime);
         shell.present();
     });
 }

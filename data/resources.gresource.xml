@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <gresources>
-  <gresource prefix="/com/maintainer/app">
+  <gresource prefix="/io/github/maintainerapp/Maintainer">
     <file preprocess="xml-stripblanks">styles/light.css</file>
     <file preprocess="xml-stripblanks">styles/dark.css</file>
   </gresource>
