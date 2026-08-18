@@ -131,8 +131,8 @@ pub mod mock {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::mock::MockPolicy;
+    use super::*;
 
     #[test]
     fn authorize_succeeds_with_valid_caller() {
@@ -159,6 +159,9 @@ mod tests {
             ":1.42",
             "io.github.maintainerapp.terminate-process",
         );
-        assert!(matches!(result, Err(HelperError::AuthorizationDenied { .. })));
+        assert!(matches!(
+            result,
+            Err(HelperError::AuthorizationDenied { .. })
+        ));
     }
 }

@@ -63,10 +63,7 @@ mod tests {
     #[test]
     fn build_path_produces_correct_prefix() {
         let path = build_drive_object_path("SAMSUNG_DRIVE_ABC123");
-        assert_eq!(
-            path,
-            "/org/freedesktop/UDisks2/drives/SAMSUNG_DRIVE_ABC123"
-        );
+        assert_eq!(path, "/org/freedesktop/UDisks2/drives/SAMSUNG_DRIVE_ABC123");
     }
 
     #[test]

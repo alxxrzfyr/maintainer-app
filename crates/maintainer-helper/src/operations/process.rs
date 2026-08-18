@@ -59,7 +59,9 @@ fn parse_start_time(stat_contents: &str) -> Option<u64> {
 ///
 /// This function sends SIGTERM to a process. It re-reads the process start time
 /// immediately before the kill syscall to prevent PID reuse attacks.
-pub fn execute_terminate(request: &TerminateProcessRequest) -> Result<OperationResponse, HelperError> {
+pub fn execute_terminate(
+    request: &TerminateProcessRequest,
+) -> Result<OperationResponse, HelperError> {
     // Revalidate start time immediately before signal delivery.
     let current_start_time = read_process_start_time(request.pid)?;
 

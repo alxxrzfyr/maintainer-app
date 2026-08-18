@@ -12,9 +12,7 @@ fn main() {
     // Full D-Bus server integration will be connected when the zbus
     // async runtime is wired up. For now, the binary validates that all
     // modules compile and the idle timeout is configured.
-    eprintln!(
-        "maintainer-helper: D-Bus activated helper (idle timeout: {IDLE_TIMEOUT_SECS}s)"
-    );
+    eprintln!("maintainer-helper: D-Bus activated helper (idle timeout: {IDLE_TIMEOUT_SECS}s)");
     eprintln!("maintainer-helper: not intended to be run directly; activate via D-Bus");
     std::process::exit(1);
 }
