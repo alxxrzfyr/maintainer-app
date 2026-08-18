@@ -83,6 +83,8 @@ pub trait HistoryRepository: Send + Sync {
     fn record(&self, entry: &HistoryEntry) -> Result<(), MaintainerError>;
     /// Retrieve the most recent operations, ordered newest first.
     fn recent(&self, limit: usize) -> Result<Vec<HistoryEntry>, MaintainerError>;
+    /// Delete a single history entry by ID. Returns true if the entry existed.
+    fn delete_one(&self, id: &str) -> Result<bool, MaintainerError>;
     /// Delete all history entries. Returns the number of rows deleted.
     fn delete_all(&self) -> Result<u64, MaintainerError>;
 }
@@ -182,6 +184,21 @@ impl HistoryRepository for SqliteHistoryRepository<'_> {
             }
 
             Ok(entries)
+        })
+    }
+
+    fn delete_one(&self, id: &str) -> Result<bool, MaintainerError> {
+        self.db.with_connection(|conn| {
+            let deleted = conn
+                .execute(
+                    "DELETE FROM operation_history WHERE id = ?1",
+                    rusqlite::params![id],
+                )
+                .map_err(|e| MaintainerError::Internal {
+                    context: "deleting history entry".into(),
+                    message: e.to_string(),
+                })?;
+            Ok(deleted > 0)
         })
     }
 
@@ -326,6 +343,47 @@ mod tests {
 
         let recent = repo.recent(100).unwrap();
         assert!(recent.is_empty());
+    }
+
+    #[test]
+    fn delete_one_removes_specific_entry() {
+        let db = test_db();
+        let repo = SqliteHistoryRepository::new(&db);
+
+        let entry1 = HistoryEntry::new(
+            "scan",
+            1_700_000_000,
+            Some(1_700_000_010),
+            OperationStatus::Success,
+            0,
+            None,
+        );
+        let entry2 = HistoryEntry::new(
+            "cleanup",
+            1_700_000_100,
+            Some(1_700_000_200),
+            OperationStatus::Success,
+            512,
+            None,
+        );
+        let id1 = entry1.id.clone();
+        repo.record(&entry1).unwrap();
+        repo.record(&entry2).unwrap();
+
+        let deleted = repo.delete_one(&id1).unwrap();
+        assert!(deleted);
+
+        let recent = repo.recent(10).unwrap();
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent[0].operation, "cleanup");
+    }
+
+    #[test]
+    fn delete_one_nonexistent_returns_false() {
+        let db = test_db();
+        let repo = SqliteHistoryRepository::new(&db);
+        let deleted = repo.delete_one("nonexistent-id").unwrap();
+        assert!(!deleted);
     }
 
     #[test]
