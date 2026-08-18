@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16">
+  <!-- Maintainer symbolic icon -->
+  <rect x="2" y="3" width="12" height="8" rx="1" fill="none" stroke="currentColor" stroke-width="1.2"/>
+  <line x1="6" y1="11" x2="6" y2="13" stroke="currentColor" stroke-width="1.2"/>
+  <line x1="10" y1="11" x2="10" y2="13" stroke="currentColor" stroke-width="1.2"/>
+  <line x1="5" y1="13" x2="11" y2="13" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+  <polyline points="4,7 6,7 7,5 8,9 9,6 10,7 12,7"
+            fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

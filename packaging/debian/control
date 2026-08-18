@@ -1,0 +1,44 @@
+Source: maintainer
+Section: admin
+Priority: optional
+Maintainer: Maintainer Developers <maintainer@maintainerapp.io>
+Build-Depends:
+ debhelper-compat (= 13),
+ cargo (>= 0.70),
+ rustc (>= 1.70),
+ libgtk-4-dev (>= 4.6),
+ libsqlite3-dev,
+ libpolkit-gobject-1-dev,
+ pkg-config
+Standards-Version: 4.6.2
+Homepage: https://github.com/maintainerapp/maintainer
+Vcs-Git: https://github.com/maintainerapp/maintainer.git
+Vcs-Browser: https://github.com/maintainerapp/maintainer
+Rules-Requires-Root: binary-targets
+
+Package: maintainer
+Architecture: amd64
+Depends:
+ ${shlibs:Depends},
+ ${misc:Depends},
+ libgtk-4-1 (>= 4.6),
+ libglib2.0-0 (>= 2.72),
+ libsqlite3-0,
+ policykit-1,
+ libpackagekit-glib2-18,
+ systemd
+Suggests:
+ flatpak,
+ fwupd
+Description: System monitor and maintenance tool for Ubuntu-based Linux
+ Maintainer is a modern, lightweight native desktop application for
+ monitoring, maintaining, diagnosing, and understanding Ubuntu-based
+ Linux computers.
+ .
+ It provides one calm place to understand CPU, memory, storage,
+ temperature, network, and process activity; find large and duplicate
+ files; review and perform safe cleanup; inspect available system
+ updates; diagnose failed services; inspect SMART storage health;
+ and generate privacy-conscious local system reports.
+ .
+ The GUI always runs unprivileged. No permanent daemon. No telemetry.

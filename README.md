@@ -88,6 +88,40 @@ Live measurements are not stored unnecessarily. SQLite is reserved for settings,
 - [`CLAUDE.md`](CLAUDE.md): Claude Code-specific guidance
 - [`GEMINI.md`](GEMINI.md): Antigravity CLI-specific guidance
 
+## Installation
+
+### From .deb package
+
+Download the latest `.deb` from the [releases page](https://github.com/maintainerapp/maintainer/releases) and install:
+
+```bash
+sudo apt install ./maintainer_1.0.0-1_amd64.deb
+```
+
+This installs:
+- `/usr/bin/maintainer` — the GUI application (runs unprivileged)
+- `/usr/libexec/maintainer-helper` — the Polkit-gated privileged helper
+- Desktop entry, icons, GSettings schema, D-Bus service, and Polkit policy
+
+### Runtime dependencies
+
+Installed automatically by the `.deb`:
+- GTK4 (≥ 4.6), GLib (≥ 2.72), SQLite3, PolicyKit, PackageKit, systemd
+
+Optional (suggested):
+- `flatpak` — enables Flatpak update inspection
+- `fwupd` — enables firmware update inspection
+
+### Uninstall
+
+```bash
+# Remove binaries and data; user settings preserved
+sudo apt remove maintainer
+
+# Remove everything including user databases
+sudo apt purge maintainer
+```
+
 ## Development
 
 ### Prerequisites

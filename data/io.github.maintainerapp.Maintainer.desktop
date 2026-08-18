@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Maintainer
+GenericName=System Monitor
+Comment=Monitor, maintain, diagnose, and understand your Linux system
+Icon=io.github.maintainerapp.Maintainer
+Exec=maintainer %u
+Terminal=false
+Categories=System;Monitor;
+Keywords=system;monitor;cpu;memory;disk;storage;process;update;health;
+StartupNotify=true
+StartupWMClass=maintainer
+X-GNOME-SingleWindow=true

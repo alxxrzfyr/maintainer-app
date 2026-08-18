@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <!-- Maintainer app icon: stylized wrench + monitor -->
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#3584e4"/>
+      <stop offset="100%" style="stop-color:#1c71d8"/>
+    </linearGradient>
+  </defs>
+  <!-- Rounded square background -->
+  <rect x="4" y="4" width="120" height="120" rx="24" ry="24" fill="url(#bg)"/>
+  <!-- Monitor shape -->
+  <rect x="28" y="30" width="72" height="50" rx="4" ry="4" fill="#ffffff" opacity="0.95"/>
+  <rect x="32" y="34" width="64" height="42" rx="2" ry="2" fill="#1c71d8"/>
+  <!-- Monitor stand -->
+  <rect x="54" y="82" width="20" height="6" fill="#ffffff" opacity="0.9"/>
+  <rect x="44" y="88" width="40" height="4" rx="2" ry="2" fill="#ffffff" opacity="0.9"/>
+  <!-- Heartbeat / activity line on screen -->
+  <polyline points="38,55 48,55 52,42 56,65 60,50 64,55 72,55 76,45 80,60 84,55 90,55"
+            fill="none" stroke="#62a0ea" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- Small wrench accent -->
+  <circle cx="98" cy="98" r="14" fill="#f6d32d" opacity="0.9"/>
+  <path d="M93,93 L98,98 M98,98 L103,93 M95,100 L101,100"
+        fill="none" stroke="#1c71d8" stroke-width="2.5" stroke-linecap="round"/>
+</svg>
