@@ -3,6 +3,7 @@ pub mod diagnostics;
 pub mod dialogs;
 pub mod navigation;
 pub mod overview;
+pub mod reports;
 pub mod shell;
 pub mod storage;
 pub mod system;

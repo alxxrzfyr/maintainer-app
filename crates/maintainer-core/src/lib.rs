@@ -8,5 +8,6 @@ pub mod error;
 pub mod jobs;
 pub mod metrics;
 pub mod persistence;
+pub mod reports;
 pub mod settings;
 pub mod storage;
