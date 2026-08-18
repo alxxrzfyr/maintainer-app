@@ -7,3 +7,4 @@ pub mod jobs;
 pub mod metrics;
 pub mod persistence;
 pub mod settings;
+pub mod storage;
