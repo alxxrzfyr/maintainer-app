@@ -1,4 +1,5 @@
 pub mod cleanup;
+pub mod diagnostics;
 pub mod dialogs;
 pub mod navigation;
 pub mod overview;

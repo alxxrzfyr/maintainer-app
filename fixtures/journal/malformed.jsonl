@@ -1,0 +1,5 @@
+not valid json at all
+{"MESSAGE":"valid entry","PRIORITY":"4","_SYSTEMD_UNIT":"test.service","SYSLOG_IDENTIFIER":"test"}
+{broken json without closing
+{"MESSAGE":[72,101,108,108,111],"PRIORITY":"3"}
+{"MESSAGE":"another valid","PRIORITY":"3","SYSLOG_IDENTIFIER":"kernel"}

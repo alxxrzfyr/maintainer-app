@@ -1,0 +1,2 @@
+{"MESSAGE":"rate limit exceeded, suppressed 1542 messages from /system.slice/docker.service","_SYSTEMD_UNIT":"systemd-journald.service","SYSLOG_IDENTIFIER":"systemd-journald","PRIORITY":"4","_PID":"234","__REALTIME_TIMESTAMP":"1700000010000000","__MONOTONIC_TIMESTAMP":"6000000"}
+{"MESSAGE":"rate limit exceeded, suppressed 892 messages from /system.slice/docker.service","_SYSTEMD_UNIT":"systemd-journald.service","SYSLOG_IDENTIFIER":"systemd-journald","PRIORITY":"4","_PID":"234","__REALTIME_TIMESTAMP":"1700000020000000","__MONOTONIC_TIMESTAMP":"7000000"}
