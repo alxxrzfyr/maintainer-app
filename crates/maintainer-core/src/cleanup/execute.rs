@@ -443,12 +443,14 @@ mod tests {
         let target = make_file(&cache_dir, "racing.png", &[0u8; 128]);
         let file_path = target.path.clone();
 
-        let plan = CleanupPlan::from_targets(vec![target], home.path()).unwrap();
+        let mut plan = CleanupPlan::from_targets(vec![target], home.path()).unwrap();
 
-        // Simulate a race: delete and recreate with different inode.
-        fs::remove_file(&file_path).unwrap();
-        let mut f = File::create(&file_path).unwrap();
-        f.write_all(&[0u8; 128]).unwrap();
+        // Simulate a race by recording a stale inode in the plan.
+        // On tmpfs, re-creating a file often reuses the same inode, so we
+        // directly set the plan's stored inode to a value that cannot match
+        // the current file on disk.
+        let current_inode = fs::symlink_metadata(&file_path).unwrap().ino();
+        plan.items[0].inode = current_inode.wrapping_add(999);
 
         let request = ExecutionRequest {
             plan_id: plan.id,
