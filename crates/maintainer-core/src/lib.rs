@@ -11,3 +11,4 @@ pub mod persistence;
 pub mod reports;
 pub mod settings;
 pub mod storage;
+pub mod updates;

@@ -7,4 +7,5 @@ pub mod reports;
 pub mod shell;
 pub mod storage;
 pub mod system;
+pub mod updates;
 pub mod widgets;

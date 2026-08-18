@@ -1,0 +1,24 @@
+{
+  "transactions": [
+    {
+      "status": "setup",
+      "percentage": 0,
+      "allow_cancel": true,
+      "package_id": null
+    },
+    {
+      "status": "download",
+      "percentage": 30,
+      "allow_cancel": true,
+      "package_id": "curl;7.81.0-1ubuntu1.16;amd64;Ubuntu"
+    },
+    {
+      "status": "error",
+      "percentage": 30,
+      "allow_cancel": false,
+      "package_id": "curl;7.81.0-1ubuntu1.16;amd64;Ubuntu",
+      "error_code": "package-download-failed",
+      "error_details": "Failed to download curl: hash sum mismatch"
+    }
+  ]
+}

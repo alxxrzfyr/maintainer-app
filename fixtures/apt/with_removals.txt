@@ -1,0 +1,17 @@
+Reading package lists...
+Building dependency tree...
+Reading state information...
+The following packages will be REMOVED:
+  old-kernel-headers old-kernel-image
+The following NEW packages will be installed:
+  new-dep-lib
+The following packages will be upgraded:
+  mesa-common-dev
+1 upgraded, 1 newly installed, 2 to remove and 0 not upgraded.
+Need to get 12.1 MB of archives.
+Remv old-kernel-headers [5.14.0-1044.49]
+Remv old-kernel-image [5.14.0-1044.49]
+Inst new-dep-lib (1.2.3-1 Ubuntu:22.04/jammy [amd64])
+Inst mesa-common-dev [23.2.1-1ubuntu3] (23.2.1-1ubuntu3.1 Ubuntu:22.04/jammy-updates [amd64])
+Conf new-dep-lib (1.2.3-1 Ubuntu:22.04/jammy [amd64])
+Conf mesa-common-dev (23.2.1-1ubuntu3.1 Ubuntu:22.04/jammy-updates [amd64])
