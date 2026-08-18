@@ -1,0 +1,18 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/maintainer-core",
+  "crates/maintainer-app",
+  "crates/maintainer-helper",
+]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.85"
+license = "GPL-3.0-or-later"
+
+[workspace.dependencies]
+glib = "=0.20.12"
+gio = "=0.20.12"
+gtk4 = { version = "=0.9.7", features = ["v4_6"] }
+thiserror = "=2.0.12"

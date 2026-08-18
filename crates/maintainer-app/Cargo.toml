@@ -1,0 +1,12 @@
+[package]
+name = "maintainer-app"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+maintainer-core = { path = "../maintainer-core" }
+gtk4 = { workspace = true }
+glib = { workspace = true }
+gio = { workspace = true }

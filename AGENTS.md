@@ -49,7 +49,39 @@ Every optional integration reports one of: available, unavailable with reason, o
 
 ## Setup and commands
 
-No setup or commands are available yet because the repository has no Rust project. During scaffolding, define and verify commands for running, building, formatting, linting, testing one target, testing all targets, security-sensitive helper tests, and packaging. Update this section with only commands that were successfully executed.
+Prerequisites: `libgtk-4-dev`, `libsqlite3-dev`, `libpolkit-gobject-1-dev`, `pkg-config`. The pinned Rust toolchain is installed automatically by rustup from `rust-toolchain.toml`.
+
+```bash
+# Run the GUI application (dev mode)
+cargo run -p maintainer-app
+
+# Run the privileged helper (dev mode)
+cargo run -p maintainer-helper
+
+# Build all workspace members (debug)
+cargo build --workspace
+
+# Build all workspace members (release)
+cargo build --workspace --release
+
+# Format check (must pass before commit)
+cargo fmt --all -- --check
+
+# Lint (must pass before commit)
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+# Test all workspace members
+cargo test --workspace --all-features
+
+# Test a single target
+cargo test -p maintainer-core module::tests::test_name -- --exact
+
+# Test the app crate only
+cargo test -p maintainer-app
+
+# Test the helper crate only
+cargo test -p maintainer-helper
+```
 
 After scaffolding, Cargo is the only Rust package manager. Never install a dependency or regenerate `Cargo.lock` without stating why.
 

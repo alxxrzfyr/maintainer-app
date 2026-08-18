@@ -90,4 +90,35 @@ Live measurements are not stored unnecessarily. SQLite is reserved for settings,
 
 ## Development
 
-No `Cargo.toml`, source tree, lockfile, CI workflow, or verified development commands exist yet. The implementation plan must define and validate them before this section gains setup instructions.
+### Prerequisites
+
+- `libgtk-4-dev`, `libsqlite3-dev`, `libpolkit-gobject-1-dev`, `pkg-config`
+- The pinned Rust toolchain (1.85.0) is installed automatically by rustup from `rust-toolchain.toml`.
+
+### Commands
+
+```bash
+# Build all workspace members (debug)
+cargo build --workspace
+
+# Build all workspace members (release)
+cargo build --workspace --release
+
+# Run the GUI application (dev mode)
+cargo run -p maintainer-app
+
+# Run the privileged helper (dev mode)
+cargo run -p maintainer-helper
+
+# Format check (must pass before commit)
+cargo fmt --all -- --check
+
+# Lint (must pass before commit)
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+# Test all workspace members
+cargo test --workspace --all-features
+
+# Test a single target
+cargo test -p maintainer-core module::tests::test_name -- --exact
+```
