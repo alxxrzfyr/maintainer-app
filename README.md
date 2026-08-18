@@ -6,7 +6,9 @@ Maintainer is a modern, lightweight native desktop application for monitoring, m
 
 ## Status
 
-Maintainer is in the specification stage. Product scope and design are approved; application source and build tooling have not been scaffolded yet.
+Maintainer is in active development approaching v1 release. The workspace is scaffolded with all three crates (`maintainer-app`, `maintainer-core`, `maintainer-helper`), CI pipeline, packaging, and system tests. Core functionality for monitoring, storage analysis, cleanup, diagnostics, updates, and reporting is implemented. Phase 6 (v1 hardening) is in progress: accessibility review, compatibility testing, performance measurement, and security verification.
+
+Foreground application and screen-time tracking are explicitly deferred from v1.
 
 ## Product direction
 

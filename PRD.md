@@ -188,15 +188,20 @@ Performance measurements must state hardware, distribution, desktop session, bui
 
 Vertical slices ship internally in this order. Shared foundations are added only when a slice needs them.
 
-| Phase | Includes | Exit criterion |
-|---|---|---|
-| 1 — Overview and monitoring | US-01, US-02, capability states, metric collectors, basic shell | Accurate live flow meets idle/startup budgets on reference hardware |
-| 2 — Storage and files | US-03, US-04, cancellable job framework | Large-file and duplicate scans are accurate, bounded, cancellable, and safe on fixtures and real test trees |
-| 3 — Cleanup and history | US-05, US-12, SQLite persistence | Preview-confirm-execute-result flow handles success, cancellation, denial, and partial failure |
-| 4 — Diagnostics and reports | US-07, US-08, US-09, US-10 | Services, journal, SMART, redaction, copy, and export pass fixture and capability tests |
-| 5 — Updates and privilege helper | US-06, US-11, D-Bus/Polkit helper | Threat review and authorization/validation/denial tests pass; APT flow succeeds in isolated test systems |
-| 6 — v1 hardening | Compatibility, accessibility, performance, packaging | Supported-system matrix, security checks, keyboard review, budgets, and `.deb` installation pass |
-| Later | Foreground application and screen-time tracking; non-Ubuntu distribution families | Separate approved specification required |
+| Phase | Includes | Status | Exit criterion |
+|---|---|---|---|
+| 1 — Overview and monitoring | US-01, US-02, capability states, metric collectors, basic shell | Complete | Accurate live flow meets idle/startup budgets on reference hardware |
+| 2 — Storage and files | US-03, US-04, cancellable job framework | Complete | Large-file and duplicate scans are accurate, bounded, cancellable, and safe on fixtures and real test trees |
+| 3 — Cleanup and history | US-05, US-12, SQLite persistence | Complete | Preview-confirm-execute-result flow handles success, cancellation, denial, and partial failure |
+| 4 — Diagnostics and reports | US-07, US-08, US-09, US-10 | Complete | Services, journal, SMART, redaction, copy, and export pass fixture and capability tests |
+| 5 — Updates and privilege helper | US-06, US-11, D-Bus/Polkit helper | Complete | Threat review and authorization/validation/denial tests pass; APT flow succeeds in isolated test systems |
+| 6 — v1 hardening | Compatibility, accessibility, performance, packaging | In progress | Supported-system matrix, security checks, keyboard review, budgets, and `.deb` installation pass |
+| Later | Foreground application and screen-time tracking; non-Ubuntu distribution families | Deferred | Separate approved specification required |
+
+### Deferred from v1
+
+- **Foreground application and screen-time tracking**: Deferred until reliable, privacy-preserving behavior can be provided across supported X11 and Wayland desktop environments. Requires a separate approved specification before implementation begins.
+- **Non-Ubuntu distribution families**: First-class support for Fedora, Arch, etc. is out of scope for v1.
 
 ## v1 release criteria
 

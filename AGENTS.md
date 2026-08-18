@@ -4,7 +4,7 @@ Maintainer is a lightweight native GTK4 application for monitoring, maintaining,
 
 ## Project status
 
-Product requirements and UI design are approved. Application source, `Cargo.toml`, lockfile, CI, packaging, and executable commands have not been created. Do not claim a command was run or passed until the relevant project files exist and the command has been executed.
+The workspace is scaffolded and fully functional. All three crates (`maintainer-app`, `maintainer-core`, `maintainer-helper`) build, pass tests, and produce release binaries. CI, packaging, and system tests are in place. Phase 6 (v1 hardening) is in progress.
 
 ## Stack
 

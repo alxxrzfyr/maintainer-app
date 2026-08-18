@@ -176,3 +176,55 @@ jobs:
           files: |
             maintainer_*.deb
             SHA256SUMS
+
+  smoke-test:
+    needs: check
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            libgtk-4-dev \
+            libsqlite3-dev \
+            libpolkit-gobject-1-dev \
+            pkg-config \
+            xvfb
+
+      - name: Install Rust toolchain
+        run: rustup show
+
+      - name: Run release smoke test
+        run: tests/system/release-smoke.sh
+
+  performance:
+    needs: check
+    runs-on: ubuntu-22.04
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            libgtk-4-dev \
+            libsqlite3-dev \
+            libpolkit-gobject-1-dev \
+            pkg-config \
+            xvfb \
+            bc
+
+      - name: Install Rust toolchain
+        run: rustup show
+
+      - name: Build release
+        run: cargo build --workspace --release
+
+      - name: Measure performance (short sample)
+        env:
+          PERF_DURATION_SECS: "30"
+          PERF_SETTLE_SECS: "10"
+        run: scripts/measure-performance.sh target/release/maintainer-app
