@@ -5,3 +5,5 @@ pub mod command;
 pub mod error;
 pub mod jobs;
 pub mod metrics;
+pub mod persistence;
+pub mod settings;
