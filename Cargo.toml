@@ -16,4 +16,6 @@ blake3 = "=1.8.2"
 glib = "=0.20.12"
 gio = "=0.20.12"
 gtk4 = { version = "=0.9.7", features = ["v4_6"] }
+serde = { version = "=1.0.219", features = ["derive"] }
 thiserror = "=2.0.12"
+zbus = "=4.4.0"
