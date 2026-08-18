@@ -91,3 +91,38 @@ fn page_icon_names_are_nonempty() {
 fn settings_is_in_footer() {
     assert!(FOOTER_PAGES.contains(&Page::Settings));
 }
+
+#[test]
+fn drawer_mode_navigation_covers_all_pages() {
+    // Verify that navigation groups + footer pages provide access to every page,
+    // ensuring the drawer menu (which uses the same source) does not miss any page.
+    let drawer_pages: Vec<Page> = NAVIGATION_GROUPS
+        .iter()
+        .flat_map(|g| g.pages.iter().copied())
+        .chain(FOOTER_PAGES.iter().copied())
+        .collect();
+
+    for &page in Page::ALL {
+        assert!(
+            drawer_pages.contains(&page),
+            "Page {:?} is not reachable from drawer navigation",
+            page
+        );
+    }
+}
+
+#[test]
+fn drawer_mode_navigation_allows_page_switching() {
+    // Simulate drawer navigation: user can navigate to any page from any page.
+    let mut state = AppState::default();
+    let drawer_pages: Vec<Page> = NAVIGATION_GROUPS
+        .iter()
+        .flat_map(|g| g.pages.iter().copied())
+        .chain(FOOTER_PAGES.iter().copied())
+        .collect();
+
+    for &target in &drawer_pages {
+        state.reduce(AppIntent::Navigate(target));
+        assert_eq!(state.active_page, target);
+    }
+}

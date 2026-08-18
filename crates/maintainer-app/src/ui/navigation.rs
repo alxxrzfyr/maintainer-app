@@ -158,4 +158,13 @@ mod tests {
         assert_eq!(NavigationMode::from_width(639), NavigationMode::Drawer);
         assert_eq!(NavigationMode::from_width(320), NavigationMode::Drawer);
     }
+
+    #[test]
+    fn drawer_mode_triggers_below_640() {
+        // Boundary values for drawer mode
+        assert_eq!(NavigationMode::from_width(639), NavigationMode::Drawer);
+        assert_eq!(NavigationMode::from_width(1), NavigationMode::Drawer);
+        // 640 is compact, not drawer
+        assert_ne!(NavigationMode::from_width(640), NavigationMode::Drawer);
+    }
 }
