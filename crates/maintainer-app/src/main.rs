@@ -1,9 +1,9 @@
-fn main() {}
+use gtk4::prelude::*;
+use maintainer_app::application;
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn core_crate_is_linked() {
-        assert_eq!(maintainer_core::PRODUCT_NAME, "Maintainer");
-    }
+fn main() {
+    let app = application::build_application();
+    application::run_application(&app);
+    let exit_code = app.run();
+    std::process::exit(exit_code.into());
 }
