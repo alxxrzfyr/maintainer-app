@@ -10,6 +10,7 @@ pub mod memory;
 pub mod network;
 pub mod processes;
 pub mod temperature;
+pub mod terminate;
 
 use std::time::Instant;
 
@@ -26,6 +27,9 @@ pub use crate::metrics::memory::{MemorySnapshot, read_memory};
 pub use crate::metrics::network::{NetCounters, NetworkSnapshot, read_net_dev};
 pub use crate::metrics::processes::{ProcessIdentity, ProcessSnapshot, read_processes};
 pub use crate::metrics::temperature::{TemperatureReading, read_temperatures};
+pub use crate::metrics::terminate::{
+    ProcReader, RealProcReader, TerminateResult, terminate_process,
+};
 
 /// A source that can produce a complete system snapshot at a point in time.
 pub trait MetricSource: Send + Sync {
