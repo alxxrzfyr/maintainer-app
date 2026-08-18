@@ -4,3 +4,4 @@ pub mod capability;
 pub mod command;
 pub mod error;
 pub mod jobs;
+pub mod metrics;
