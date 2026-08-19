@@ -28,8 +28,8 @@ impl Sparkline {
     /// Create a new sparkline widget with the given value range.
     pub fn new(min_value: f64, max_value: f64) -> Self {
         let drawing_area = DrawingArea::new();
-        drawing_area.set_content_height(40);
-        drawing_area.set_content_width(120);
+        drawing_area.set_content_height(56);
+        drawing_area.set_content_width(200);
         drawing_area.add_css_class("maintainer_sparkline");
 
         let data = Rc::new(RefCell::new(SparklineData {
@@ -90,7 +90,7 @@ impl Sparkline {
             height - ((clamped - data.min_value) / range) * height
         };
 
-        // Draw filled area
+        // Draw filled area with gradient effect (darker at bottom)
         cr.move_to(0.0, height);
         for (i, &val) in samples.iter().enumerate() {
             let x = i as f64 * step;
@@ -100,16 +100,14 @@ impl Sparkline {
         cr.line_to((n - 1) as f64 * step, height);
         cr.close_path();
 
-        // Fill with semi-transparent accent
-        cr.set_source_rgba(0.2, 0.5, 0.8, 0.3);
+        // Fill with accent color, semi-transparent
+        // Using blue accent: #245FD6 (light) / #8BB4FF (dark)
+        // We use a middle-ground that works in both themes
+        cr.set_source_rgba(0.14, 0.37, 0.84, 0.15);
         let _ = cr.fill_preserve();
-
-        // Stroke the top line
-        cr.set_source_rgba(0.2, 0.5, 0.8, 0.8);
-        cr.set_line_width(1.5);
-
-        // Redraw just the line (without the bottom fill path)
         cr.new_path();
+
+        // Stroke the top line with solid accent
         for (i, &val) in samples.iter().enumerate() {
             let x = i as f64 * step;
             let y = normalize(val);
@@ -119,6 +117,8 @@ impl Sparkline {
                 cr.line_to(x, y);
             }
         }
+        cr.set_source_rgba(0.14, 0.37, 0.84, 0.7);
+        cr.set_line_width(2.0);
         let _ = cr.stroke();
     }
 }

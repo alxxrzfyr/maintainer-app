@@ -7,4 +7,5 @@
 pub mod api;
 pub mod authorize;
 pub mod operations;
+pub mod server;
 pub mod validate;

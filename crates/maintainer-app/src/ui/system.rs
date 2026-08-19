@@ -82,13 +82,15 @@ impl SystemPage {
         temp_label.set_margin_top(12);
         content.append(&temp_label);
 
-        let temperature_box = GtkBox::new(Orientation::Horizontal, 12);
+        let temperature_box = GtkBox::new(Orientation::Horizontal, 8);
         temperature_box.add_css_class("maintainer_temperature_box");
+        temperature_box.set_halign(Align::Start);
         content.append(&temperature_box);
 
-        // Process section
+        // Process section header
         let process_header = GtkBox::new(Orientation::Horizontal, 8);
         process_header.set_margin_top(16);
+        process_header.set_valign(Align::Center);
 
         let process_label = Label::new(Some("Processes"));
         process_label.add_css_class("maintainer_section_title");
@@ -98,6 +100,10 @@ impl SystemPage {
 
         // Sort buttons
         let on_sort_changed: SortCallback = Rc::new(RefCell::new(None));
+
+        let sort_label = Label::new(Some("Sort:"));
+        sort_label.add_css_class("maintainer_text_muted");
+        process_header.append(&sort_label);
 
         let cpu_btn = Button::with_label("CPU");
         cpu_btn.add_css_class("maintainer_sort_button");
@@ -143,8 +149,8 @@ impl SystemPage {
 
         content.append(&process_header);
 
-        // Process list
-        let process_list_box = GtkBox::new(Orientation::Vertical, 2);
+        // Process list container (styled as a card)
+        let process_list_box = GtkBox::new(Orientation::Vertical, 0);
         process_list_box.add_css_class("maintainer_process_list");
         content.append(&process_list_box);
 
@@ -218,7 +224,7 @@ impl SystemPage {
     }
 
     fn update_temperatures(&self, vm: &SystemViewModel) {
-        // Clear and rebuild temperature labels
+        // Clear and rebuild temperature chips
         while let Some(child) = self.temperature_box.first_child() {
             self.temperature_box.remove(&child);
         }
@@ -233,9 +239,31 @@ impl SystemPage {
         for reading in &vm.temperatures {
             if let maintainer_core::capability::Capability::Available(celsius) = &reading.celsius {
                 let name = reading.label.as_deref().unwrap_or(&reading.hwmon_name);
-                let label = Label::new(Some(&format!("{name}: {celsius:.0}°C")));
-                label.add_css_class("maintainer_temperature_reading");
-                self.temperature_box.append(&label);
+
+                // Build a chip: vertical box with name on top, value below
+                let chip = GtkBox::new(Orientation::Vertical, 2);
+                chip.add_css_class("maintainer_temperature_chip");
+
+                let name_label = Label::new(Some(name));
+                name_label.add_css_class("maintainer_temperature_label");
+                name_label.set_halign(Align::Start);
+                name_label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+                name_label.set_max_width_chars(12);
+                chip.append(&name_label);
+
+                let value_label = Label::new(Some(&format!("{celsius:.0}°C")));
+                value_label.add_css_class("maintainer_temperature_value");
+                value_label.set_halign(Align::Start);
+
+                // Color coding for temperature thresholds
+                if *celsius >= 85.0 {
+                    value_label.add_css_class("maintainer_temperature_critical");
+                } else if *celsius >= 70.0 {
+                    value_label.add_css_class("maintainer_temperature_warning");
+                }
+
+                chip.append(&value_label);
+                self.temperature_box.append(&chip);
             }
         }
     }
@@ -249,6 +277,8 @@ impl SystemPage {
         if !vm.processes_available {
             let label = Label::new(Some("Process information unavailable"));
             label.add_css_class("maintainer_text_muted");
+            label.set_margin_top(16);
+            label.set_margin_bottom(16);
             self.process_list_box.append(&label);
             return;
         }
@@ -256,6 +286,8 @@ impl SystemPage {
         if vm.processes.is_empty() {
             let label = Label::new(Some("No processes"));
             label.add_css_class("maintainer_text_muted");
+            label.set_margin_top(16);
+            label.set_margin_bottom(16);
             self.process_list_box.append(&label);
             return;
         }
@@ -263,10 +295,9 @@ impl SystemPage {
         // Header row
         let header = GtkBox::new(Orientation::Horizontal, 8);
         header.add_css_class("maintainer_process_header");
-        header.set_margin_bottom(4);
 
         let pid_h = Label::new(Some("PID"));
-        pid_h.set_width_request(60);
+        pid_h.set_width_request(70);
         pid_h.set_halign(Align::Start);
         header.append(&pid_h);
 
@@ -276,12 +307,12 @@ impl SystemPage {
         header.append(&name_h);
 
         let mem_h = Label::new(Some("Memory"));
-        mem_h.set_width_request(80);
+        mem_h.set_width_request(90);
         mem_h.set_halign(Align::End);
         header.append(&mem_h);
 
         let state_h = Label::new(Some("State"));
-        state_h.set_width_request(50);
+        state_h.set_width_request(60);
         state_h.set_halign(Align::Center);
         header.append(&state_h);
 
@@ -291,41 +322,49 @@ impl SystemPage {
 
         self.process_list_box.append(&header);
 
-        // Show top 50 processes
+        // Show top 50 processes with alternating row backgrounds
         let display_count = vm.processes.len().min(50);
-        for proc in &vm.processes[..display_count] {
-            let row = self.build_process_row(proc);
+        for (i, proc) in vm.processes[..display_count].iter().enumerate() {
+            let row = self.build_process_row(proc, i % 2 == 1);
             self.process_list_box.append(&row);
         }
     }
 
-    fn build_process_row(&self, proc: &maintainer_core::metrics::ProcessSnapshot) -> GtkBox {
+    fn build_process_row(
+        &self,
+        proc: &maintainer_core::metrics::ProcessSnapshot,
+        alternate: bool,
+    ) -> GtkBox {
         let row = GtkBox::new(Orientation::Horizontal, 8);
         row.add_css_class("maintainer_process_row");
-        row.set_margin_top(2);
-        row.set_margin_bottom(2);
+        if alternate {
+            row.add_css_class("maintainer_process_row_alt");
+        }
 
         let pid_label = Label::new(Some(&proc.identity.pid.to_string()));
-        pid_label.set_width_request(60);
+        pid_label.set_width_request(70);
         pid_label.set_halign(Align::Start);
-        pid_label.add_css_class("dim-label");
+        pid_label.add_css_class("maintainer_process_pid");
         row.append(&pid_label);
 
         let name_label = Label::new(Some(&proc.name));
         name_label.set_hexpand(true);
         name_label.set_halign(Align::Start);
         name_label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+        name_label.set_max_width_chars(30);
         row.append(&name_label);
 
         let mem_text = format_memory_bytes(proc.rss_bytes);
         let mem_label = Label::new(Some(&mem_text));
-        mem_label.set_width_request(80);
+        mem_label.set_width_request(90);
         mem_label.set_halign(Align::End);
+        mem_label.add_css_class("maintainer_process_memory");
         row.append(&mem_label);
 
         let state_label = Label::new(Some(&proc.state.to_string()));
-        state_label.set_width_request(50);
+        state_label.set_width_request(60);
         state_label.set_halign(Align::Center);
+        state_label.add_css_class("maintainer_text_muted");
         row.append(&state_label);
 
         // Terminate button
@@ -437,9 +476,9 @@ fn format_memory_bytes(bytes: u64) -> String {
     if bytes >= 1_073_741_824 {
         format!("{:.1} GiB", bytes as f64 / 1_073_741_824.0)
     } else if bytes >= 1_048_576 {
-        format!("{:.1} MiB", bytes as f64 / 1_048_576.0)
+        format!("{:.0} MiB", bytes as f64 / 1_048_576.0)
     } else if bytes >= 1024 {
-        format!("{:.1} KiB", bytes as f64 / 1024.0)
+        format!("{:.0} KiB", bytes as f64 / 1024.0)
     } else {
         format!("{bytes} B")
     }

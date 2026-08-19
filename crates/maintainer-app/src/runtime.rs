@@ -20,6 +20,7 @@ use maintainer_core::metrics::{
 use maintainer_core::persistence::database::Database;
 use maintainer_core::settings::{Settings, SettingsRepository, SqliteSettingsRepository};
 
+use crate::helper_client::{SharedHelperClient, create_helper_client};
 use crate::monitoring::MonitoringState;
 use crate::state::SettingsSnapshot;
 
@@ -38,6 +39,8 @@ pub struct Runtime {
     pub monitoring: MonitoringState,
     /// Shared job executor for on-demand work (bounded concurrency).
     pub executor: Arc<JobExecutor>,
+    /// D-Bus client for the privileged helper.
+    pub helper: SharedHelperClient,
     /// Previous CPU sample for delta computation.
     prev_cpu_sample: Option<CpuSample>,
     /// Previous network counters and timestamp for rate computation.
@@ -63,12 +66,15 @@ impl Runtime {
         let executor =
             Arc::new(JobExecutor::new(4).expect("max_workers > 0 is guaranteed at compile time"));
 
+        let helper = create_helper_client();
+
         Rc::new(RefCell::new(Runtime {
             db,
             db_failure,
             settings,
             monitoring: MonitoringState::default(),
             executor,
+            helper,
             prev_cpu_sample: None,
             prev_net: None,
         }))

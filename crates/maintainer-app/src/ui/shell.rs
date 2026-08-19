@@ -525,9 +525,17 @@ impl Shell {
             }
 
             let job_id = ScanJobId(1);
-            let token = dispatch::dispatch_storage_scan(&executor, job_id, policy, |_result| {
-                // Result delivered; UI update handled through state.
-            });
+            let (token, _progress) = dispatch::dispatch_storage_scan(
+                &executor,
+                job_id,
+                policy,
+                |_p| {
+                    // Progress delivered to UI via JobProgress widget.
+                },
+                |_result| {
+                    // Result delivered; UI update handled through state.
+                },
+            );
             *token_ref.borrow_mut() = Some(token);
         });
 
@@ -553,7 +561,8 @@ impl Shell {
             policy.large_file_threshold_bytes = settings.large_file_threshold_bytes;
 
             let job_id = ScanJobId(2);
-            let token = dispatch::dispatch_duplicate_scan(&executor, job_id, policy, |_result| {});
+            let (token, _progress) =
+                dispatch::dispatch_duplicate_scan(&executor, job_id, policy, |_p| {}, |_result| {});
             *dup_token_ref.borrow_mut() = Some(token);
         });
     }
@@ -571,9 +580,13 @@ impl Shell {
             btn.set_sensitive(false);
             let btn_ref = btn.clone();
             let executor = runtime_ref.borrow().executor.clone();
-            let token = dispatch::dispatch_cleanup_scan(&executor, move |_outcome| {
-                btn_ref.set_sensitive(true);
-            });
+            let (token, _progress) = dispatch::dispatch_cleanup_scan(
+                &executor,
+                |_p| {},
+                move |_outcome| {
+                    btn_ref.set_sensitive(true);
+                },
+            );
             *token_ref.borrow_mut() = Some(token);
         });
     }
@@ -591,9 +604,13 @@ impl Shell {
             btn.set_sensitive(false);
             let btn_ref = btn.clone();
             let executor = runtime_ref.borrow().executor.clone();
-            let token = dispatch::dispatch_updates_check(&executor, move |_outcome| {
-                btn_ref.set_sensitive(true);
-            });
+            let (token, _progress) = dispatch::dispatch_updates_check(
+                &executor,
+                |_p| {},
+                move |_outcome| {
+                    btn_ref.set_sensitive(true);
+                },
+            );
             *token_ref.borrow_mut() = Some(token);
         });
     }
@@ -611,9 +628,13 @@ impl Shell {
             btn.set_sensitive(false);
             let btn_ref = btn.clone();
             let executor = runtime_ref.borrow().executor.clone();
-            let token = dispatch::dispatch_diagnostics_scan(&executor, move |_outcome| {
-                btn_ref.set_sensitive(true);
-            });
+            let (token, _progress) = dispatch::dispatch_diagnostics_scan(
+                &executor,
+                |_p| {},
+                move |_outcome| {
+                    btn_ref.set_sensitive(true);
+                },
+            );
             *token_ref.borrow_mut() = Some(token);
         });
     }

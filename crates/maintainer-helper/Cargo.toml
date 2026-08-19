@@ -15,7 +15,7 @@ serde = { workspace = true }
 thiserror = { workspace = true }
 zbus = { workspace = true }
 libc = "=0.2.172"
-tokio = { version = "=1.45.1", features = ["rt", "time", "sync", "macros"] }
+tokio = { version = "=1.45.1", features = ["rt", "time", "sync", "macros", "signal"] }
 
 [dev-dependencies]
 tokio = { version = "=1.45.1", features = ["rt-multi-thread", "time", "sync", "macros"] }

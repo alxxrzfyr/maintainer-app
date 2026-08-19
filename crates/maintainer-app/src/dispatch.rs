@@ -15,9 +15,10 @@ use std::time::Duration;
 
 use glib::ControlFlow;
 
-use maintainer_core::jobs::{CancellationToken, JobExecutor, JobMessage, NullProgress};
+use maintainer_core::jobs::{CancellationToken, JobExecutor, JobMessage};
 use maintainer_core::storage::{DuplicateCandidate, DuplicateScanner, ScanPolicy, StorageScanner};
 
+use crate::progress::SharedProgress;
 use crate::state::ScanJobId;
 
 // ---------------------------------------------------------------------------
@@ -42,21 +43,23 @@ pub enum StorageScanResult {
 
 /// Launch a storage scan through the shared `JobExecutor`.
 ///
-/// Returns the cancellation token. The `on_done` callback is invoked exactly
-/// once on the main thread when the job finishes. Stale results (job_id
-/// mismatch) are discarded by the caller.
+/// Returns the cancellation token and the shared progress handle. The `on_done`
+/// callback is invoked exactly once on the main thread when the job finishes.
+/// Stale results (job_id mismatch) are discarded by the caller.
 pub fn dispatch_storage_scan(
     executor: &Arc<JobExecutor>,
     job_id: ScanJobId,
     policy: ScanPolicy,
+    on_progress: impl Fn(&maintainer_core::jobs::JobProgress) + 'static,
     on_done: impl FnOnce(StorageScanResult) + 'static,
-) -> CancellationToken {
+) -> (CancellationToken, SharedProgress) {
     let token = CancellationToken::new();
     let token_for_worker = token.clone();
+    let progress = SharedProgress::new();
+    let progress_for_worker = progress.clone();
 
     let job = move || -> maintainer_core::error::Result<StorageScanResult> {
-        let progress_sink = NullProgress;
-        let scanner = StorageScanner::new(&policy, &token_for_worker, &progress_sink);
+        let scanner = StorageScanner::new(&policy, &token_for_worker, &progress_for_worker);
 
         match scanner.run() {
             Ok(summary) => {
@@ -81,9 +84,9 @@ pub fn dispatch_storage_scan(
     };
 
     let rx = executor.execute(vec![job]);
-    install_result_poller(rx, on_done);
+    install_progress_poller(rx, progress.clone(), on_progress, on_done);
 
-    token
+    (token, progress)
 }
 
 // ---------------------------------------------------------------------------
@@ -111,16 +114,17 @@ pub fn dispatch_duplicate_scan(
     executor: &Arc<JobExecutor>,
     job_id: ScanJobId,
     policy: ScanPolicy,
+    on_progress: impl Fn(&maintainer_core::jobs::JobProgress) + 'static,
     on_done: impl FnOnce(DuplicateScanJobResult) + 'static,
-) -> CancellationToken {
+) -> (CancellationToken, SharedProgress) {
     let token = CancellationToken::new();
     let token_for_worker = token.clone();
+    let progress = SharedProgress::new();
+    let progress_for_worker = progress.clone();
 
     let job = move || -> maintainer_core::error::Result<DuplicateScanJobResult> {
-        let progress_sink = NullProgress;
-
         // Phase 1: traverse to gather candidates.
-        let scanner = StorageScanner::new(&policy, &token_for_worker, &progress_sink);
+        let scanner = StorageScanner::new(&policy, &token_for_worker, &progress_for_worker);
         let scan_result = match scanner.run() {
             Ok(summary) => {
                 if summary.was_cancelled {
@@ -163,7 +167,7 @@ pub fn dispatch_duplicate_scan(
         }
 
         // Phase 2: hash and group.
-        let dup_scanner = DuplicateScanner::new(&token_for_worker, &progress_sink);
+        let dup_scanner = DuplicateScanner::new(&token_for_worker, &progress_for_worker);
         match dup_scanner.scan(candidates) {
             Ok(dup_result) => {
                 if dup_result.was_cancelled {
@@ -187,9 +191,9 @@ pub fn dispatch_duplicate_scan(
     };
 
     let rx = executor.execute(vec![job]);
-    install_result_poller(rx, on_done);
+    install_progress_poller(rx, progress.clone(), on_progress, on_done);
 
-    token
+    (token, progress)
 }
 
 // ---------------------------------------------------------------------------
@@ -205,10 +209,13 @@ pub enum CleanupScanOutcome {
 /// Launch a cleanup scan through the shared `JobExecutor`.
 pub fn dispatch_cleanup_scan(
     executor: &Arc<JobExecutor>,
+    on_progress: impl Fn(&maintainer_core::jobs::JobProgress) + 'static,
     on_done: impl FnOnce(CleanupScanOutcome) + 'static,
-) -> CancellationToken {
+) -> (CancellationToken, SharedProgress) {
     let token = CancellationToken::new();
     let token_for_worker = token.clone();
+    let progress = SharedProgress::new();
+    let progress_for_worker = progress.clone();
 
     let job = move || -> maintainer_core::error::Result<CleanupScanOutcome> {
         use maintainer_core::cleanup::CleanupAnalyzer;
@@ -218,9 +225,8 @@ pub fn dispatch_cleanup_scan(
             .unwrap_or_else(|_| PathBuf::from("/tmp"));
 
         let analyzer = CleanupAnalyzer::new(home_dir);
-        let progress = NullProgress;
 
-        match analyzer.scan_all(&token_for_worker, &progress) {
+        match analyzer.scan_all(&token_for_worker, &progress_for_worker) {
             Ok(targets) => {
                 let total_bytes: u64 = targets.iter().map(|t| t.size_bytes).sum();
                 Ok(CleanupScanOutcome::Completed {
@@ -240,9 +246,9 @@ pub fn dispatch_cleanup_scan(
     };
 
     let rx = executor.execute(vec![job]);
-    install_result_poller(rx, on_done);
+    install_progress_poller(rx, progress.clone(), on_progress, on_done);
 
-    token
+    (token, progress)
 }
 
 // ---------------------------------------------------------------------------
@@ -262,10 +268,13 @@ pub enum DiagnosticsScanOutcome {
 /// Launch a diagnostics scan through the shared `JobExecutor`.
 pub fn dispatch_diagnostics_scan(
     executor: &Arc<JobExecutor>,
+    on_progress: impl Fn(&maintainer_core::jobs::JobProgress) + 'static,
     on_done: impl FnOnce(DiagnosticsScanOutcome) + 'static,
-) -> CancellationToken {
+) -> (CancellationToken, SharedProgress) {
     let token = CancellationToken::new();
     let token_for_worker = token.clone();
+    let progress = SharedProgress::new();
+    let _progress_for_worker = progress.clone();
 
     let job = move || -> maintainer_core::error::Result<DiagnosticsScanOutcome> {
         use maintainer_core::command::SystemCommandRunner;
@@ -289,9 +298,9 @@ pub fn dispatch_diagnostics_scan(
     };
 
     let rx = executor.execute(vec![job]);
-    install_result_poller(rx, on_done);
+    install_progress_poller(rx, progress.clone(), on_progress, on_done);
 
-    token
+    (token, progress)
 }
 
 // ---------------------------------------------------------------------------
@@ -314,10 +323,13 @@ pub enum UpdatesCheckOutcome {
 /// Launch an update check through the shared `JobExecutor`.
 pub fn dispatch_updates_check(
     executor: &Arc<JobExecutor>,
+    on_progress: impl Fn(&maintainer_core::jobs::JobProgress) + 'static,
     on_done: impl FnOnce(UpdatesCheckOutcome) + 'static,
-) -> CancellationToken {
+) -> (CancellationToken, SharedProgress) {
     let token = CancellationToken::new();
     let token_for_worker = token.clone();
+    let progress = SharedProgress::new();
+    let _progress_for_worker = progress.clone();
 
     let job = move || -> maintainer_core::error::Result<UpdatesCheckOutcome> {
         use maintainer_core::capability::Capability;
@@ -366,9 +378,9 @@ pub fn dispatch_updates_check(
     };
 
     let rx = executor.execute(vec![job]);
-    install_result_poller(rx, on_done);
+    install_progress_poller(rx, progress.clone(), on_progress, on_done);
 
-    token
+    (token, progress)
 }
 
 // ---------------------------------------------------------------------------
@@ -506,6 +518,47 @@ fn install_result_poller<T: 'static>(
         }
         Err(std::sync::mpsc::TryRecvError::Empty) => ControlFlow::Continue,
         Err(std::sync::mpsc::TryRecvError::Disconnected) => ControlFlow::Break,
+    });
+}
+
+/// Installs a timer that both polls progress (via `SharedProgress`) and
+/// checks for job completion. Progress callbacks are invoked on the main
+/// thread at the polling interval, independent of cancel responsiveness.
+fn install_progress_poller<T: 'static>(
+    rx: std::sync::mpsc::Receiver<JobMessage<T>>,
+    progress: SharedProgress,
+    on_progress: impl Fn(&maintainer_core::jobs::JobProgress) + 'static,
+    on_done: impl FnOnce(T) + 'static,
+) {
+    let mut on_done = Some(on_done);
+    glib::timeout_add_local(Duration::from_millis(50), move || {
+        // Poll progress every tick — cheap because SharedProgress throttles internally.
+        if let Some(p) = progress.take_latest() {
+            on_progress(&p);
+        }
+
+        match rx.try_recv() {
+            Ok(JobMessage::Completed(value)) => {
+                // Final progress flush.
+                if let Some(p) = progress.take_latest() {
+                    on_progress(&p);
+                }
+                if let Some(cb) = on_done.take() {
+                    cb(value);
+                }
+                ControlFlow::Break
+            }
+            Ok(JobMessage::Failed(e)) => {
+                eprintln!("job failed: {e}");
+                ControlFlow::Break
+            }
+            Ok(JobMessage::Panicked(msg)) => {
+                eprintln!("job panicked: {msg}");
+                ControlFlow::Break
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => ControlFlow::Continue,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => ControlFlow::Break,
+        }
     });
 }
 

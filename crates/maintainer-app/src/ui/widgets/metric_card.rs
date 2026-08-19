@@ -24,12 +24,9 @@ impl MetricCard {
     ///
     /// If `with_sparkline` is true, a sparkline widget is included below the value.
     pub fn new(title: &str, with_sparkline: bool) -> Self {
-        let container = GtkBox::new(Orientation::Vertical, 4);
+        let container = GtkBox::new(Orientation::Vertical, 8);
         container.add_css_class("maintainer_metric_card");
-        container.set_margin_top(8);
-        container.set_margin_bottom(8);
-        container.set_margin_start(8);
-        container.set_margin_end(8);
+        container.set_hexpand(true);
 
         let title_label = Label::new(Some(title));
         title_label.add_css_class("maintainer_metric_card_title");

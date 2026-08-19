@@ -42,9 +42,10 @@ impl OverviewPage {
         title.set_halign(Align::Start);
         content.append(&title);
 
-        // Metric cards row
+        // Metric cards row — use homogeneous to distribute evenly
         let cards_row = GtkBox::new(Orientation::Horizontal, 12);
         cards_row.set_homogeneous(true);
+        cards_row.set_hexpand(true);
 
         let cpu_card = MetricCard::new("CPU", true);
         cards_row.append(cpu_card.widget());
@@ -75,6 +76,8 @@ impl OverviewPage {
         let empty_label = Label::new(Some("No issues detected"));
         empty_label.add_css_class("maintainer_text_muted");
         empty_label.set_halign(Align::Start);
+        empty_label.set_margin_top(12);
+        empty_label.set_margin_bottom(12);
         attention_box.append(&empty_label);
 
         let root = ScrolledWindow::new();
@@ -146,14 +149,14 @@ impl OverviewPage {
             let empty_label = Label::new(Some("No issues detected"));
             empty_label.add_css_class("maintainer_text_muted");
             empty_label.set_halign(Align::Start);
+            empty_label.set_margin_top(12);
+            empty_label.set_margin_bottom(12);
             self.attention_box.append(&empty_label);
             return;
         }
 
         for item in items {
             let row = GtkBox::new(Orientation::Horizontal, 8);
-            row.set_margin_top(4);
-            row.set_margin_bottom(4);
             row.add_css_class("maintainer_attention_item");
 
             let icon_name = match item.severity {
