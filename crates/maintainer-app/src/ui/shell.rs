@@ -1,6 +1,7 @@
 //! Application shell: main window layout with navigation and page stack.
 
 use std::cell::RefCell;
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -156,6 +157,17 @@ impl Shell {
         // Monitoring timer: sample metrics and update pages
         let overview_ref = Rc::new(overview_page);
         let system_ref = Rc::new(system_page);
+
+        // --- Job dispatch wiring ---
+        // Storage: wire scan and duplicate-scan buttons.
+        Self::wire_storage_dispatch(&storage_page, &runtime);
+        // Cleanup: wire scan button.
+        Self::wire_cleanup_dispatch(&cleanup_page, &runtime);
+        // Updates: wire check button.
+        Self::wire_updates_dispatch(&updates_page, &runtime);
+        // Diagnostics: wire scan button.
+        Self::wire_diagnostics_dispatch(&diagnostics_page, &runtime);
+
         let runtime_for_timer = runtime.clone();
         let overview_for_timer = overview_ref.clone();
         let system_for_timer = system_ref.clone();
@@ -192,7 +204,165 @@ impl Shell {
     ) {
         let tick_counter: Rc<RefCell<u32>> = Rc::new(RefCell::new(0));
 
-        // 1-second tick provides sub-interval granularity for dynamic switching.
+        // std channel: worker sends snapshots, main thread polls in the timer.
+        let (snapshot_tx, snapshot_rx) =
+            std::sync::mpsc::channel::<Box<maintainer_core::metrics::SystemSnapshot>>();
+
+        // Bounded request channel (capacity=1) provides tick coalescing.
+        let (request_tx, request_rx) = std::sync::mpsc::sync_channel::<()>(1);
+
+        // Worker thread owns its own metric state.
+        std::thread::Builder::new()
+            .name("metric-worker".into())
+            .spawn(move || {
+                use maintainer_core::capability::{Capability, UnavailableReason};
+                use maintainer_core::metrics::disk::read_mounts_with_capacity;
+                use maintainer_core::metrics::network::NetCounters;
+                use maintainer_core::metrics::{
+                    CpuSample, NetworkSnapshot, SystemSnapshot, compute_cpu_snapshot,
+                    read_cpu_sample, read_memory, read_net_dev, read_processes, read_temperatures,
+                };
+                use std::collections::HashMap;
+                use std::path::Path;
+                use std::time::Instant;
+
+                let proc_path = Path::new("/proc");
+                let sys_path = Path::new("/sys");
+                let mut prev_cpu: Option<CpuSample> = None;
+                let mut prev_net: Option<(HashMap<String, NetCounters>, Instant)> = None;
+
+                while request_rx.recv().is_ok() {
+                    // Drain coalesced ticks.
+                    while request_rx.try_recv().is_ok() {}
+
+                    let now = Instant::now();
+
+                    let cpu = match read_cpu_sample(proc_path, now) {
+                        Ok(sample) => {
+                            let snapshot = match &prev_cpu {
+                                Some(prev) => compute_cpu_snapshot(prev, &sample),
+                                None => maintainer_core::metrics::CpuSnapshot {
+                                    total_percent: 0.0,
+                                    per_core_percent: vec![0.0; sample.cores.len()],
+                                },
+                            };
+                            prev_cpu = Some(sample);
+                            Capability::Available(snapshot)
+                        }
+                        Err(e) => Capability::Unavailable(UnavailableReason {
+                            code: "proc-stat-read",
+                            message: e.to_string(),
+                            remediation: None,
+                        }),
+                    };
+
+                    let memory = match read_memory(proc_path) {
+                        Ok(m) => Capability::Available(m),
+                        Err(e) => Capability::Unavailable(UnavailableReason {
+                            code: "meminfo-read",
+                            message: e.to_string(),
+                            remediation: None,
+                        }),
+                    };
+
+                    let disks = match read_mounts_with_capacity(proc_path) {
+                        Ok(d) => Capability::Available(d),
+                        Err(e) => Capability::Unavailable(UnavailableReason {
+                            code: "mounts-read",
+                            message: e.to_string(),
+                            remediation: None,
+                        }),
+                    };
+
+                    let network = match read_net_dev(proc_path) {
+                        Ok(counters) => {
+                            let prev = prev_net.take();
+                            let snapshots: Vec<NetworkSnapshot> = counters
+                                .iter()
+                                .map(|(iface, c)| {
+                                    let (rx_rate, tx_rate) = match &prev {
+                                        Some((prev_counters, prev_time)) => {
+                                            let elapsed =
+                                                now.duration_since(*prev_time).as_secs_f64();
+                                            if elapsed > 0.0 {
+                                                if let Some(pc) = prev_counters.get(iface) {
+                                                    let rx =
+                                                        (c.rx_bytes.saturating_sub(pc.rx_bytes))
+                                                            as f64
+                                                            / elapsed;
+                                                    let tx =
+                                                        (c.tx_bytes.saturating_sub(pc.tx_bytes))
+                                                            as f64
+                                                            / elapsed;
+                                                    (Some(rx), Some(tx))
+                                                } else {
+                                                    (None, None)
+                                                }
+                                            } else {
+                                                (None, None)
+                                            }
+                                        }
+                                        None => (None, None),
+                                    };
+                                    NetworkSnapshot {
+                                        interface: iface.clone(),
+                                        is_loopback: iface == "lo",
+                                        rx_bytes: c.rx_bytes,
+                                        tx_bytes: c.tx_bytes,
+                                        rx_packets: c.rx_packets,
+                                        tx_packets: c.tx_packets,
+                                        rx_errors: c.rx_errors,
+                                        tx_errors: c.tx_errors,
+                                        rx_bytes_per_sec: rx_rate,
+                                        tx_bytes_per_sec: tx_rate,
+                                    }
+                                })
+                                .collect();
+                            prev_net = Some((counters, now));
+                            Capability::Available(snapshots)
+                        }
+                        Err(e) => Capability::Unavailable(UnavailableReason {
+                            code: "net-dev-read",
+                            message: e.to_string(),
+                            remediation: None,
+                        }),
+                    };
+
+                    let temperatures = match read_temperatures(sys_path) {
+                        Ok(t) => Capability::Available(t),
+                        Err(e) => Capability::Unavailable(UnavailableReason {
+                            code: "hwmon-read",
+                            message: e.to_string(),
+                            remediation: None,
+                        }),
+                    };
+
+                    let processes = match read_processes(proc_path) {
+                        Ok(p) => Capability::Available(p),
+                        Err(e) => Capability::Unavailable(UnavailableReason {
+                            code: "proc-read",
+                            message: e.to_string(),
+                            remediation: None,
+                        }),
+                    };
+
+                    let snapshot = SystemSnapshot {
+                        cpu,
+                        memory,
+                        disks,
+                        network,
+                        temperatures,
+                        processes,
+                    };
+
+                    if snapshot_tx.send(Box::new(snapshot)).is_err() {
+                        break;
+                    }
+                }
+            })
+            .expect("failed to spawn metric-worker thread");
+
+        // Timer tick: request samples and drain results.
         glib::timeout_add_local(Duration::from_secs(1), move || {
             let mut rt = runtime.borrow_mut();
             let immediate = rt.monitoring.immediate_sample_pending;
@@ -203,6 +373,14 @@ impl Shell {
 
             let should_sample = immediate || *ticks >= interval_secs;
 
+            // Drain any ready snapshots from the worker.
+            while let Ok(snapshot) = snapshot_rx.try_recv() {
+                rt.monitoring
+                    .reduce(MonitoringMessage::SnapshotReady(snapshot));
+                overview.update(&rt.monitoring.overview);
+                system.update(&rt.monitoring.system);
+            }
+
             if !should_sample {
                 return ControlFlow::Continue;
             }
@@ -210,12 +388,8 @@ impl Shell {
             *ticks = 0;
             rt.monitoring.immediate_sample_pending = false;
 
-            let snapshot = rt.collect_snapshot();
-            rt.monitoring
-                .reduce(MonitoringMessage::SnapshotReady(Box::new(snapshot)));
-
-            overview.update(&rt.monitoring.overview);
-            system.update(&rt.monitoring.system);
+            // Non-blocking: if worker is busy, this tick coalesces.
+            let _ = request_tx.try_send(());
 
             ControlFlow::Continue
         });
@@ -322,6 +496,126 @@ impl Shell {
         });
 
         sidebar_container.append(&sidebar);
+    }
+
+    /// Wire storage page buttons to JobExecutor-backed dispatch.
+    fn wire_storage_dispatch(storage_page: &StoragePage, runtime: &RuntimeHandle) {
+        use crate::dispatch;
+        use crate::state::ScanJobId;
+
+        let active_token: Rc<RefCell<Option<maintainer_core::jobs::CancellationToken>>> =
+            Rc::new(RefCell::new(None));
+        let dup_active_token: Rc<RefCell<Option<maintainer_core::jobs::CancellationToken>>> =
+            Rc::new(RefCell::new(None));
+
+        // Storage scan button.
+        let runtime_for_scan = runtime.clone();
+        let token_ref = active_token.clone();
+        storage_page.overview.connect_scan(move || {
+            let rt = runtime_for_scan.borrow();
+            let settings = rt.settings.clone();
+            let executor = rt.executor.clone();
+            drop(rt);
+
+            let root = PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/home".to_string()));
+            let mut policy = maintainer_core::storage::ScanPolicy::with_roots(vec![root]);
+            policy.large_file_threshold_bytes = settings.large_file_threshold_bytes;
+            for excl in &settings.scan_exclusions {
+                policy.exclusions.push(PathBuf::from(excl));
+            }
+
+            let job_id = ScanJobId(1);
+            let token = dispatch::dispatch_storage_scan(&executor, job_id, policy, |_result| {
+                // Result delivered; UI update handled through state.
+            });
+            *token_ref.borrow_mut() = Some(token);
+        });
+
+        // Cancel.
+        let cancel_token_ref = active_token.clone();
+        storage_page.overview.connect_cancel(move || {
+            if let Some(token) = cancel_token_ref.borrow().as_ref() {
+                token.cancel();
+            }
+        });
+
+        // Duplicate scan button.
+        let runtime_for_dup = runtime.clone();
+        let dup_token_ref = dup_active_token.clone();
+        storage_page.overview.connect_duplicate_scan(move || {
+            let rt = runtime_for_dup.borrow();
+            let settings = rt.settings.clone();
+            let executor = rt.executor.clone();
+            drop(rt);
+
+            let root = PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/home".to_string()));
+            let mut policy = maintainer_core::storage::ScanPolicy::with_roots(vec![root]);
+            policy.large_file_threshold_bytes = settings.large_file_threshold_bytes;
+
+            let job_id = ScanJobId(2);
+            let token = dispatch::dispatch_duplicate_scan(&executor, job_id, policy, |_result| {});
+            *dup_token_ref.borrow_mut() = Some(token);
+        });
+    }
+
+    /// Wire cleanup page scan button to dispatch.
+    fn wire_cleanup_dispatch(cleanup_page: &CleanupPage, runtime: &RuntimeHandle) {
+        use crate::dispatch;
+
+        let active_token: Rc<RefCell<Option<maintainer_core::jobs::CancellationToken>>> =
+            Rc::new(RefCell::new(None));
+        let token_ref = active_token.clone();
+        let runtime_ref = runtime.clone();
+
+        cleanup_page.scan_button().connect_clicked(move |btn| {
+            btn.set_sensitive(false);
+            let btn_ref = btn.clone();
+            let executor = runtime_ref.borrow().executor.clone();
+            let token = dispatch::dispatch_cleanup_scan(&executor, move |_outcome| {
+                btn_ref.set_sensitive(true);
+            });
+            *token_ref.borrow_mut() = Some(token);
+        });
+    }
+
+    /// Wire updates page check button to dispatch.
+    fn wire_updates_dispatch(updates_page: &UpdatesPage, runtime: &RuntimeHandle) {
+        use crate::dispatch;
+
+        let active_token: Rc<RefCell<Option<maintainer_core::jobs::CancellationToken>>> =
+            Rc::new(RefCell::new(None));
+        let token_ref = active_token.clone();
+        let runtime_ref = runtime.clone();
+
+        updates_page.check_button().connect_clicked(move |btn| {
+            btn.set_sensitive(false);
+            let btn_ref = btn.clone();
+            let executor = runtime_ref.borrow().executor.clone();
+            let token = dispatch::dispatch_updates_check(&executor, move |_outcome| {
+                btn_ref.set_sensitive(true);
+            });
+            *token_ref.borrow_mut() = Some(token);
+        });
+    }
+
+    /// Wire diagnostics page scan button to dispatch.
+    fn wire_diagnostics_dispatch(diagnostics_page: &DiagnosticsPage, runtime: &RuntimeHandle) {
+        use crate::dispatch;
+
+        let active_token: Rc<RefCell<Option<maintainer_core::jobs::CancellationToken>>> =
+            Rc::new(RefCell::new(None));
+        let token_ref = active_token.clone();
+        let runtime_ref = runtime.clone();
+
+        diagnostics_page.scan_button().connect_clicked(move |btn| {
+            btn.set_sensitive(false);
+            let btn_ref = btn.clone();
+            let executor = runtime_ref.borrow().executor.clone();
+            let token = dispatch::dispatch_diagnostics_scan(&executor, move |_outcome| {
+                btn_ref.set_sensitive(true);
+            });
+            *token_ref.borrow_mut() = Some(token);
+        });
     }
 }
 

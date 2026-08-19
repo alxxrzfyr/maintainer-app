@@ -22,6 +22,7 @@ pub use crate::metrics::cpu::{
 };
 pub use crate::metrics::disk::{
     DiskIoCounters, DiskSnapshot, MountEntry, read_diskstats, read_mounts,
+    read_mounts_with_capacity,
 };
 pub use crate::metrics::memory::{MemorySnapshot, read_memory};
 pub use crate::metrics::network::{NetCounters, NetworkSnapshot, read_net_dev};

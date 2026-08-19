@@ -6,7 +6,7 @@ use std::path::Path;
 use std::time::Instant;
 
 use maintainer_core::metrics::cpu::{compute_cpu_snapshot, read_cpu_sample};
-use maintainer_core::metrics::disk::{read_diskstats, read_mounts};
+use maintainer_core::metrics::disk::{read_diskstats, read_mounts, read_mounts_with_capacity};
 use maintainer_core::metrics::memory::read_memory;
 use maintainer_core::metrics::network::read_net_dev;
 use maintainer_core::metrics::processes::read_processes;
@@ -108,4 +108,42 @@ fn host_temperatures_no_panic() {
             );
         }
     }
+}
+
+#[test]
+#[ignore]
+fn host_disk_capacity_reports_nonzero_for_root() {
+    let snapshots = read_mounts_with_capacity(Path::new("/proc")).unwrap();
+    assert!(!snapshots.is_empty(), "should find at least one disk");
+
+    let root = snapshots.iter().find(|d| d.mount_point == "/");
+    assert!(root.is_some(), "should find root mount");
+
+    let root = root.unwrap();
+    assert!(
+        root.total_bytes > 0,
+        "root total_bytes should be > 0, got {}",
+        root.total_bytes
+    );
+    assert!(
+        root.available_bytes > 0,
+        "root available_bytes should be > 0, got {}",
+        root.available_bytes
+    );
+    assert!(
+        root.used_bytes > 0,
+        "root used_bytes should be > 0, got {}",
+        root.used_bytes
+    );
+    assert!(
+        root.total_bytes >= root.used_bytes,
+        "total >= used: {} >= {}",
+        root.total_bytes,
+        root.used_bytes
+    );
+
+    eprintln!(
+        "Root filesystem: total={} used={} available={}",
+        root.total_bytes, root.used_bytes, root.available_bytes
+    );
 }

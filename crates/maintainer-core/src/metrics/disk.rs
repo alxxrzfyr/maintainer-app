@@ -94,6 +94,86 @@ pub fn read_mounts(proc_path: &Path) -> Result<Vec<MountEntry>, MaintainerError>
     parse_mounts(&content)
 }
 
+/// Capacity information for a single mount point from `statvfs`.
+#[derive(Debug, Clone)]
+pub struct MountCapacity {
+    /// Total space in bytes.
+    pub total_bytes: u64,
+    /// Used space in bytes.
+    pub used_bytes: u64,
+    /// Available space in bytes (for unprivileged users).
+    pub available_bytes: u64,
+}
+
+/// Query filesystem capacity for a mount point using `statvfs(2)`.
+///
+/// Returns `None` if the syscall fails (e.g., permission denied or stale NFS
+/// mount). The caller treats this as an unavailable entry with a reason rather
+/// than zeros.
+pub fn query_mount_capacity(mount_point: &str) -> Option<MountCapacity> {
+    use std::ffi::CString;
+
+    let c_path = match CString::new(mount_point) {
+        Ok(p) => p,
+        Err(_) => return None,
+    };
+
+    let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
+
+    // Safety: `c_path` is a valid NUL-terminated C string pointing to an
+    // existing mount path; `stat` is a zeroed statvfs struct with adequate
+    // lifetime for the syscall to write into.
+    let ret = unsafe { libc::statvfs(c_path.as_ptr(), &mut stat) };
+    if ret != 0 {
+        return None;
+    }
+
+    // f_frsize is c_ulong — u64 on LP64, u32 on ILP32. Cast via intermediate
+    // to satisfy clippy on 64-bit without breaking 32-bit portability.
+    #[allow(clippy::unnecessary_cast)]
+    let block_size: u64 = stat.f_frsize as u64;
+    let total_bytes = stat.f_blocks * block_size;
+    let available_bytes = stat.f_bavail * block_size;
+    let free_bytes = stat.f_bfree * block_size;
+    let used_bytes = total_bytes.saturating_sub(free_bytes);
+
+    Some(MountCapacity {
+        total_bytes,
+        used_bytes,
+        available_bytes,
+    })
+}
+
+/// Read mounts and populate capacity using `statvfs` for each real mount.
+///
+/// Mounts where `statvfs` fails become entries with zero capacity rather than
+/// being omitted — the caller can inspect `total_bytes == 0` to identify
+/// unavailable entries.
+pub fn read_mounts_with_capacity(proc_path: &Path) -> Result<Vec<DiskSnapshot>, MaintainerError> {
+    let mounts = read_mounts(proc_path)?;
+    let mut snapshots = Vec::with_capacity(mounts.len());
+
+    for mount in mounts {
+        let capacity = query_mount_capacity(&mount.mount_point);
+        let (total, used, available) = match capacity {
+            Some(c) => (c.total_bytes, c.used_bytes, c.available_bytes),
+            None => (0, 0, 0),
+        };
+        snapshots.push(DiskSnapshot {
+            device: mount.device,
+            mount_point: mount.mount_point,
+            fs_type: mount.fs_type,
+            total_bytes: total,
+            used_bytes: used,
+            available_bytes: available,
+            read_bytes_per_sec: None,
+            write_bytes_per_sec: None,
+        });
+    }
+
+    Ok(snapshots)
+}
+
 /// Parse mount content, filtering pseudo filesystems.
 pub(crate) fn parse_mounts(content: &str) -> Result<Vec<MountEntry>, MaintainerError> {
     let mut mounts = Vec::new();

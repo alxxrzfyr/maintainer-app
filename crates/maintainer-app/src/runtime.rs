@@ -10,7 +10,8 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use maintainer_core::capability::{Capability, UnavailableReason};
-use maintainer_core::metrics::disk::{DiskSnapshot, read_mounts};
+use maintainer_core::jobs::JobExecutor;
+use maintainer_core::metrics::disk::{DiskSnapshot, read_mounts_with_capacity};
 use maintainer_core::metrics::network::NetCounters;
 use maintainer_core::metrics::{
     CpuSample, NetworkSnapshot, SystemSnapshot, compute_cpu_snapshot, read_cpu_sample, read_memory,
@@ -35,6 +36,8 @@ pub struct Runtime {
     pub settings: SettingsSnapshot,
     /// Live monitoring state.
     pub monitoring: MonitoringState,
+    /// Shared job executor for on-demand work (bounded concurrency).
+    pub executor: Arc<JobExecutor>,
     /// Previous CPU sample for delta computation.
     prev_cpu_sample: Option<CpuSample>,
     /// Previous network counters and timestamp for rate computation.
@@ -55,11 +58,17 @@ impl Runtime {
 
         let settings = load_settings_from_db(db.as_deref());
 
+        // 4 workers: enough concurrency for independent scans without
+        // saturating a low-end system.
+        let executor =
+            Arc::new(JobExecutor::new(4).expect("max_workers > 0 is guaranteed at compile time"));
+
         Rc::new(RefCell::new(Runtime {
             db,
             db_failure,
             settings,
             monitoring: MonitoringState::default(),
+            executor,
             prev_cpu_sample: None,
             prev_net: None,
         }))
@@ -216,23 +225,8 @@ fn collect_memory(proc_path: &Path) -> Capability<maintainer_core::metrics::Memo
 }
 
 fn collect_disks(proc_path: &Path) -> Capability<Vec<DiskSnapshot>> {
-    match read_mounts(proc_path) {
-        Ok(mounts) => {
-            let disks: Vec<DiskSnapshot> = mounts
-                .into_iter()
-                .map(|mount| DiskSnapshot {
-                    device: mount.device,
-                    mount_point: mount.mount_point,
-                    fs_type: mount.fs_type,
-                    total_bytes: 0,
-                    used_bytes: 0,
-                    available_bytes: 0,
-                    read_bytes_per_sec: None,
-                    write_bytes_per_sec: None,
-                })
-                .collect();
-            Capability::Available(disks)
-        }
+    match read_mounts_with_capacity(proc_path) {
+        Ok(disks) => Capability::Available(disks),
         Err(e) => Capability::Unavailable(UnavailableReason {
             code: "mounts-read",
             message: e.to_string(),
