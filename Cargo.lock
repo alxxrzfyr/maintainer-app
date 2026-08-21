@@ -906,7 +906,7 @@ checksum = "df1d3c3b53da64cf5760482273a98e575c651a67eec7f77df96b5b642de8f039"
 
 [[package]]
 name = "maintainer-app"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "gio",
  "glib",
@@ -918,7 +918,7 @@ dependencies = [
 
 [[package]]
 name = "maintainer-core"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "blake3",
  "libc",
@@ -932,7 +932,7 @@ dependencies = [
 
 [[package]]
 name = "maintainer-helper"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "libc",
  "maintainer-core",
