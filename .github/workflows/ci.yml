@@ -60,6 +60,14 @@ jobs:
   package:
     needs: check
     runs-on: ubuntu-22.04
+    # Required by the "Upload to release" step below: softprops/action-gh-release
+    # creates a release and attaches artifacts, which needs write access to
+    # repository contents. GITHUB_TOKEN defaults to read-only when the
+    # repository or organisation sets read-only workflow permissions, in which
+    # case every build step succeeds and only the upload fails. Scoped to this
+    # job so the other jobs keep the read-only default.
+    permissions:
+      contents: write
     if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main'
     steps:
       - uses: actions/checkout@v4
