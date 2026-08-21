@@ -9,7 +9,7 @@ members = [
 [workspace.package]
 edition = "2024"
 rust-version = "1.85"
-license = "GPL-3.0-or-later"
+license = "MIT"
 
 [workspace.dependencies]
 blake3 = "=1.8.2"
