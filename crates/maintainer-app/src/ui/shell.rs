@@ -388,6 +388,23 @@ impl Shell {
             })
             .expect("failed to spawn metric-worker thread");
 
+        // Refresh a page as soon as it becomes visible. Because the timer only
+        // updates the visible page, a page switched to would otherwise show
+        // whatever it rendered when it was last visible until the next tick.
+        {
+            let runtime_for_switch = runtime.clone();
+            let overview_for_switch = overview.clone();
+            let system_for_switch = system.clone();
+            page_stack.connect_visible_child_name_notify(move |stack| {
+                let rt = runtime_for_switch.borrow();
+                match stack.visible_child_name().as_deref() {
+                    Some("Overview") => overview_for_switch.update(&rt.monitoring.overview),
+                    Some("System") => system_for_switch.update(&rt.monitoring.system),
+                    _ => {}
+                }
+            });
+        }
+
         // Timer tick: request samples and drain results.
         glib::timeout_add_local(Duration::from_secs(1), move || {
             let mut rt = runtime.borrow_mut();
@@ -400,11 +417,22 @@ impl Shell {
             let should_sample = immediate || *ticks >= interval_secs;
 
             // Drain any ready snapshots from the worker.
+            // Only refresh the page the user is actually looking at: both
+            // update() paths rebuild widget subtrees (the temperature flow and
+            // process rows are torn down and recreated), which dirties the
+            // frame and forces a repaint. Doing that for a hidden page costs
+            // CPU and changes nothing on screen. The view models are still
+            // updated by reduce(), so switching pages shows current data.
+            let visible_page = page_stack.visible_child_name();
+            let visible_page = visible_page.as_deref();
             while let Ok(snapshot) = snapshot_rx.try_recv() {
                 rt.monitoring
                     .reduce(MonitoringMessage::SnapshotReady(snapshot));
-                overview.update(&rt.monitoring.overview);
-                system.update(&rt.monitoring.system);
+                match visible_page {
+                    Some("Overview") => overview.update(&rt.monitoring.overview),
+                    Some("System") => system.update(&rt.monitoring.system),
+                    _ => {}
+                }
             }
 
             if !should_sample {

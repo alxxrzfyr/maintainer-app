@@ -100,8 +100,8 @@ sleep 3
 if kill -0 "$APP_PID" 2>/dev/null; then
     pass "Application survived initial 3s"
 else
-    wait "$APP_PID" 2>/dev/null
-    EXIT_CODE=$?
+    EXIT_CODE=0
+    wait "$APP_PID" 2>/dev/null || EXIT_CODE=$?
     fail "Application crashed within 3s (exit code: $EXIT_CODE)"
 fi
 
@@ -111,8 +111,8 @@ if [[ -n "${APP_PID:-}" ]] && kill -0 "$APP_PID" 2>/dev/null; then
     if kill -0 "$APP_PID" 2>/dev/null; then
         pass "Application survived ${TIMEOUT_SECS}s without crash"
     else
-        wait "$APP_PID" 2>/dev/null
-        EXIT_CODE=$?
+        EXIT_CODE=0
+        wait "$APP_PID" 2>/dev/null || EXIT_CODE=$?
         fail "Application crashed during smoke period (exit code: $EXIT_CODE)"
     fi
 fi
@@ -132,8 +132,8 @@ if [[ -n "${APP_PID:-}" ]] && kill -0 "$APP_PID" 2>/dev/null; then
         fail "Application did not exit within 5s of SIGTERM"
         kill -9 "$APP_PID" 2>/dev/null || true
     else
-        wait "$APP_PID" 2>/dev/null
-        EXIT_CODE=$?
+        EXIT_CODE=0
+        wait "$APP_PID" 2>/dev/null || EXIT_CODE=$?
         if [[ $EXIT_CODE -eq 0 || $EXIT_CODE -eq 143 ]]; then
             pass "Application exited cleanly on SIGTERM (code: $EXIT_CODE)"
         else
