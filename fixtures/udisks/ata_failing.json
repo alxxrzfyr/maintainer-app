@@ -1,0 +1,33 @@
+{
+  "object_path": "/org/freedesktop/UDisks2/drives/WDC_WD20EARS_FAILING",
+  "model": "WDC WD20EARS-00MVWB0",
+  "firmware": "51.0AB51",
+  "serial": "WD-WMAZA0001234",
+  "removable": false,
+  "smart_supported": true,
+  "smart_enabled": true,
+  "smart_overall_passed": false,
+  "temperature_kelvin": 323.15,
+  "power_on_hours": 54321,
+  "smart_updated_unix": 1723900000,
+  "attributes": [
+    {
+      "id": 5,
+      "name": "Reallocated_Sector_Ct",
+      "value": 10,
+      "worst": 10,
+      "threshold": 36,
+      "raw": 512,
+      "pre_fail": true
+    },
+    {
+      "id": 197,
+      "name": "Current_Pending_Sector",
+      "value": 5,
+      "worst": 5,
+      "threshold": 10,
+      "raw": 128,
+      "pre_fail": true
+    }
+  ]
+}

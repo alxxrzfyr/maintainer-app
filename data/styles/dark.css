@@ -1,0 +1,360 @@
+/* Maintainer — Dark Theme Design Tokens
+ *
+ * GTK CSS semantic tokens from DESIGN.md.
+ * Class names use maintainer_ prefix (underscore).
+ */
+
+/* Named colors — dark palette */
+@define-color maintainer_bg #111419;
+@define-color maintainer_surface #191D23;
+@define-color maintainer_surface_alt #232932;
+@define-color maintainer_text #F1F3F5;
+@define-color maintainer_text_muted #B4BDC8;
+@define-color maintainer_accent #8BB4FF;
+@define-color maintainer_success #63D3A0;
+@define-color maintainer_warning #F0B65A;
+@define-color maintainer_danger #FF8A80;
+@define-color maintainer_border #353C47;
+@define-color maintainer_focus #A9C7FF;
+
+/* Window and page background */
+.maintainer_window {
+    background-color: @maintainer_bg;
+    color: @maintainer_text;
+}
+
+/* Surface (cards, panels) */
+.maintainer_surface {
+    background-color: @maintainer_surface;
+    border-radius: 10px;
+    border: 1px solid @maintainer_border;
+}
+
+/* Alternate surface */
+.maintainer_surface_alt {
+    background-color: @maintainer_surface_alt;
+}
+
+/* Text styles */
+.maintainer_text_muted {
+    color: @maintainer_text_muted;
+}
+
+/* Sidebar */
+.maintainer_sidebar {
+    background-color: @maintainer_surface;
+    border-right: 1px solid @maintainer_border;
+}
+
+.maintainer_sidebar_container {
+    background-color: @maintainer_surface;
+    border-right: 1px solid @maintainer_border;
+}
+
+/* Navigation buttons */
+.maintainer_nav_button {
+    background: none;
+    border: none;
+    border-radius: 6px;
+    padding: 8px 12px;
+    min-height: 40px;
+    color: @maintainer_text;
+}
+
+.maintainer_nav_button:hover {
+    background-color: @maintainer_surface_alt;
+}
+
+.maintainer_nav_active {
+    background-color: @maintainer_surface_alt;
+    color: @maintainer_accent;
+}
+
+.maintainer_nav_active image {
+    color: @maintainer_accent;
+}
+
+/* Navigation group label */
+.maintainer_nav_group_label {
+    font-size: 12px;
+    font-weight: 600;
+    color: @maintainer_text_muted;
+}
+
+/* Content area */
+.maintainer_content_area {
+    background-color: @maintainer_bg;
+    padding: 24px;
+}
+
+/* Page title */
+.maintainer_page_title {
+    font-size: 28px;
+    font-weight: 700;
+    color: @maintainer_text;
+}
+
+/* Section title */
+.maintainer_section_title {
+    font-size: 16px;
+    font-weight: 600;
+    color: @maintainer_text;
+}
+
+/* ---- Metric Cards ---- */
+.maintainer_metric_card {
+    background-color: @maintainer_surface;
+    border: 1px solid @maintainer_border;
+    border-radius: 10px;
+    padding: 16px;
+    min-width: 160px;
+}
+
+.maintainer_metric_card_title {
+    font-size: 12px;
+    font-weight: 600;
+    color: @maintainer_text_muted;
+    letter-spacing: 0.5px;
+}
+
+.maintainer_metric_card_value {
+    font-size: 28px;
+    font-weight: 700;
+    color: @maintainer_text;
+}
+
+/* ---- Sparkline ---- */
+.maintainer_sparkline {
+    border-radius: 6px;
+    background-color: alpha(@maintainer_accent, 0.06);
+    margin-top: 8px;
+}
+
+/* ---- Temperature Section ---- */
+.maintainer_temperature_box {
+    padding: 4px 0;
+}
+
+.maintainer_temperature_chip {
+    background-color: @maintainer_surface;
+    border: 1px solid @maintainer_border;
+    border-radius: 8px;
+    padding: 8px 14px;
+}
+
+.maintainer_temperature_label {
+    font-size: 12px;
+    color: @maintainer_text_muted;
+    font-weight: 500;
+}
+
+.maintainer_temperature_value {
+    font-size: 16px;
+    font-weight: 600;
+    color: @maintainer_text;
+}
+
+.maintainer_temperature_warning {
+    color: @maintainer_warning;
+}
+
+.maintainer_temperature_critical {
+    color: @maintainer_danger;
+}
+
+/* ---- Process Table ---- */
+.maintainer_process_list {
+    background-color: @maintainer_surface;
+    border: 1px solid @maintainer_border;
+    border-radius: 10px;
+    padding: 4px;
+}
+
+.maintainer_process_header {
+    padding: 10px 12px;
+    border-bottom: 1px solid @maintainer_border;
+}
+
+.maintainer_process_header label {
+    font-size: 12px;
+    font-weight: 600;
+    color: @maintainer_text_muted;
+}
+
+.maintainer_process_row {
+    padding: 8px 12px;
+    border-radius: 6px;
+    min-height: 36px;
+}
+
+.maintainer_process_row:hover {
+    background-color: @maintainer_surface_alt;
+}
+
+.maintainer_process_row_alt {
+    background-color: alpha(@maintainer_surface_alt, 0.5);
+}
+
+.maintainer_process_row label {
+    font-size: 13px;
+}
+
+.maintainer_process_pid {
+    font-size: 12px;
+    color: @maintainer_text_muted;
+    font-family: monospace;
+}
+
+.maintainer_process_memory {
+    font-size: 12px;
+    color: @maintainer_text_muted;
+    font-family: monospace;
+}
+
+/* ---- Sort Buttons ---- */
+.maintainer_sort_button {
+    background: none;
+    border: 1px solid @maintainer_border;
+    border-radius: 6px;
+    padding: 4px 10px;
+    font-size: 12px;
+    font-weight: 500;
+    color: @maintainer_text_muted;
+    min-height: 28px;
+}
+
+.maintainer_sort_button:hover {
+    background-color: @maintainer_surface_alt;
+    color: @maintainer_text;
+}
+
+.maintainer_sort_active {
+    background-color: alpha(@maintainer_accent, 0.12);
+    border-color: @maintainer_accent;
+    color: @maintainer_accent;
+    font-weight: 600;
+}
+
+/* ---- Terminate Button ---- */
+.maintainer_terminate_button {
+    background: none;
+    border: 1px solid @maintainer_border;
+    border-radius: 6px;
+    padding: 4px 8px;
+    font-size: 11px;
+    color: @maintainer_danger;
+    min-height: 24px;
+    min-width: 40px;
+}
+
+.maintainer_terminate_button:hover {
+    background-color: alpha(@maintainer_danger, 0.1);
+    border-color: @maintainer_danger;
+}
+
+/* ---- Attention Items ---- */
+.maintainer_attention_list {
+    background-color: @maintainer_surface;
+    border: 1px solid @maintainer_border;
+    border-radius: 10px;
+    padding: 8px;
+}
+
+.maintainer_attention_item {
+    padding: 8px 12px;
+    border-radius: 6px;
+}
+
+.maintainer_attention_item:hover {
+    background-color: @maintainer_surface_alt;
+}
+
+.maintainer_icon_error {
+    color: @maintainer_danger;
+}
+
+.maintainer_icon_warning {
+    color: @maintainer_warning;
+}
+
+/* ---- Status view ---- */
+.maintainer_status_view {
+    padding: 48px 24px;
+}
+
+.maintainer_status_title {
+    font-size: 16px;
+    font-weight: 600;
+    color: @maintainer_text;
+}
+
+.maintainer_status_description {
+    font-size: 14px;
+    color: @maintainer_text_muted;
+}
+
+.maintainer_status_icon {
+    color: @maintainer_text_muted;
+}
+
+.maintainer_status_failure .maintainer_status_icon,
+.maintainer_status_failure {
+    color: @maintainer_danger;
+}
+
+.maintainer_status_unavailable {
+    color: @maintainer_text_muted;
+}
+
+.maintainer_status_permission {
+    color: @maintainer_warning;
+}
+
+.maintainer_status_cancelled {
+    color: @maintainer_text_muted;
+}
+
+.maintainer_status_loading {
+    color: @maintainer_accent;
+}
+
+.maintainer_status_empty {
+    color: @maintainer_text_muted;
+}
+
+/* Retry button */
+.maintainer_status_retry {
+    background-color: @maintainer_accent;
+    color: #FFFFFF;
+    border-radius: 6px;
+    padding: 8px 16px;
+    min-height: 40px;
+}
+
+.maintainer_status_retry:hover {
+    background-color: shade(@maintainer_accent, 1.1);
+}
+
+/* Focus indicator */
+*:focus-visible {
+    outline: 2px solid @maintainer_focus;
+    outline-offset: 2px;
+}
+
+/* Destructive button */
+.maintainer_destructive {
+    background-color: @maintainer_danger;
+    color: #FFFFFF;
+    border-radius: 6px;
+}
+
+.maintainer_destructive:hover {
+    background-color: shade(@maintainer_danger, 1.1);
+}
+
+/* Metric value styling (legacy) */
+.maintainer_metric_value {
+    font-size: 28px;
+    font-weight: 700;
+    color: @maintainer_text;
+}

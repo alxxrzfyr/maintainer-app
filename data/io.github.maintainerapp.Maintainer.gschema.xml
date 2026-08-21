@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="io.github.maintainerapp.Maintainer" path="/io/github/maintainerapp/Maintainer/">
+
+    <key name="theme" type="s">
+      <default>'system'</default>
+      <summary>Theme preference</summary>
+      <description>Application theme: 'system', 'light', or 'dark'.</description>
+    </key>
+
+    <key name="refresh-interval-secs" type="u">
+      <default>2</default>
+      <range min="1" max="60"/>
+      <summary>Visible-window refresh interval</summary>
+      <description>How often live metrics update when the window is visible, in seconds.</description>
+    </key>
+
+    <key name="hidden-interval-secs" type="u">
+      <default>10</default>
+      <range min="10" max="60"/>
+      <summary>Hidden-window refresh interval</summary>
+      <description>Minimum refresh interval when the window is hidden, in seconds.</description>
+    </key>
+
+    <key name="large-file-threshold-bytes" type="t">
+      <default>104857600</default>
+      <summary>Large file threshold</summary>
+      <description>Files above this size in bytes appear in storage analysis results.</description>
+    </key>
+
+    <key name="scan-exclusions" type="as">
+      <default>[]</default>
+      <summary>Scan exclusion paths</summary>
+      <description>Directories excluded from storage scans.</description>
+    </key>
+
+  </schema>
+</schemalist>

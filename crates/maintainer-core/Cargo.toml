@@ -1,0 +1,18 @@
+[package]
+name = "maintainer-core"
+version = "1.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+blake3 = { workspace = true }
+libc = "=0.2.172"
+rusqlite = "=0.32.1"
+serde = { workspace = true }
+thiserror = { workspace = true }
+uuid = { version = "=1.16.0", features = ["v4"] }
+zbus = { workspace = true }
+
+[dev-dependencies]
+tempfile = "=3.15.0"

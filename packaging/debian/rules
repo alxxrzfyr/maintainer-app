@@ -1,0 +1,52 @@
+#!/usr/bin/make -f
+
+export DEB_BUILD_MAINT_OPTIONS = hardening=+all
+export CARGO_HOME = $(CURDIR)/debian/.cargo
+
+%:
+	dh $@
+
+override_dh_auto_build:
+	cargo build --workspace --release
+
+override_dh_auto_install:
+	# Application binary
+	install -Dm755 target/release/maintainer-app \
+		debian/maintainer/usr/bin/maintainer
+	# Privileged helper binary
+	install -Dm755 target/release/maintainer-helper \
+		debian/maintainer/usr/libexec/maintainer-helper
+	# Desktop file
+	install -Dm644 data/io.github.maintainerapp.Maintainer.desktop \
+		debian/maintainer/usr/share/applications/io.github.maintainerapp.Maintainer.desktop
+	# AppStream metainfo
+	install -Dm644 data/io.github.maintainerapp.Maintainer.metainfo.xml \
+		debian/maintainer/usr/share/metainfo/io.github.maintainerapp.Maintainer.metainfo.xml
+	# GSettings schema
+	install -Dm644 data/io.github.maintainerapp.Maintainer.gschema.xml \
+		debian/maintainer/usr/share/glib-2.0/schemas/io.github.maintainerapp.Maintainer.gschema.xml
+	# D-Bus system service
+	install -Dm644 data/dbus/io.github.maintainerapp.Helper.service \
+		debian/maintainer/usr/share/dbus-1/system-services/io.github.maintainerapp.Helper.service
+	# Polkit policy
+	install -Dm644 data/polkit/io.github.maintainerapp.policy \
+		debian/maintainer/usr/share/polkit-1/actions/io.github.maintainerapp.policy
+	# Icons
+	install -Dm644 data/icons/hicolor/scalable/apps/io.github.maintainerapp.Maintainer.svg \
+		debian/maintainer/usr/share/icons/hicolor/scalable/apps/io.github.maintainerapp.Maintainer.svg
+	install -Dm644 data/icons/hicolor/symbolic/apps/io.github.maintainerapp.Maintainer-symbolic.svg \
+		debian/maintainer/usr/share/icons/hicolor/symbolic/apps/io.github.maintainerapp.Maintainer-symbolic.svg
+	# Application data directory
+	install -dm755 debian/maintainer/usr/share/maintainer
+	# CSS styles
+	install -Dm644 data/styles/light.css \
+		debian/maintainer/usr/share/maintainer/styles/light.css
+	install -Dm644 data/styles/dark.css \
+		debian/maintainer/usr/share/maintainer/styles/dark.css
+
+override_dh_auto_test:
+	cargo test --workspace --all-features
+
+override_dh_auto_clean:
+	cargo clean || true
+	rm -rf debian/.cargo

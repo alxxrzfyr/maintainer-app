@@ -1,0 +1,13 @@
+pub mod cleanup;
+pub mod diagnostics;
+pub mod dialogs;
+pub mod history;
+pub mod navigation;
+pub mod overview;
+pub mod reports;
+pub mod settings;
+pub mod shell;
+pub mod storage;
+pub mod system;
+pub mod updates;
+pub mod widgets;

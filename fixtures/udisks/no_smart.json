@@ -1,0 +1,14 @@
+{
+  "object_path": "/org/freedesktop/UDisks2/drives/VBOX_HARDDISK_1",
+  "model": "VBOX HARDDISK",
+  "firmware": "1.0",
+  "serial": "VB12345678-abcdef",
+  "removable": false,
+  "smart_supported": false,
+  "smart_enabled": false,
+  "smart_overall_passed": null,
+  "temperature_kelvin": null,
+  "power_on_hours": null,
+  "smart_updated_unix": null,
+  "attributes": []
+}

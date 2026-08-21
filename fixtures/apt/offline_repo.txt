@@ -1,0 +1,8 @@
+Err:1 http://archive.ubuntu.com/ubuntu jammy InRelease
+  Could not resolve 'archive.ubuntu.com'
+Err:2 http://security.ubuntu.com/ubuntu jammy-security InRelease
+  Could not resolve 'security.ubuntu.com'
+Reading package lists...
+W: Failed to fetch http://archive.ubuntu.com/ubuntu/dists/jammy/InRelease  Could not resolve 'archive.ubuntu.com'
+W: Failed to fetch http://security.ubuntu.com/ubuntu/dists/jammy-security/InRelease  Could not resolve 'security.ubuntu.com'
+W: Some index files failed to download. They have been ignored, or old ones used instead.

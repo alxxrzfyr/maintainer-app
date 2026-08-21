@@ -1,0 +1,19 @@
+Reading package lists...
+Building dependency tree...
+Reading state information...
+The following additional packages will be installed:
+  libssl3
+The following packages will be upgraded:
+  curl libcurl4 libssl3 linux-image-generic openssl
+5 upgraded, 0 newly installed, 0 to remove and 0 not upgraded.
+Need to get 85.3 MB of archives.
+Inst curl [7.81.0-1ubuntu1.15] (7.81.0-1ubuntu1.16 Ubuntu:22.04/jammy-security [amd64])
+Inst libcurl4 [7.81.0-1ubuntu1.15] (7.81.0-1ubuntu1.16 Ubuntu:22.04/jammy-security [amd64])
+Inst libssl3 [3.0.2-0ubuntu1.14] (3.0.2-0ubuntu1.15 Ubuntu:22.04/jammy-security [amd64])
+Inst linux-image-generic [5.15.0.100.97] (5.15.0.101.98 Ubuntu:22.04/jammy-updates [amd64])
+Inst openssl [3.0.2-0ubuntu1.14] (3.0.2-0ubuntu1.15 Ubuntu:22.04/jammy-security [amd64])
+Conf curl (7.81.0-1ubuntu1.16 Ubuntu:22.04/jammy-security [amd64])
+Conf libcurl4 (7.81.0-1ubuntu1.16 Ubuntu:22.04/jammy-security [amd64])
+Conf libssl3 (3.0.2-0ubuntu1.15 Ubuntu:22.04/jammy-security [amd64])
+Conf linux-image-generic (5.15.0.101.98 Ubuntu:22.04/jammy-updates [amd64])
+Conf openssl (3.0.2-0ubuntu1.15 Ubuntu:22.04/jammy-security [amd64])

@@ -1,0 +1,51 @@
+{
+  "object_path": "/org/freedesktop/UDisks2/drives/WDC_WD10EZEX_00BN5A0_WD_WMC4N0123456",
+  "model": "WDC WD10EZEX-00BN5A0",
+  "firmware": "01.01A01",
+  "serial": "WD-WMC4N0123456",
+  "removable": false,
+  "smart_supported": true,
+  "smart_enabled": true,
+  "smart_overall_passed": true,
+  "temperature_kelvin": 313.15,
+  "power_on_hours": 12345,
+  "smart_updated_unix": 1723900000,
+  "attributes": [
+    {
+      "id": 5,
+      "name": "Reallocated_Sector_Ct",
+      "value": 100,
+      "worst": 100,
+      "threshold": 36,
+      "raw": 0,
+      "pre_fail": true
+    },
+    {
+      "id": 9,
+      "name": "Power_On_Hours",
+      "value": 80,
+      "worst": 80,
+      "threshold": 0,
+      "raw": 12345,
+      "pre_fail": false
+    },
+    {
+      "id": 197,
+      "name": "Current_Pending_Sector",
+      "value": 100,
+      "worst": 100,
+      "threshold": 0,
+      "raw": 0,
+      "pre_fail": true
+    },
+    {
+      "id": 198,
+      "name": "Offline_Uncorrectable",
+      "value": 100,
+      "worst": 100,
+      "threshold": 0,
+      "raw": 0,
+      "pre_fail": true
+    }
+  ]
+}

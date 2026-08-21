@@ -1,0 +1,24 @@
+{
+  "object_path": "/org/freedesktop/UDisks2/drives/Seagate_ST2000DM001_STALE",
+  "model": "Seagate ST2000DM001-1ER164",
+  "firmware": "CC25",
+  "serial": "Z4Z12345",
+  "removable": false,
+  "smart_supported": true,
+  "smart_enabled": true,
+  "smart_overall_passed": true,
+  "temperature_kelvin": 305.15,
+  "power_on_hours": 30000,
+  "smart_updated_unix": 1720000000,
+  "attributes": [
+    {
+      "id": 5,
+      "name": "Reallocated_Sector_Ct",
+      "value": 100,
+      "worst": 100,
+      "threshold": 36,
+      "raw": 0,
+      "pre_fail": true
+    }
+  ]
+}

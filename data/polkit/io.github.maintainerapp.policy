@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "https://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+  <vendor>Maintainer</vendor>
+  <vendor_url>https://github.com/maintainerapp</vendor_url>
+  <icon_name>maintainer</icon_name>
+
+  <action id="io.github.maintainerapp.terminate-process">
+    <description>Terminate a system process</description>
+    <message>Authentication is required to terminate a system process.</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
+  <action id="io.github.maintainerapp.clean-package-cache">
+    <description>Clean the APT package cache</description>
+    <message>Authentication is required to clean the package cache.</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
+  <action id="io.github.maintainerapp.vacuum-journal">
+    <description>Vacuum the systemd journal</description>
+    <message>Authentication is required to vacuum the system journal.</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
+  <action id="io.github.maintainerapp.refresh-smart">
+    <description>Refresh SMART disk health data</description>
+    <message>Authentication is required to refresh SMART disk data.</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+</policyconfig>

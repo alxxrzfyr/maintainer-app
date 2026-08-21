@@ -1,0 +1,20 @@
+# Binaries
+target/release/maintainer-app usr/bin
+target/release/maintainer-helper usr/libexec
+
+# Desktop integration
+data/io.github.maintainerapp.Maintainer.desktop usr/share/applications
+data/io.github.maintainerapp.Maintainer.metainfo.xml usr/share/metainfo
+data/io.github.maintainerapp.Maintainer.gschema.xml usr/share/glib-2.0/schemas
+
+# D-Bus and Polkit
+data/dbus/io.github.maintainerapp.Helper.service usr/share/dbus-1/system-services
+data/polkit/io.github.maintainerapp.policy usr/share/polkit-1/actions
+
+# Icons
+data/icons/hicolor/scalable/apps/io.github.maintainerapp.Maintainer.svg usr/share/icons/hicolor/scalable/apps
+data/icons/hicolor/symbolic/apps/io.github.maintainerapp.Maintainer-symbolic.svg usr/share/icons/hicolor/symbolic/apps
+
+# Application data
+data/styles/light.css usr/share/maintainer/styles
+data/styles/dark.css usr/share/maintainer/styles

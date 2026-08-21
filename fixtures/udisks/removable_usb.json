@@ -1,0 +1,14 @@
+{
+  "object_path": "/org/freedesktop/UDisks2/drives/Generic_USB_Flash_123",
+  "model": "USB Flash Drive",
+  "firmware": "1.00",
+  "serial": "USB123",
+  "removable": true,
+  "smart_supported": false,
+  "smart_enabled": false,
+  "smart_overall_passed": null,
+  "temperature_kelvin": null,
+  "power_on_hours": null,
+  "smart_updated_unix": null,
+  "attributes": []
+}

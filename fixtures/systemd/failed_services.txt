@@ -1,0 +1,3 @@
+nginx.service loaded failed failed The NGINX HTTP and reverse proxy server
+docker.service loaded failed failed Docker Application Container Engine
+postgresql.service loaded failed failed PostgreSQL RDBMS

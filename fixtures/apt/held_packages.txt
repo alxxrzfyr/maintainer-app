@@ -1,0 +1,13 @@
+Reading package lists...
+Building dependency tree...
+Reading state information...
+The following packages have been kept back:
+  firefox snapd
+The following packages will be upgraded:
+  apt apt-utils
+2 upgraded, 0 newly installed, 0 to remove and 2 not upgraded.
+Need to get 2,456 kB of archives.
+Inst apt [2.4.11] (2.4.12 Ubuntu:22.04/jammy-updates [amd64])
+Inst apt-utils [2.4.11] (2.4.12 Ubuntu:22.04/jammy-updates [amd64])
+Conf apt (2.4.12 Ubuntu:22.04/jammy-updates [amd64])
+Conf apt-utils (2.4.12 Ubuntu:22.04/jammy-updates [amd64])

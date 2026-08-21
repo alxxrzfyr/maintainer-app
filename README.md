@@ -6,7 +6,9 @@ Maintainer is a modern, lightweight native desktop application for monitoring, m
 
 ## Status
 
-Maintainer is in the specification stage. Product scope and design are approved; application source and build tooling have not been scaffolded yet.
+Maintainer is in active development approaching v1 release. The workspace is scaffolded with all three crates (`maintainer-app`, `maintainer-core`, `maintainer-helper`), CI pipeline, packaging, and system tests. Core functionality for monitoring, storage analysis, cleanup, diagnostics, updates, and reporting is implemented. Phase 6 (v1 hardening) is in progress: accessibility review, compatibility testing, performance measurement, and security verification.
+
+Foreground application and screen-time tracking are explicitly deferred from v1.
 
 ## Product direction
 
@@ -88,6 +90,71 @@ Live measurements are not stored unnecessarily. SQLite is reserved for settings,
 - [`CLAUDE.md`](CLAUDE.md): Claude Code-specific guidance
 - [`GEMINI.md`](GEMINI.md): Antigravity CLI-specific guidance
 
+## Installation
+
+### From .deb package
+
+Download the latest `.deb` from the [releases page](https://github.com/maintainerapp/maintainer/releases) and install:
+
+```bash
+sudo apt install ./maintainer_1.0.0-1_amd64.deb
+```
+
+This installs:
+- `/usr/bin/maintainer` — the GUI application (runs unprivileged)
+- `/usr/libexec/maintainer-helper` — the Polkit-gated privileged helper
+- Desktop entry, icons, GSettings schema, D-Bus service, and Polkit policy
+
+### Runtime dependencies
+
+Installed automatically by the `.deb`:
+- GTK4 (≥ 4.6), GLib (≥ 2.72), SQLite3, PolicyKit, PackageKit, systemd
+
+Optional (suggested):
+- `flatpak` — enables Flatpak update inspection
+- `fwupd` — enables firmware update inspection
+
+### Uninstall
+
+```bash
+# Remove binaries and data; user settings preserved
+sudo apt remove maintainer
+
+# Remove everything including user databases
+sudo apt purge maintainer
+```
+
 ## Development
 
-No `Cargo.toml`, source tree, lockfile, CI workflow, or verified development commands exist yet. The implementation plan must define and validate them before this section gains setup instructions.
+### Prerequisites
+
+- `libgtk-4-dev`, `libsqlite3-dev`, `libpolkit-gobject-1-dev`, `pkg-config`
+- The pinned Rust toolchain (1.85.0) is installed automatically by rustup from `rust-toolchain.toml`.
+
+### Commands
+
+```bash
+# Build all workspace members (debug)
+cargo build --workspace
+
+# Build all workspace members (release)
+cargo build --workspace --release
+
+# Run the GUI application (dev mode)
+cargo run -p maintainer-app
+
+# Run the privileged helper (dev mode)
+cargo run -p maintainer-helper
+
+# Format check (must pass before commit)
+cargo fmt --all -- --check
+
+# Lint (must pass before commit)
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+# Test all workspace members
+cargo test --workspace --all-features
+
+# Test a single target
+cargo test -p maintainer-core module::tests::test_name -- --exact
+```

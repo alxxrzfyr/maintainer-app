@@ -1,0 +1,14 @@
+{
+  "object_path": "/org/freedesktop/UDisks2/drives/Samsung_SSD_970_EVO_Plus_1TB_S4EWNX0M123456",
+  "model": "Samsung SSD 970 EVO Plus 1TB",
+  "firmware": "2B2QEXM7",
+  "serial": "S4EWNX0M123456",
+  "removable": false,
+  "smart_supported": true,
+  "smart_enabled": true,
+  "smart_overall_passed": true,
+  "temperature_kelvin": 308.15,
+  "power_on_hours": 5678,
+  "smart_updated_unix": 1723900000,
+  "attributes": []
+}

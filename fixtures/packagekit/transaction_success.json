@@ -1,0 +1,41 @@
+{
+  "transactions": [
+    {
+      "status": "setup",
+      "percentage": 0,
+      "allow_cancel": true,
+      "package_id": null
+    },
+    {
+      "status": "download",
+      "percentage": 25,
+      "allow_cancel": true,
+      "package_id": "curl;7.81.0-1ubuntu1.16;amd64;Ubuntu"
+    },
+    {
+      "status": "download",
+      "percentage": 50,
+      "allow_cancel": true,
+      "package_id": "libssl3;3.0.2-0ubuntu1.15;amd64;Ubuntu"
+    },
+    {
+      "status": "install",
+      "percentage": 75,
+      "allow_cancel": false,
+      "package_id": "curl;7.81.0-1ubuntu1.16;amd64;Ubuntu"
+    },
+    {
+      "status": "install",
+      "percentage": 90,
+      "allow_cancel": false,
+      "package_id": "libssl3;3.0.2-0ubuntu1.15;amd64;Ubuntu"
+    },
+    {
+      "status": "finished",
+      "percentage": 100,
+      "allow_cancel": false,
+      "package_id": null,
+      "restart_required": true
+    }
+  ]
+}
