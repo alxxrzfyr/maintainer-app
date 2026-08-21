@@ -182,7 +182,12 @@ impl Shell {
         });
 
         // Start the sampling timer
-        Self::start_monitoring_timer(runtime_for_timer, overview_for_timer, system_for_timer);
+        Self::start_monitoring_timer(
+            runtime_for_timer,
+            overview_for_timer,
+            system_for_timer,
+            page_stack.clone(),
+        );
 
         Shell { window }
     }
@@ -201,6 +206,7 @@ impl Shell {
         runtime: RuntimeHandle,
         overview: Rc<OverviewPage>,
         system: Rc<SystemPage>,
+        page_stack: Stack,
     ) {
         let tick_counter: Rc<RefCell<u32>> = Rc::new(RefCell::new(0));
 
@@ -209,7 +215,11 @@ impl Shell {
             std::sync::mpsc::channel::<Box<maintainer_core::metrics::SystemSnapshot>>();
 
         // Bounded request channel (capacity=1) provides tick coalescing.
-        let (request_tx, request_rx) = std::sync::mpsc::sync_channel::<()>(1);
+        // The bool signals whether the caller currently needs the per-process
+        // table (only the System page renders it); when false the worker
+        // reuses the last collected process list instead of re-reading all of
+        // /proc/[pid], which is the single most expensive collector per tick.
+        let (request_tx, request_rx) = std::sync::mpsc::sync_channel::<bool>(1);
 
         // Worker thread owns its own metric state.
         std::thread::Builder::new()
@@ -219,8 +229,9 @@ impl Shell {
                 use maintainer_core::metrics::disk::read_mounts_with_capacity;
                 use maintainer_core::metrics::network::NetCounters;
                 use maintainer_core::metrics::{
-                    CpuSample, NetworkSnapshot, SystemSnapshot, compute_cpu_snapshot,
-                    read_cpu_sample, read_memory, read_net_dev, read_processes, read_temperatures,
+                    CpuSample, NetworkSnapshot, ProcessSnapshot, SystemSnapshot,
+                    compute_cpu_snapshot, read_cpu_sample, read_memory, read_net_dev,
+                    read_processes, read_temperatures,
                 };
                 use std::collections::HashMap;
                 use std::path::Path;
@@ -230,10 +241,13 @@ impl Shell {
                 let sys_path = Path::new("/sys");
                 let mut prev_cpu: Option<CpuSample> = None;
                 let mut prev_net: Option<(HashMap<String, NetCounters>, Instant)> = None;
+                let mut last_processes: Option<Capability<Vec<ProcessSnapshot>>> = None;
 
-                while request_rx.recv().is_ok() {
-                    // Drain coalesced ticks.
-                    while request_rx.try_recv().is_ok() {}
+                while let Ok(mut needs_processes) = request_rx.recv() {
+                    // Drain coalesced ticks; keep the most recent request's flag.
+                    while let Ok(latest) = request_rx.try_recv() {
+                        needs_processes = latest;
+                    }
 
                     let now = Instant::now();
 
@@ -337,13 +351,25 @@ impl Shell {
                         }),
                     };
 
-                    let processes = match read_processes(proc_path) {
-                        Ok(p) => Capability::Available(p),
-                        Err(e) => Capability::Unavailable(UnavailableReason {
-                            code: "proc-read",
-                            message: e.to_string(),
-                            remediation: None,
-                        }),
+                    let processes = if needs_processes {
+                        let result = match read_processes(proc_path) {
+                            Ok(p) => Capability::Available(p),
+                            Err(e) => Capability::Unavailable(UnavailableReason {
+                                code: "proc-read",
+                                message: e.to_string(),
+                                remediation: None,
+                            }),
+                        };
+                        last_processes = Some(result.clone());
+                        result
+                    } else {
+                        last_processes.clone().unwrap_or(Capability::Unavailable(
+                            UnavailableReason {
+                                code: "proc-not-requested",
+                                message: "Process list not requested for this sample".into(),
+                                remediation: None,
+                            },
+                        ))
                     };
 
                     let snapshot = SystemSnapshot {
@@ -389,7 +415,10 @@ impl Shell {
             rt.monitoring.immediate_sample_pending = false;
 
             // Non-blocking: if worker is busy, this tick coalesces.
-            let _ = request_tx.try_send(());
+            // Only request the (expensive) per-process list when the System
+            // page is actually visible — it is the only consumer.
+            let needs_processes = page_stack.visible_child_name().as_deref() == Some("System");
+            let _ = request_tx.try_send(needs_processes);
 
             ControlFlow::Continue
         });
