@@ -121,7 +121,7 @@ fi
 info "Test: Graceful shutdown"
 
 if [[ -n "${APP_PID:-}" ]] && kill -0 "$APP_PID" 2>/dev/null; then
-    kill -TERM "$APP_PID"
+    kill -TERM "$APP_PID" 2>/dev/null || true
     WAIT_COUNT=0
     while kill -0 "$APP_PID" 2>/dev/null && [[ $WAIT_COUNT -lt 10 ]]; do
         sleep 0.5
