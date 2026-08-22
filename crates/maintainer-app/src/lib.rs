@@ -6,3 +6,6 @@ pub mod progress;
 pub mod runtime;
 pub mod state;
 pub mod ui;
+
+#[cfg(test)]
+mod regression_tests;

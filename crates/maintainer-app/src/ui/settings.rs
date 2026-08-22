@@ -36,6 +36,19 @@ pub fn build_settings_page(
 
     let on_intent = std::rc::Rc::new(on_intent);
 
+    let title = Label::new(Some("Settings"));
+    title.add_css_class("maintainer_page_title");
+    title.set_halign(Align::Start);
+    container.append(&title);
+
+    let subtitle = Label::new(Some(
+        "Manage application appearance, monitoring frequencies, storage thresholds, and local privacy.",
+    ));
+    subtitle.add_css_class("dim-label");
+    subtitle.set_halign(Align::Start);
+    subtitle.set_wrap(true);
+    container.append(&subtitle);
+
     container.append(&build_group_header("General"));
     container.append(&build_theme_row(snapshot, on_intent.clone()));
     container.append(&Separator::new(Orientation::Horizontal));
@@ -64,19 +77,20 @@ fn build_group_header(title: &str) -> Label {
     let label = Label::new(Some(title));
     label.set_halign(Align::Start);
     label.add_css_class("maintainer_settings_group_header");
-    label.set_markup(&format!("<b>{title}</b>"));
     label
 }
 
 fn build_setting_row(label_text: &str, description: &str) -> (GtkBox, GtkBox) {
-    let row = GtkBox::new(Orientation::Horizontal, 12);
+    let row = GtkBox::new(Orientation::Horizontal, 16);
     row.set_halign(Align::Fill);
     row.set_hexpand(true);
+    row.set_margin_bottom(8);
     row.add_css_class("maintainer_settings_row");
 
     let text_box = GtkBox::new(Orientation::Vertical, 4);
     text_box.set_hexpand(true);
     text_box.set_halign(Align::Start);
+    text_box.set_valign(Align::Center);
 
     let label = Label::new(Some(label_text));
     label.set_halign(Align::Start);
@@ -266,7 +280,7 @@ fn build_privacy_rows(on_intent: std::rc::Rc<dyn Fn(SettingsIntent)>) -> GtkBox 
     delete_all_btn.add_css_class("destructive-action");
     delete_all_btn.set_halign(Align::Start);
     delete_all_btn.set_tooltip_text(Some(
-        "Remove database and generated reports, then recreate defaults",
+        "Remove local settings and maintenance history, then recreate defaults",
     ));
     delete_all_btn.update_property(&[gtk4::accessible::Property::Label(
         "Delete all Maintainer data",

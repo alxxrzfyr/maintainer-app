@@ -1,21 +1,21 @@
-/* Maintainer — Light Theme Design Tokens
+/* Maintainer — Modern Light Theme Design Tokens
  *
  * GTK CSS semantic tokens from DESIGN.md.
  * Class names use maintainer_ prefix (underscore).
  */
 
-/* Named colors — light palette */
-@define-color maintainer_bg #F5F6F8;
+/* Named colors — modern light palette */
+@define-color maintainer_bg #F8FAFC;
 @define-color maintainer_surface #FFFFFF;
-@define-color maintainer_surface_alt #ECEFF3;
-@define-color maintainer_text #1D232B;
-@define-color maintainer_text_muted #5B6673;
-@define-color maintainer_accent #245FD6;
-@define-color maintainer_success #1F7250;
-@define-color maintainer_warning #8A5700;
-@define-color maintainer_danger #B42318;
-@define-color maintainer_border #D7DCE3;
-@define-color maintainer_focus #1B64E8;
+@define-color maintainer_surface_alt #F1F5F9;
+@define-color maintainer_text #0F172A;
+@define-color maintainer_text_muted #64748B;
+@define-color maintainer_accent #2563EB;
+@define-color maintainer_success #059669;
+@define-color maintainer_warning #D97706;
+@define-color maintainer_danger #DC2626;
+@define-color maintainer_border #E2E8F0;
+@define-color maintainer_focus #3B82F6;
 
 /* Window and page background */
 .maintainer_window {
@@ -26,7 +26,7 @@
 /* Surface (cards, panels) */
 .maintainer_surface {
     background-color: @maintainer_surface;
-    border-radius: 10px;
+    border-radius: 12px;
     border: 1px solid @maintainer_border;
 }
 
@@ -55,10 +55,13 @@
 .maintainer_nav_button {
     background: none;
     border: none;
-    border-radius: 6px;
+    border-radius: 8px;
     padding: 8px 12px;
     min-height: 40px;
     color: @maintainer_text;
+    font-size: 13px;
+    font-weight: 500;
+    transition: background-color 120ms ease;
 }
 
 .maintainer_nav_button:hover {
@@ -68,17 +71,36 @@
 .maintainer_nav_active {
     background-color: @maintainer_surface_alt;
     color: @maintainer_accent;
+    font-weight: 700;
+    border: none;
+    padding: 8px 12px;
+}
+
+.maintainer_sidebar_compact .maintainer_nav_active {
+    border: none;
+    padding: 8px;
 }
 
 .maintainer_nav_active image {
     color: @maintainer_accent;
 }
 
+.maintainer_nav_button:focus-visible {
+    outline: 2px solid @maintainer_focus;
+    outline-offset: -2px;
+    border-radius: 8px;
+}
+
 /* Navigation group label */
 .maintainer_nav_group_label {
-    font-size: 12px;
-    font-weight: 600;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
     color: @maintainer_text_muted;
+    padding-left: 8px;
+    margin-top: 14px;
+    margin-bottom: 4px;
 }
 
 /* Content area */
@@ -88,46 +110,120 @@
 }
 
 /* Page title */
-.maintainer_page_title {
-    font-size: 28px;
-    font-weight: 700;
+.maintainer_page_title,
+.title-1 {
+    font-size: 26px;
+    font-weight: 800;
+    letter-spacing: -0.5px;
     color: @maintainer_text;
 }
 
 /* Section title */
-.maintainer_section_title {
-    font-size: 16px;
-    font-weight: 600;
+.maintainer_section_title,
+.title-2,
+.heading {
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: -0.2px;
     color: @maintainer_text;
 }
 
-/* ---- Metric Cards ---- */
+.dim-label {
+    font-size: 13px;
+    color: @maintainer_text_muted;
+}
+
+/* ---- Metric Cards (Modern Bento Style) ---- */
 .maintainer_metric_card {
     background-color: @maintainer_surface;
     border: 1px solid @maintainer_border;
-    border-radius: 10px;
-    padding: 16px;
-    min-width: 160px;
+    border-radius: 12px;
+    padding: 16px 18px;
+    min-width: 170px;
+    transition: border-color 150ms ease;
+}
+
+.maintainer_metric_card:hover {
+    border-color: mix(@maintainer_border, @maintainer_accent, 0.4);
 }
 
 .maintainer_metric_card_title {
-    font-size: 12px;
-    font-weight: 600;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.7px;
     color: @maintainer_text_muted;
-    letter-spacing: 0.5px;
 }
 
 .maintainer_metric_card_value {
     font-size: 28px;
-    font-weight: 700;
+    font-weight: 800;
+    letter-spacing: -0.5px;
+    color: @maintainer_text;
+}
+
+.maintainer_metric_value {
+    font-size: 28px;
+    font-weight: 800;
     color: @maintainer_text;
 }
 
 /* ---- Sparkline ---- */
 .maintainer_sparkline {
-    border-radius: 6px;
+    border-radius: 8px;
     background-color: alpha(@maintainer_accent, 0.04);
     margin-top: 8px;
+    padding: 4px;
+}
+
+/* ---- System Specifications Card ---- */
+.maintainer_spec_card {
+    background-color: @maintainer_surface;
+    border: 1px solid @maintainer_border;
+    border-radius: 12px;
+    padding: 16px 20px;
+}
+
+.maintainer_spec_title {
+    font-size: 16px;
+    font-weight: 800;
+    letter-spacing: -0.2px;
+    color: @maintainer_text;
+    margin-bottom: 2px;
+}
+
+.maintainer_spec_item {
+    padding: 6px 4px;
+}
+
+.maintainer_spec_label {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: @maintainer_text_muted;
+}
+
+.maintainer_spec_value {
+    font-size: 13px;
+    font-weight: 600;
+    color: @maintainer_text;
+}
+
+.maintainer_attention_button {
+    background-color: alpha(@maintainer_accent, 0.1);
+    border: 1px solid alpha(@maintainer_accent, 0.3);
+    color: @maintainer_accent;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 4px 10px;
+    min-height: 28px;
+}
+
+.maintainer_attention_button:hover {
+    background-color: @maintainer_accent;
+    color: #FFFFFF;
 }
 
 /* ---- Temperature Section ---- */
@@ -138,19 +234,27 @@
 .maintainer_temperature_chip {
     background-color: @maintainer_surface;
     border: 1px solid @maintainer_border;
-    border-radius: 8px;
-    padding: 8px 14px;
+    border-radius: 10px;
+    padding: 10px 16px;
+    min-width: 110px;
+    transition: border-color 120ms ease;
+}
+
+.maintainer_temperature_chip:hover {
+    border-color: mix(@maintainer_border, @maintainer_accent, 0.3);
 }
 
 .maintainer_temperature_label {
-    font-size: 12px;
+    font-size: 11px;
     color: @maintainer_text_muted;
-    font-weight: 500;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
 }
 
 .maintainer_temperature_value {
     font-size: 16px;
-    font-weight: 600;
+    font-weight: 700;
     color: @maintainer_text;
 }
 
@@ -166,25 +270,30 @@
 .maintainer_process_list {
     background-color: @maintainer_surface;
     border: 1px solid @maintainer_border;
-    border-radius: 10px;
+    border-radius: 12px;
     padding: 4px;
 }
 
 .maintainer_process_header {
-    padding: 10px 12px;
+    padding: 10px 14px;
     border-bottom: 1px solid @maintainer_border;
+    background-color: alpha(@maintainer_surface_alt, 0.6);
+    border-radius: 8px 8px 0 0;
 }
 
 .maintainer_process_header label {
-    font-size: 12px;
-    font-weight: 600;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.7px;
     color: @maintainer_text_muted;
 }
 
 .maintainer_process_row {
-    padding: 8px 12px;
+    padding: 8px 14px;
     border-radius: 6px;
-    min-height: 36px;
+    min-height: 40px;
+    transition: background-color 80ms ease;
 }
 
 .maintainer_process_row:hover {
@@ -192,7 +301,7 @@
 }
 
 .maintainer_process_row_alt {
-    background-color: alpha(@maintainer_surface_alt, 0.5);
+    background-color: alpha(@maintainer_surface_alt, 0.45);
 }
 
 .maintainer_process_row label {
@@ -203,24 +312,27 @@
     font-size: 12px;
     color: @maintainer_text_muted;
     font-family: monospace;
+    font-weight: 500;
 }
 
 .maintainer_process_memory {
     font-size: 12px;
-    color: @maintainer_text_muted;
+    color: @maintainer_text;
     font-family: monospace;
+    font-weight: 600;
 }
 
 /* ---- Sort Buttons ---- */
 .maintainer_sort_button {
-    background: none;
+    background-color: @maintainer_surface;
     border: 1px solid @maintainer_border;
     border-radius: 6px;
     padding: 4px 10px;
     font-size: 12px;
     font-weight: 500;
     color: @maintainer_text_muted;
-    min-height: 28px;
+    min-height: 30px;
+    transition: background-color 100ms ease, border-color 100ms ease;
 }
 
 .maintainer_sort_button:hover {
@@ -229,26 +341,28 @@
 }
 
 .maintainer_sort_active {
-    background-color: alpha(@maintainer_accent, 0.1);
+    background-color: alpha(@maintainer_accent, 0.12);
     border-color: @maintainer_accent;
     color: @maintainer_accent;
-    font-weight: 600;
+    font-weight: 700;
 }
 
 /* ---- Terminate Button ---- */
 .maintainer_terminate_button {
-    background: none;
-    border: 1px solid @maintainer_border;
+    background-color: alpha(@maintainer_danger, 0.08);
+    border: 1px solid alpha(@maintainer_danger, 0.25);
     border-radius: 6px;
-    padding: 4px 8px;
+    padding: 4px 10px;
     font-size: 11px;
+    font-weight: 600;
     color: @maintainer_danger;
-    min-height: 24px;
-    min-width: 40px;
+    min-height: 26px;
+    min-width: 44px;
+    transition: background-color 100ms ease, border-color 100ms ease;
 }
 
 .maintainer_terminate_button:hover {
-    background-color: alpha(@maintainer_danger, 0.08);
+    background-color: alpha(@maintainer_danger, 0.18);
     border-color: @maintainer_danger;
 }
 
@@ -256,13 +370,15 @@
 .maintainer_attention_list {
     background-color: @maintainer_surface;
     border: 1px solid @maintainer_border;
-    border-radius: 10px;
-    padding: 8px;
+    border-radius: 12px;
+    padding: 6px;
 }
 
 .maintainer_attention_item {
-    padding: 8px 12px;
-    border-radius: 6px;
+    padding: 10px 14px;
+    border-radius: 8px;
+    margin-bottom: 2px;
+    transition: background-color 80ms ease;
 }
 
 .maintainer_attention_item:hover {
@@ -284,7 +400,7 @@
 
 .maintainer_status_title {
     font-size: 16px;
-    font-weight: 600;
+    font-weight: 700;
     color: @maintainer_text;
 }
 
@@ -326,8 +442,9 @@
 .maintainer_status_retry {
     background-color: @maintainer_accent;
     color: #FFFFFF;
-    border-radius: 6px;
-    padding: 8px 16px;
+    border-radius: 8px;
+    padding: 8px 18px;
+    font-weight: 600;
     min-height: 40px;
 }
 
@@ -341,20 +458,458 @@
     outline-offset: 2px;
 }
 
-/* Destructive button */
+/* Buttons */
+button {
+    background-color: @maintainer_surface;
+    border: 1px solid @maintainer_border;
+    border-radius: 8px;
+    padding: 8px 16px;
+    font-size: 13px;
+    font-weight: 500;
+    color: @maintainer_text;
+    min-height: 38px;
+    transition: background-color 100ms ease, border-color 100ms ease;
+}
+
+button:hover {
+    background-color: @maintainer_surface_alt;
+    border-color: mix(@maintainer_border, @maintainer_text, 0.2);
+}
+
+.suggested-action {
+    background-color: @maintainer_accent;
+    color: #FFFFFF;
+    border: 1px solid @maintainer_accent;
+    font-weight: 700;
+    border-radius: 8px;
+    padding: 8px 18px;
+}
+
+.suggested-action:hover {
+    background-color: shade(@maintainer_accent, 0.9);
+    border-color: shade(@maintainer_accent, 0.9);
+    color: #FFFFFF;
+}
+
+.destructive-action {
+    background-color: alpha(@maintainer_danger, 0.08);
+    color: @maintainer_danger;
+    border: 1px solid alpha(@maintainer_danger, 0.3);
+    font-weight: 600;
+    border-radius: 8px;
+    padding: 8px 18px;
+}
+
+.destructive-action:hover {
+    background-color: alpha(@maintainer_danger, 0.16);
+    border-color: @maintainer_danger;
+}
+
 .maintainer_destructive {
     background-color: @maintainer_danger;
     color: #FFFFFF;
-    border-radius: 6px;
+    border-radius: 8px;
+    font-weight: 600;
 }
 
 .maintainer_destructive:hover {
     background-color: shade(@maintainer_danger, 0.9);
 }
 
-/* Metric value styling (legacy) */
-.maintainer_metric_value {
-    font-size: 28px;
+/* ---- Fluid-Responsive Page Content ---- */
+.maintainer_page_content {
+    margin: 24px;
+}
+
+/* FlowBox card grid */
+.maintainer_cards_flow {
+    margin-top: 8px;
+}
+
+.maintainer_cards_flow > flowboxchild {
+    padding: 0;
+}
+
+/* Temperature FlowBox */
+.maintainer_temperature_flow {
+    margin-top: 4px;
+}
+
+.maintainer_temperature_flow > flowboxchild {
+    padding: 0;
+}
+
+/* Process section header alignment */
+.maintainer_process_section_header {
+    margin-bottom: 4px;
+}
+
+.maintainer_sidebar_groups {
+    background: transparent;
+}
+
+.maintainer_sidebar_footer {
+    background: transparent;
+}
+
+.maintainer_sidebar_compact .maintainer_nav_button {
+    padding: 8px;
+}
+
+/* ---- Application Shell & Responsive Polish ---- */
+.maintainer_drawer_strip {
+    background-color: @maintainer_surface;
+    border-bottom: 1px solid @maintainer_border;
+    min-height: 48px;
+}
+
+.maintainer_sidebar {
+    border-right: none;
+}
+
+.maintainer_drawer_popover contents {
+    background-color: @maintainer_surface;
+    border: 1px solid @maintainer_border;
+    border-radius: 12px;
+    padding: 8px;
+}
+
+.maintainer_drawer_menu_button,
+.maintainer_nav_button,
+.suggested-action,
+.destructive-action {
+    min-height: 40px;
+    min-width: 40px;
+}
+
+.maintainer_nav_button:active,
+.suggested-action:active,
+.destructive-action:active {
+    opacity: 0.86;
+}
+
+.maintainer_sort_button:active {
+    background-color: alpha(@maintainer_accent, 0.14);
+}
+
+.maintainer_terminate_button:active {
+    background-color: alpha(@maintainer_danger, 0.14);
+    border-color: @maintainer_danger;
+}
+
+.maintainer_layout_compact .maintainer_page_content,
+.maintainer_layout_compact .cleanup-page,
+.maintainer_layout_compact .updates-page,
+.maintainer_layout_compact .diagnostics-page,
+.maintainer_layout_compact .maintainer_settings_page > viewport > box {
+    margin: 16px;
+}
+
+.maintainer_layout_narrow .maintainer_page_content,
+.maintainer_layout_narrow .cleanup-page,
+.maintainer_layout_narrow .updates-page,
+.maintainer_layout_narrow .diagnostics-page,
+.maintainer_layout_narrow .reports-page,
+.maintainer_layout_narrow .maintainer_settings_page > viewport > box {
+    margin: 12px;
+}
+
+/* ---- Shared Boxed Lists & Tables ---- */
+.boxed-list,
+textview,
+columnview,
+listview {
+    background-color: @maintainer_surface;
+    border: 1px solid @maintainer_border;
+    border-radius: 12px;
+}
+
+.boxed-list row {
+    padding: 12px 16px;
+    border-bottom: 1px solid alpha(@maintainer_border, 0.5);
+    transition: background-color 80ms ease;
+}
+
+.boxed-list row:hover {
+    background-color: @maintainer_surface_alt;
+}
+
+/* ---- Settings Page Styles ---- */
+.maintainer_settings_group_header {
+    font-size: 13px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    color: @maintainer_text_muted;
+    margin-top: 16px;
+    margin-bottom: 6px;
+}
+
+.maintainer_settings_row {
+    background-color: @maintainer_surface;
+    border: 1px solid @maintainer_border;
+    border-radius: 10px;
+    padding: 14px 18px;
+    transition: border-color 120ms ease;
+}
+
+.maintainer_settings_row:hover {
+    border-color: mix(@maintainer_border, @maintainer_accent, 0.3);
+}
+
+.maintainer_settings_label {
+    color: @maintainer_text;
+    font-weight: 600;
+    font-size: 14px;
+}
+
+/* Status colors */
+.success {
+    color: @maintainer_success;
+    font-weight: 600;
+}
+
+.error {
+    color: @maintainer_danger;
+    font-weight: 600;
+}
+
+/* Progress bar */
+progressbar trough {
+    min-height: 8px;
+    border-radius: 6px;
+    background-color: @maintainer_surface_alt;
+}
+
+progressbar progress {
+    border-radius: 6px;
+    background-color: @maintainer_accent;
+}
+
+textview text {
+    background-color: @maintainer_surface;
+    color: @maintainer_text;
+    padding: 14px;
+    font-family: monospace;
+    font-size: 13px;
+    line-height: 1.5;
+}
+
+/* ---- Job Progress Widget ---- */
+.maintainer_job_progress {
+    padding: 18px;
+    background-color: @maintainer_surface;
+    border: 1px solid @maintainer_border;
+    border-radius: 12px;
+}
+
+.maintainer_job_progress_label {
+    font-size: 14px;
+    font-weight: 600;
+    color: @maintainer_text;
+}
+
+/* ---- Dialog framing ---- */
+.maintainer_dialog {
+    border-radius: 14px;
+    background-color: @maintainer_surface;
+    border: 1px solid @maintainer_border;
+}
+
+/* ---- History rows ---- */
+.maintainer_history_row {
+    background-color: @maintainer_surface;
+    border: 1px solid @maintainer_border;
+    border-radius: 10px;
+    padding: 12px 16px;
+    margin-bottom: 6px;
+    transition: border-color 100ms ease;
+}
+
+.maintainer_history_row:hover {
+    background-color: @maintainer_surface_alt;
+}
+
+.maintainer_history_operation {
     font-weight: 700;
     color: @maintainer_text;
+    font-size: 14px;
+}
+
+.maintainer_history_result {
+    font-size: 12px;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 6px;
+    background-color: alpha(@maintainer_surface_alt, 0.8);
+}
+
+/* ---- Duplicates list ---- */
+.duplicates-list row {
+    padding: 10px 14px;
+    border-radius: 6px;
+    min-height: 40px;
+}
+
+.duplicates-list row:hover {
+    background-color: @maintainer_surface_alt;
+}
+
+.duplicates-group-header {
+    padding: 12px 14px 6px 14px;
+    font-size: 12px;
+    font-weight: 700;
+    color: @maintainer_text;
+    background-color: alpha(@maintainer_surface_alt, 0.6);
+    border-top: 1px solid @maintainer_border;
+    margin-top: 8px;
+}
+
+.duplicates-keep-hint {
+    font-size: 11px;
+    font-weight: 600;
+    color: @maintainer_success;
+    padding: 0 12px 4px 32px;
+}
+
+/* ---- Large files column view ---- */
+.large-files-column-view row {
+    padding: 10px 14px;
+    min-height: 40px;
+}
+
+.large-files-column-view row:hover {
+    background-color: @maintainer_surface_alt;
+}
+
+.large-files-column-view header {
+    padding: 10px 14px;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.7px;
+    color: @maintainer_text_muted;
+    background-color: alpha(@maintainer_surface_alt, 0.6);
+    border-bottom: 1px solid @maintainer_border;
+}
+
+/* ---- Segmented Switcher (StackSwitcher) ---- */
+stackswitcher {
+    background-color: @maintainer_surface;
+    border: 1px solid @maintainer_border;
+    border-radius: 10px;
+    padding: 4px;
+}
+
+stackswitcher button {
+    background: transparent;
+    border: none;
+    border-radius: 7px;
+    padding: 6px 16px;
+    font-size: 13px;
+    font-weight: 500;
+    color: @maintainer_text_muted;
+    min-height: 32px;
+    transition: background-color 100ms ease, color 100ms ease;
+}
+
+stackswitcher button:hover {
+    background-color: @maintainer_surface_alt;
+    color: @maintainer_text;
+}
+
+stackswitcher button:checked,
+stackswitcher button:active {
+    background-color: @maintainer_surface_alt;
+    color: @maintainer_accent;
+    font-weight: 700;
+}
+
+/* ---- Inputs & Dropdowns ---- */
+combobox button,
+dropdown button,
+spinbutton {
+    background-color: @maintainer_surface;
+    border: 1px solid @maintainer_border;
+    border-radius: 8px;
+    padding: 6px 12px;
+    color: @maintainer_text;
+    min-height: 38px;
+}
+
+spinbutton button {
+    background: transparent;
+    border: none;
+    padding: 4px;
+    color: @maintainer_text_muted;
+}
+
+spinbutton button:hover {
+    background-color: @maintainer_surface_alt;
+    color: @maintainer_text;
+}
+
+/* ---- Directory Browser Bar ---- */
+.directory-browser {
+    background-color: @maintainer_surface;
+    border: 1px solid @maintainer_border;
+    border-radius: 10px;
+    padding: 8px 14px;
+    margin-bottom: 8px;
+}
+
+.directory-browser-path {
+    font-family: monospace;
+    font-size: 13px;
+    color: @maintainer_text;
+    font-weight: 500;
+}
+
+/* ---- SMART Health Badges ---- */
+.smart-passed {
+    color: @maintainer_success;
+    background-color: alpha(@maintainer_success, 0.12);
+    border-radius: 6px;
+    padding: 3px 10px;
+    font-size: 12px;
+    font-weight: 700;
+}
+
+.smart-warning {
+    color: @maintainer_warning;
+    background-color: alpha(@maintainer_warning, 0.12);
+    border-radius: 6px;
+    padding: 3px 10px;
+    font-size: 12px;
+    font-weight: 700;
+}
+
+.smart-failure {
+    color: @maintainer_danger;
+    background-color: alpha(@maintainer_danger, 0.12);
+    border-radius: 6px;
+    padding: 3px 10px;
+    font-size: 12px;
+    font-weight: 700;
+}
+
+.smart-stale,
+.smart-unavailable {
+    color: @maintainer_text_muted;
+    background-color: alpha(@maintainer_text_muted, 0.12);
+    border-radius: 6px;
+    padding: 3px 10px;
+    font-size: 12px;
+    font-weight: 500;
+}
+
+/* ---- Security Updates Pill ---- */
+.security-badge {
+    color: @maintainer_danger;
+    background-color: alpha(@maintainer_danger, 0.1);
+    border: 1px solid alpha(@maintainer_danger, 0.25);
+    border-radius: 6px;
+    padding: 2px 8px;
+    font-size: 11px;
+    font-weight: 700;
 }

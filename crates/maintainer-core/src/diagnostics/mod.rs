@@ -13,4 +13,4 @@ pub use interpret::{DiagnosticFinding, Evidence, InterpretationRule, interpret_g
 pub use journal::{JournalCollector, JournalEntry, JournalFilter};
 pub use services::{FailedService, ServiceDiagnostics};
 pub use smart::{SmartAssessment, SmartAttribute, SmartDrive, TemperatureCelsius};
-pub use udisks::{UDisksClient, UDisksError, query_smart_drives};
+pub use udisks::{RealUDisksClient, UDisksClient, UDisksError, query_smart_drives};

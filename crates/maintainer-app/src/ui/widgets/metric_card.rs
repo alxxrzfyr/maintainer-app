@@ -7,7 +7,7 @@
 use std::collections::VecDeque;
 
 use gtk4::prelude::*;
-use gtk4::{Align, Box as GtkBox, Label, Orientation};
+use gtk4::{Align, Box as GtkBox, Image, Label, Orientation};
 
 use crate::ui::widgets::sparkline::Sparkline;
 
@@ -28,10 +28,28 @@ impl MetricCard {
         container.add_css_class("maintainer_metric_card");
         container.set_hexpand(true);
 
+        let header_row = GtkBox::new(Orientation::Horizontal, 8);
+        header_row.set_valign(Align::Center);
+
+        let icon_name = match title {
+            "CPU" => "utilities-system-monitor-symbolic",
+            "Memory" => "media-memory-symbolic",
+            "Storage" => "drive-harddisk-symbolic",
+            "Network" => "network-wired-symbolic",
+            _ => "dialog-information-symbolic",
+        };
+        let icon = Image::from_icon_name(icon_name);
+        icon.set_pixel_size(14);
+        icon.add_css_class("maintainer_text_muted");
+        header_row.append(&icon);
+
         let title_label = Label::new(Some(title));
         title_label.add_css_class("maintainer_metric_card_title");
         title_label.set_halign(Align::Start);
-        container.append(&title_label);
+        title_label.set_hexpand(true);
+        header_row.append(&title_label);
+
+        container.append(&header_row);
 
         let value_label = Label::new(Some("—"));
         value_label.add_css_class("maintainer_metric_card_value");
@@ -58,6 +76,7 @@ impl MetricCard {
     /// Update the displayed value text.
     pub fn set_value(&self, text: &str) {
         self.value_label.set_text(text);
+        self.update_accessible_description();
     }
 
     /// Update the sparkline with new ring buffer data.
@@ -74,6 +93,7 @@ impl MetricCard {
         if let Some(ref sparkline) = self.sparkline {
             sparkline.widget().set_visible(false);
         }
+        self.update_accessible_description();
     }
 
     /// Restore available state.
@@ -87,5 +107,16 @@ impl MetricCard {
     /// Get the underlying GTK widget.
     pub fn widget(&self) -> &GtkBox {
         &self.container
+    }
+
+    /// Announce title and current value together so screen readers treat the
+    /// card as one grouped metric (e.g. "CPU: 42%") rather than two unrelated labels.
+    fn update_accessible_description(&self) {
+        let title = self._title_label.text();
+        let value = self.value_label.text();
+        self.container
+            .update_property(&[gtk4::accessible::Property::Label(&format!(
+                "{title}: {value}"
+            ))]);
     }
 }

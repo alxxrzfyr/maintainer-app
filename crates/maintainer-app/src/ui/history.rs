@@ -46,6 +46,10 @@ pub fn build_history_page(
     container.set_margin_end(24);
 
     let on_intent = std::rc::Rc::new(on_intent);
+    let selected_ids = std::rc::Rc::new(std::cell::RefCell::new(
+        std::collections::HashSet::<String>::new(),
+    ));
+    let check_widgets = std::rc::Rc::new(std::cell::RefCell::new(Vec::<gtk4::CheckButton>::new()));
 
     let header = GtkBox::new(Orientation::Horizontal, 12);
     header.set_halign(Align::Fill);
@@ -54,18 +58,60 @@ pub fn build_history_page(
     let title = Label::new(Some("Operation History"));
     title.set_halign(Align::Start);
     title.set_hexpand(true);
-    title.set_markup("<b>Operation History</b>");
+    title.add_css_class("title-1");
     header.append(&title);
 
+    let delete_selected_btn = Button::with_label("Delete selected");
+    delete_selected_btn.add_css_class("destructive-action");
+    delete_selected_btn.set_sensitive(false);
+
     if !entries.is_empty() {
+        let select_all_btn = Button::with_label("Select All");
+        select_all_btn.add_css_class("flat");
+
+        let deselect_all_btn = Button::with_label("Deselect All");
+        deselect_all_btn.add_css_class("flat");
+
+        let checks_for_all = check_widgets.clone();
+        select_all_btn.connect_clicked(move |_| {
+            for check in checks_for_all.borrow().iter() {
+                check.set_active(true);
+            }
+        });
+
+        let checks_for_none = check_widgets.clone();
+        deselect_all_btn.connect_clicked(move |_| {
+            for check in checks_for_none.borrow().iter() {
+                check.set_active(false);
+            }
+        });
+
+        let on_intent_sel = on_intent.clone();
+        let sel_ids_for_delete = selected_ids.clone();
+        let del_btn_clone = delete_selected_btn.clone();
+        delete_selected_btn.connect_clicked(move |_| {
+            let ids: Vec<String> = sel_ids_for_delete.borrow().iter().cloned().collect();
+            if !ids.is_empty() {
+                del_btn_clone.set_sensitive(false);
+                del_btn_clone.set_label("Deleting…");
+                on_intent_sel(HistoryIntent::RequestDeleteMany(ids));
+            }
+        });
+
         let on_intent_all = on_intent.clone();
         let delete_all_btn = Button::with_label("Delete all");
         delete_all_btn.add_css_class("destructive-action");
         delete_all_btn.set_tooltip_text(Some("Delete all history entries"));
         delete_all_btn.update_property(&[gtk4::accessible::Property::Label("Delete all history")]);
-        delete_all_btn.connect_clicked(move |_| {
+        delete_all_btn.connect_clicked(move |btn| {
+            btn.set_sensitive(false);
+            btn.set_label("Deleting all…");
             on_intent_all(HistoryIntent::RequestDeleteAll);
         });
+
+        header.append(&select_all_btn);
+        header.append(&deselect_all_btn);
+        header.append(&delete_selected_btn);
         header.append(&delete_all_btn);
     }
 
@@ -79,7 +125,14 @@ pub fn build_history_page(
         container.append(&empty);
     } else {
         for entry in entries {
-            container.append(&build_entry_row(entry, on_intent.clone()));
+            let row = build_entry_row(
+                entry,
+                on_intent.clone(),
+                selected_ids.clone(),
+                delete_selected_btn.clone(),
+                check_widgets.clone(),
+            );
+            container.append(&row);
         }
     }
 
@@ -87,13 +140,43 @@ pub fn build_history_page(
     scrolled
 }
 
-fn build_entry_row(entry: &HistoryRow, on_intent: std::rc::Rc<dyn Fn(HistoryIntent)>) -> GtkBox {
+fn build_entry_row(
+    entry: &HistoryRow,
+    on_intent: std::rc::Rc<dyn Fn(HistoryIntent)>,
+    selected_ids: std::rc::Rc<std::cell::RefCell<std::collections::HashSet<String>>>,
+    delete_selected_btn: Button,
+    check_widgets: std::rc::Rc<std::cell::RefCell<Vec<gtk4::CheckButton>>>,
+) -> GtkBox {
     let row = GtkBox::new(Orientation::Horizontal, 12);
     row.set_halign(Align::Fill);
     row.set_hexpand(true);
     row.add_css_class("maintainer_history_row");
     row.set_margin_top(4);
     row.set_margin_bottom(4);
+
+    let check = gtk4::CheckButton::new();
+    check_widgets.borrow_mut().push(check.clone());
+
+    let entry_id = entry.id.clone();
+    let sel_ids = selected_ids;
+    let del_btn = delete_selected_btn;
+    check.connect_toggled(move |c| {
+        let mut ids = sel_ids.borrow_mut();
+        if c.is_active() {
+            ids.insert(entry_id.clone());
+        } else {
+            ids.remove(&entry_id);
+        }
+        let count = ids.len();
+        del_btn.set_sensitive(count > 0);
+        if count > 0 {
+            del_btn.set_label(&format!("Delete selected ({count})"));
+        } else {
+            del_btn.set_label("Delete selected");
+        }
+    });
+
+    row.append(&check);
 
     let info_box = GtkBox::new(Orientation::Vertical, 2);
     info_box.set_hexpand(true);
@@ -107,6 +190,13 @@ fn build_entry_row(entry: &HistoryRow, on_intent: std::rc::Rc<dyn Fn(HistoryInte
     let result_label = Label::new(Some(&entry.result));
     result_label.set_halign(Align::Start);
     result_label.add_css_class("maintainer_history_result");
+    if entry.result.to_lowercase().contains("success") {
+        result_label.add_css_class("success");
+    } else if entry.result.to_lowercase().contains("fail")
+        || entry.result.to_lowercase().contains("error")
+    {
+        result_label.add_css_class("error");
+    }
     primary.append(&result_label);
 
     if entry.recovered_bytes != "—" {
@@ -142,7 +232,9 @@ fn build_entry_row(entry: &HistoryRow, on_intent: std::rc::Rc<dyn Fn(HistoryInte
         "Delete {} entry",
         entry.operation
     ))]);
-    delete_btn.connect_clicked(move |_| {
+    delete_btn.connect_clicked(move |btn| {
+        btn.set_sensitive(false);
+        btn.set_label("Deleting…");
         on_intent(HistoryIntent::RequestDeleteOne(id.clone()));
     });
     row.append(&delete_btn);

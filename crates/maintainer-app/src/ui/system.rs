@@ -3,14 +3,17 @@
 //! Shows per-core CPU, memory breakdown, disk I/O, network rates, temperatures,
 //! and a sortable process table. Process termination shows a confirmation dialog
 //! before sending SIGTERM.
+//!
+//! Temperature chips use FlowBox for fluid wrapping. The process table adapts
+//! its visible columns based on allocated width.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use gtk4::prelude::*;
 use gtk4::{
-    Align, Box as GtkBox, Button, Dialog, DialogFlags, Label, Orientation, ResponseType,
-    ScrolledWindow,
+    Align, Box as GtkBox, Button, Dialog, DialogFlags, FlowBox, Image, Label, Orientation,
+    ResponseType, ScrolledWindow, SelectionMode,
 };
 
 use crate::monitoring::{ProcessSort, SystemViewModel};
@@ -29,7 +32,8 @@ pub struct SystemPage {
     memory_card: MetricCard,
     process_list_box: GtkBox,
     sort_buttons: SortButtons,
-    temperature_box: GtkBox,
+    temperature_flow: FlowBox,
+    operation_status: Label,
     on_sort_changed: SortCallback,
     on_terminate: TerminateCallback,
 }
@@ -51,42 +55,59 @@ impl SystemPage {
     /// Create a new system monitor page.
     pub fn new() -> Self {
         let content = GtkBox::new(Orientation::Vertical, 16);
-        content.set_margin_top(24);
-        content.set_margin_bottom(24);
-        content.set_margin_start(24);
-        content.set_margin_end(24);
         content.add_css_class("maintainer_system_page");
+        content.add_css_class("maintainer_page_content");
 
         let title = Label::new(Some("System Monitor"));
         title.add_css_class("maintainer_page_title");
         title.set_halign(Align::Start);
         content.append(&title);
 
-        let metrics_row = GtkBox::new(Orientation::Horizontal, 12);
-        metrics_row.set_homogeneous(true);
+        let subtitle = Label::new(Some(
+            "Live resource metrics, hardware temperature sensors, and process management.",
+        ));
+        subtitle.add_css_class("dim-label");
+        subtitle.set_halign(Align::Start);
+        subtitle.set_wrap(true);
+        content.append(&subtitle);
+
+        let metrics_flow = FlowBox::new();
+        metrics_flow.set_selection_mode(SelectionMode::None);
+        metrics_flow.set_homogeneous(true);
+        metrics_flow.set_row_spacing(12);
+        metrics_flow.set_column_spacing(12);
+        metrics_flow.set_min_children_per_line(1);
+        metrics_flow.set_max_children_per_line(2);
+        metrics_flow.add_css_class("maintainer_cards_flow");
 
         let cpu_card = MetricCard::new("CPU", true);
-        metrics_row.append(cpu_card.widget());
+        metrics_flow.insert(cpu_card.widget(), -1);
 
         let memory_card = MetricCard::new("Memory", true);
-        metrics_row.append(memory_card.widget());
+        metrics_flow.insert(memory_card.widget(), -1);
 
-        content.append(&metrics_row);
+        content.append(&metrics_flow);
 
         let temp_label = Label::new(Some("Temperatures"));
         temp_label.add_css_class("maintainer_section_title");
         temp_label.set_halign(Align::Start);
-        temp_label.set_margin_top(12);
+        temp_label.set_margin_top(8);
         content.append(&temp_label);
 
-        let temperature_box = GtkBox::new(Orientation::Horizontal, 8);
-        temperature_box.add_css_class("maintainer_temperature_box");
-        temperature_box.set_halign(Align::Start);
-        content.append(&temperature_box);
+        let temperature_flow = FlowBox::new();
+        temperature_flow.set_selection_mode(SelectionMode::None);
+        temperature_flow.set_homogeneous(false);
+        temperature_flow.set_row_spacing(8);
+        temperature_flow.set_column_spacing(8);
+        temperature_flow.set_min_children_per_line(2);
+        temperature_flow.set_max_children_per_line(8);
+        temperature_flow.add_css_class("maintainer_temperature_flow");
+        content.append(&temperature_flow);
 
-        let process_header = GtkBox::new(Orientation::Horizontal, 8);
-        process_header.set_margin_top(16);
+        let process_header = GtkBox::new(Orientation::Horizontal, 12);
+        process_header.set_margin_top(12);
         process_header.set_valign(Align::Center);
+        process_header.add_css_class("maintainer_process_section_header");
 
         let process_label = Label::new(Some("Processes"));
         process_label.add_css_class("maintainer_section_title");
@@ -95,10 +116,12 @@ impl SystemPage {
         process_header.append(&process_label);
 
         let on_sort_changed: SortCallback = Rc::new(RefCell::new(None));
+        let sort_row = GtkBox::new(Orientation::Horizontal, 6);
+        sort_row.set_halign(Align::End);
 
         let sort_label = Label::new(Some("Sort:"));
         sort_label.add_css_class("maintainer_text_muted");
-        process_header.append(&sort_label);
+        sort_row.append(&sort_label);
 
         let cpu_btn = Button::with_label("CPU");
         cpu_btn.add_css_class("maintainer_sort_button");
@@ -137,16 +160,31 @@ impl SystemPage {
             }
         });
 
-        process_header.append(&cpu_btn);
-        process_header.append(&memory_btn);
-        process_header.append(&name_btn);
-        process_header.append(&pid_btn);
+        sort_row.append(&cpu_btn);
+        sort_row.append(&memory_btn);
+        sort_row.append(&name_btn);
+        sort_row.append(&pid_btn);
+        process_header.append(&sort_row);
 
         content.append(&process_header);
 
+        let operation_status = Label::new(None);
+        operation_status.set_halign(Align::Start);
+        operation_status.set_wrap(true);
+        operation_status.set_visible(false);
+        content.append(&operation_status);
+
         let process_list_box = GtkBox::new(Orientation::Vertical, 0);
         process_list_box.add_css_class("maintainer_process_list");
-        content.append(&process_list_box);
+
+        let process_scroll = ScrolledWindow::new();
+        process_scroll.set_child(Some(&process_list_box));
+        process_scroll.set_hexpand(true);
+        process_scroll.set_vexpand(true);
+        process_scroll.set_min_content_height(200);
+        process_scroll.set_propagate_natural_height(true);
+        process_scroll.set_max_content_height(600);
+        content.append(&process_scroll);
 
         let root = ScrolledWindow::new();
         root.set_child(Some(&content));
@@ -166,7 +204,8 @@ impl SystemPage {
                 name_btn,
                 pid_btn,
             },
-            temperature_box,
+            temperature_flow,
+            operation_status,
             on_sort_changed,
             on_terminate,
         }
@@ -183,6 +222,10 @@ impl SystemPage {
         *self.on_terminate.borrow_mut() = Some(Box::new(cb));
     }
 
+    /// Status label for process operation feedback.
+    pub fn operation_status_handle(&self) -> Label {
+        self.operation_status.clone()
+    }
     /// Update the page from the view model.
     pub fn update(&self, vm: &SystemViewModel) {
         if let Some(ref cpu) = vm.cpu {
@@ -213,14 +256,14 @@ impl SystemPage {
     }
 
     fn update_temperatures(&self, vm: &SystemViewModel) {
-        while let Some(child) = self.temperature_box.first_child() {
-            self.temperature_box.remove(&child);
+        while let Some(child) = self.temperature_flow.first_child() {
+            self.temperature_flow.remove(&child);
         }
 
         if vm.temperatures.is_empty() {
             let empty = Label::new(Some("No sensors detected"));
             empty.add_css_class("maintainer_text_muted");
-            self.temperature_box.append(&empty);
+            self.temperature_flow.insert(&empty, -1);
             return;
         }
 
@@ -235,8 +278,15 @@ impl SystemPage {
                 name_label.add_css_class("maintainer_temperature_label");
                 name_label.set_halign(Align::Start);
                 name_label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
-                name_label.set_max_width_chars(12);
-                chip.append(&name_label);
+                name_label.set_max_width_chars(14);
+
+                let header_row = GtkBox::new(Orientation::Horizontal, 6);
+                let temp_icon = Image::from_icon_name("sensors-temperature-symbolic");
+                temp_icon.set_pixel_size(12);
+                temp_icon.add_css_class("maintainer_text_muted");
+                header_row.append(&temp_icon);
+                header_row.append(&name_label);
+                chip.append(&header_row);
 
                 let value_label = Label::new(Some(&format!("{celsius:.0}°C")));
                 value_label.add_css_class("maintainer_temperature_value");
@@ -244,12 +294,20 @@ impl SystemPage {
 
                 if *celsius >= 85.0 {
                     value_label.add_css_class("maintainer_temperature_critical");
+                    value_label.set_text(&format!("{celsius:.0}°C · Critical"));
+                    value_label.update_property(&[gtk4::accessible::Property::Description(
+                        &format!("{name} temperature {celsius:.0} degrees Celsius, critical"),
+                    )]);
                 } else if *celsius >= 70.0 {
                     value_label.add_css_class("maintainer_temperature_warning");
+                    value_label.set_text(&format!("{celsius:.0}°C · Warning"));
+                    value_label.update_property(&[gtk4::accessible::Property::Description(
+                        &format!("{name} temperature {celsius:.0} degrees Celsius, warning"),
+                    )]);
                 }
 
                 chip.append(&value_label);
-                self.temperature_box.append(&chip);
+                self.temperature_flow.insert(&chip, -1);
             }
         }
     }
@@ -277,7 +335,7 @@ impl SystemPage {
             return;
         }
 
-        let header = GtkBox::new(Orientation::Horizontal, 8);
+        let header = GtkBox::new(Orientation::Horizontal, 0);
         header.add_css_class("maintainer_process_header");
 
         let pid_h = Label::new(Some("PID"));
@@ -293,15 +351,18 @@ impl SystemPage {
         let mem_h = Label::new(Some("Memory"));
         mem_h.set_width_request(90);
         mem_h.set_halign(Align::End);
+        mem_h.add_css_class("maintainer_col_memory");
         header.append(&mem_h);
 
         let state_h = Label::new(Some("State"));
         state_h.set_width_request(60);
         state_h.set_halign(Align::Center);
+        state_h.add_css_class("maintainer_col_state");
         header.append(&state_h);
 
-        let action_h = Label::new(Some(""));
+        let action_h = Label::new(Some("Action"));
         action_h.set_width_request(60);
+        action_h.set_halign(Align::End);
         header.append(&action_h);
 
         self.process_list_box.append(&header);
@@ -318,7 +379,7 @@ impl SystemPage {
         proc: &maintainer_core::metrics::ProcessSnapshot,
         alternate: bool,
     ) -> GtkBox {
-        let row = GtkBox::new(Orientation::Horizontal, 8);
+        let row = GtkBox::new(Orientation::Horizontal, 0);
         row.add_css_class("maintainer_process_row");
         if alternate {
             row.add_css_class("maintainer_process_row_alt");
@@ -334,7 +395,6 @@ impl SystemPage {
         name_label.set_hexpand(true);
         name_label.set_halign(Align::Start);
         name_label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
-        name_label.set_max_width_chars(30);
         row.append(&name_label);
 
         let mem_text = format_memory_bytes(proc.rss_bytes);
@@ -342,12 +402,14 @@ impl SystemPage {
         mem_label.set_width_request(90);
         mem_label.set_halign(Align::End);
         mem_label.add_css_class("maintainer_process_memory");
+        mem_label.add_css_class("maintainer_col_memory");
         row.append(&mem_label);
 
         let state_label = Label::new(Some(&proc.state.to_string()));
         state_label.set_width_request(60);
         state_label.set_halign(Align::Center);
         state_label.add_css_class("maintainer_text_muted");
+        state_label.add_css_class("maintainer_col_state");
         row.append(&state_label);
 
         let terminate_btn = Button::with_label("End");
@@ -371,7 +433,11 @@ impl SystemPage {
             }
         });
 
-        row.append(&terminate_btn);
+        let action_box = GtkBox::new(Orientation::Horizontal, 0);
+        action_box.set_width_request(60);
+        action_box.set_halign(Align::End);
+        action_box.append(&terminate_btn);
+        row.append(&action_box);
         row
     }
 

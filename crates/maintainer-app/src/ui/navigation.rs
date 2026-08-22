@@ -6,7 +6,7 @@
 //! - Drawer/switcher (below 640 px)
 
 use gtk4::prelude::*;
-use gtk4::{Align, Box as GtkBox, Button, Image, Label, Orientation, ScrolledWindow, Separator};
+use gtk4::{Align, Box as GtkBox, Button, Image, Label, Orientation, Separator, Widget};
 
 use crate::state::{FOOTER_PAGES, NAVIGATION_GROUPS, Page};
 
@@ -34,10 +34,30 @@ impl NavigationMode {
     }
 }
 
-/// Builds the navigation sidebar widget.
-///
-/// The `on_navigate` callback is invoked with the target `Page` when
-/// a navigation button is clicked.
+/// Apply the selected style to every navigation button below `root`.
+pub fn update_active_buttons(root: &impl IsA<Widget>, active_page: Page) {
+    fn visit(widget: &Widget, active_page: Page) {
+        if let Ok(button) = widget.clone().downcast::<Button>() {
+            let is_navigation_button = button.has_css_class("maintainer_nav_button");
+            let is_active = button.tooltip_text().as_deref() == Some(active_page.label());
+            if is_navigation_button && is_active {
+                button.add_css_class("maintainer_nav_active");
+            } else if is_navigation_button {
+                button.remove_css_class("maintainer_nav_active");
+            }
+        }
+
+        let mut child = widget.first_child();
+        while let Some(current) = child {
+            visit(&current, active_page);
+            child = current.next_sibling();
+        }
+    }
+
+    visit(root.as_ref(), active_page);
+}
+
+/// Build the fixed navigation sidebar.
 pub fn build_sidebar(
     active_page: Page,
     mode: NavigationMode,
@@ -45,6 +65,7 @@ pub fn build_sidebar(
 ) -> GtkBox {
     let sidebar = GtkBox::new(Orientation::Vertical, 0);
     sidebar.add_css_class("maintainer_sidebar");
+    sidebar.set_vexpand(true);
 
     match mode {
         NavigationMode::Persistent => sidebar.add_css_class("maintainer_sidebar_persistent"),
@@ -52,88 +73,91 @@ pub fn build_sidebar(
         NavigationMode::Drawer => sidebar.add_css_class("maintainer_sidebar_drawer"),
     }
 
-    let scroll = ScrolledWindow::new();
-    scroll.set_vexpand(true);
-    scroll.set_hscrollbar_policy(gtk4::PolicyType::Never);
+    let groups = GtkBox::new(Orientation::Vertical, 4);
+    groups.add_css_class("maintainer_sidebar_groups");
+    groups.set_vexpand(true);
+    groups.set_margin_top(8);
+    groups.set_margin_start(8);
+    groups.set_margin_end(8);
 
-    let content = GtkBox::new(Orientation::Vertical, 4);
-    content.set_margin_top(8);
-    content.set_margin_bottom(8);
-    content.set_margin_start(8);
-    content.set_margin_end(8);
-
+    let mut buttons = Vec::with_capacity(Page::ALL.len());
     for group in NAVIGATION_GROUPS {
         if mode == NavigationMode::Persistent {
             let group_label = Label::new(Some(group.label));
             group_label.add_css_class("maintainer_nav_group_label");
             group_label.add_css_class("maintainer_text_muted");
             group_label.set_halign(Align::Start);
-            group_label.set_margin_top(12);
-            group_label.set_margin_bottom(4);
+            group_label.set_margin_top(8);
+            group_label.set_margin_bottom(2);
             group_label.set_margin_start(8);
-            content.append(&group_label);
+            groups.append(&group_label);
         }
 
         for &page in group.pages {
-            let btn = build_nav_button(page, active_page, mode, on_navigate.clone());
-            content.append(&btn);
+            let button = build_nav_button(page, active_page, mode);
+            groups.append(&button);
+            buttons.push((page, button));
         }
     }
+    sidebar.append(&groups);
 
-    let sep = Separator::new(Orientation::Horizontal);
-    sep.set_margin_top(8);
-    sep.set_margin_bottom(8);
-    content.append(&sep);
+    let footer = GtkBox::new(Orientation::Vertical, 4);
+    footer.add_css_class("maintainer_sidebar_footer");
+    footer.set_margin_top(8);
+    footer.set_margin_bottom(8);
+    footer.set_margin_start(8);
+    footer.set_margin_end(8);
+
+    let separator = Separator::new(Orientation::Horizontal);
+    separator.set_margin_bottom(8);
+    footer.append(&separator);
 
     for &page in FOOTER_PAGES {
-        let btn = build_nav_button(page, active_page, mode, on_navigate.clone());
-        content.append(&btn);
+        let button = build_nav_button(page, active_page, mode);
+        footer.append(&button);
+        buttons.push((page, button));
     }
+    sidebar.append(&footer);
 
-    scroll.set_child(Some(&content));
-    sidebar.append(&scroll);
+    for (page, button) in buttons {
+        let sidebar_ref = sidebar.clone();
+        let navigate = on_navigate.clone();
+        button.connect_clicked(move |_| {
+            update_active_buttons(&sidebar_ref, page);
+            navigate(page);
+        });
+    }
 
     sidebar
 }
 
-/// Build a single navigation button for a page.
-fn build_nav_button(
-    page: Page,
-    active_page: Page,
-    mode: NavigationMode,
-    on_navigate: impl Fn(Page) + 'static,
-) -> Button {
-    let btn = Button::new();
-    btn.add_css_class("maintainer_nav_button");
-    btn.set_can_focus(true);
+fn build_nav_button(page: Page, active_page: Page, mode: NavigationMode) -> Button {
+    let button = Button::new();
+    button.add_css_class("maintainer_nav_button");
+    button.set_can_focus(true);
 
-    let btn_content = GtkBox::new(Orientation::Horizontal, 8);
-    btn_content.set_halign(Align::Start);
+    let content = GtkBox::new(Orientation::Horizontal, 8);
+    content.set_halign(if mode == NavigationMode::Compact {
+        Align::Center
+    } else {
+        Align::Start
+    });
 
     let icon = Image::from_icon_name(page.icon_name());
     icon.set_pixel_size(20);
-    btn_content.append(&icon);
+    content.append(&icon);
 
     if mode != NavigationMode::Compact {
-        let label = Label::new(Some(page.label()));
-        btn_content.append(&label);
+        content.append(&Label::new(Some(page.label())));
     }
 
-    btn.set_child(Some(&btn_content));
-
+    button.set_child(Some(&content));
     if page == active_page {
-        btn.add_css_class("maintainer_nav_active");
+        button.add_css_class("maintainer_nav_active");
     }
-
-    btn.set_tooltip_text(Some(page.label()));
-
-    btn.update_property(&[gtk4::accessible::Property::Label(page.label())]);
-
-    btn.connect_clicked(move |_| {
-        on_navigate(page);
-    });
-
-    btn
+    button.set_tooltip_text(Some(page.label()));
+    button.update_property(&[gtk4::accessible::Property::Label(page.label())]);
+    button
 }
 
 #[cfg(test)]

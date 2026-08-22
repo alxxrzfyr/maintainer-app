@@ -191,16 +191,17 @@ pub fn refresh_drive_smart(
     client.refresh_smart(object_path)
 }
 
-/// Real UDisks2 D-Bus client (placeholder for async zbus integration).
-/// In production this uses zbus to connect to the system bus.
-pub struct RealUDisksClient {
-    _private: (),
-}
+/// Real UDisks2 client using the system D-Bus ObjectManager.
+pub struct RealUDisksClient;
 
 impl RealUDisksClient {
-    /// Create a new client. Connection is established lazily.
     pub fn new() -> Self {
-        Self { _private: () }
+        Self
+    }
+
+    fn connection() -> Result<zbus::blocking::Connection, UDisksError> {
+        zbus::blocking::Connection::system()
+            .map_err(|error| UDisksError::ConnectionFailed(error.to_string()))
     }
 }
 
@@ -212,15 +213,121 @@ impl Default for RealUDisksClient {
 
 impl UDisksClient for RealUDisksClient {
     fn get_drives(&self) -> Result<Vec<UDisksDriveProperties>, UDisksError> {
-        Err(UDisksError::ServiceUnavailable(
-            "UDisks2 D-Bus integration pending async runtime setup".into(),
-        ))
+        use std::collections::HashMap;
+        use zbus::zvariant::OwnedValue;
+
+        const DRIVE_INTERFACE: &str = "org.freedesktop.UDisks2.Drive";
+        const ATA_INTERFACE: &str = "org.freedesktop.UDisks2.Drive.Ata";
+        const DRIVE_PREFIX: &str = "/org/freedesktop/UDisks2/drives/";
+
+        fn interface_properties<'a>(
+            interfaces: &'a HashMap<zbus::names::OwnedInterfaceName, HashMap<String, OwnedValue>>,
+            name: &str,
+        ) -> Option<&'a HashMap<String, OwnedValue>> {
+            interfaces
+                .iter()
+                .find(|(interface, _)| interface.as_str() == name)
+                .map(|(_, properties)| properties)
+        }
+
+        fn property<T>(properties: &HashMap<String, OwnedValue>, name: &str) -> Option<T>
+        where
+            T: TryFrom<OwnedValue>,
+        {
+            properties.get(name)?.try_clone().ok()?.try_into().ok()
+        }
+
+        let connection = Self::connection()?;
+        let proxy = zbus::blocking::fdo::ObjectManagerProxy::builder(&connection)
+            .destination("org.freedesktop.UDisks2")
+            .map_err(|error| UDisksError::ServiceUnavailable(error.to_string()))?
+            .path("/org/freedesktop/UDisks2")
+            .map_err(|error| UDisksError::MethodCallFailed(error.to_string()))?
+            .build()
+            .map_err(|error| UDisksError::ServiceUnavailable(error.to_string()))?;
+        let objects = proxy
+            .get_managed_objects()
+            .map_err(|error| UDisksError::MethodCallFailed(error.to_string()))?;
+
+        let mut drives = Vec::new();
+        for (path, interfaces) in objects {
+            if !path.as_str().starts_with(DRIVE_PREFIX) {
+                continue;
+            }
+            let Some(drive) = interface_properties(&interfaces, DRIVE_INTERFACE) else {
+                continue;
+            };
+            let ata = interface_properties(&interfaces, ATA_INTERFACE);
+            let smart_supported = ata
+                .and_then(|properties| property(properties, "SmartSupported"))
+                .unwrap_or(false);
+            let smart_enabled = ata
+                .and_then(|properties| property(properties, "SmartEnabled"))
+                .unwrap_or(false);
+            let smart_overall_passed = ata
+                .and_then(|properties| property::<bool>(properties, "SmartFailing"))
+                .map(|failing| !failing);
+            let temperature_kelvin =
+                ata.and_then(|properties| property(properties, "SmartTemperature"));
+            let power_on_seconds =
+                ata.and_then(|properties| property::<u64>(properties, "SmartPowerOnSeconds"));
+            let smart_updated_unix =
+                ata.and_then(|properties| property(properties, "SmartUpdated"));
+
+            drives.push(UDisksDriveProperties {
+                object_path: path.to_string(),
+                model: property(drive, "Model").unwrap_or_else(|| "Unknown drive".to_string()),
+                firmware: property(drive, "Revision").unwrap_or_default(),
+                serial: property(drive, "Serial").unwrap_or_default(),
+                removable: property(drive, "Removable").unwrap_or(false),
+                smart_supported,
+                smart_enabled,
+                smart_overall_passed,
+                temperature_kelvin,
+                power_on_hours: power_on_seconds.map(|seconds| seconds / 3600),
+                smart_updated_unix,
+                attributes: Vec::new(),
+            });
+        }
+
+        Ok(drives)
     }
 
-    fn refresh_smart(&self, _object_path: &str) -> Result<(), UDisksError> {
-        Err(UDisksError::ServiceUnavailable(
-            "UDisks2 D-Bus integration pending async runtime setup".into(),
-        ))
+    fn refresh_smart(&self, object_path: &str) -> Result<(), UDisksError> {
+        use std::collections::HashMap;
+        use zbus::zvariant::OwnedValue;
+
+        const DRIVE_PREFIX: &str = "/org/freedesktop/UDisks2/drives/";
+        if !object_path.starts_with(DRIVE_PREFIX)
+            || object_path[DRIVE_PREFIX.len()..].is_empty()
+            || !object_path[DRIVE_PREFIX.len()..]
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+        {
+            return Err(UDisksError::MethodCallFailed(
+                "invalid UDisks2 drive object path".to_string(),
+            ));
+        }
+
+        let connection = Self::connection()?;
+        let options: HashMap<String, OwnedValue> = HashMap::new();
+        connection
+            .call_method(
+                Some("org.freedesktop.UDisks2"),
+                object_path,
+                Some("org.freedesktop.UDisks2.Drive.Ata"),
+                "SmartUpdate",
+                &(options,),
+            )
+            .map_err(|error| {
+                let message = error.to_string();
+                if message.contains("NotAuthorized") || message.contains("AccessDenied") {
+                    UDisksError::PermissionDenied(message)
+                } else {
+                    UDisksError::MethodCallFailed(message)
+                }
+            })?;
+        Ok(())
     }
 }
 

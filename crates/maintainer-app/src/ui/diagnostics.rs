@@ -5,13 +5,18 @@
 //! Group rows expand to bounded examples.
 //! Also displays SMART storage health from UDisks2.
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use gtk4::prelude::*;
 use gtk4::{self, Box as GtkBox, Button, Label, ListBox, Orientation, ScrolledWindow, Separator};
 
 use maintainer_core::diagnostics::{DiagnosticFinding, Evidence, SmartAssessment, SmartDrive};
 
+type ToggleCallback = Rc<RefCell<Option<Box<dyn Fn(usize)>>>>;
+
 /// Presentation state for the diagnostics page.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct DiagnosticsState {
     /// Current findings.
     pub findings: Vec<DiagnosticFinding>,
@@ -23,6 +28,21 @@ pub struct DiagnosticsState {
     pub expanded: Vec<bool>,
     /// SMART storage health state.
     pub smart: SmartHealthState,
+    /// Hardware specifications snapshot (GPU, USB, PCI, BIOS).
+    pub hardware: maintainer_core::hardware::HardwareSnapshot,
+}
+
+impl Default for DiagnosticsState {
+    fn default() -> Self {
+        Self {
+            findings: Vec::new(),
+            scanning: false,
+            error: None,
+            expanded: Vec::new(),
+            smart: SmartHealthState::default(),
+            hardware: maintainer_core::hardware::read_hardware_snapshot(),
+        }
+    }
 }
 
 /// SMART storage health presentation state.
@@ -153,17 +173,16 @@ impl DiagnosticsState {
 }
 
 /// Top-level diagnostics page widget.
+#[derive(Clone)]
 pub struct DiagnosticsPage {
     container: GtkBox,
     scan_button: Button,
     status_label: Label,
-    #[allow(dead_code)]
     findings_list: ListBox,
-    #[allow(dead_code)]
-    smart_section: GtkBox,
     smart_refresh_button: Button,
     smart_status_label: Label,
     smart_drives_list: ListBox,
+    on_toggle_expanded: ToggleCallback,
 }
 
 impl Default for DiagnosticsPage {
@@ -177,15 +196,21 @@ impl DiagnosticsPage {
     pub fn new() -> Self {
         let container = GtkBox::new(Orientation::Vertical, 12);
         container.add_css_class("diagnostics-page");
-        container.set_margin_top(24);
+        container.set_margin_top(16);
         container.set_margin_bottom(24);
         container.set_margin_start(24);
         container.set_margin_end(24);
 
+        let stack = gtk4::Stack::new();
+        stack.set_vexpand(true);
+        stack.set_hexpand(true);
+
+        let health_box = GtkBox::new(Orientation::Vertical, 12);
+
         let header = Label::new(Some("System Diagnostics"));
         header.add_css_class("title-1");
         header.set_halign(gtk4::Align::Start);
-        container.append(&header);
+        health_box.append(&header);
 
         let description = Label::new(Some(
             "Scan for failed services and recurring error patterns in the system journal. \
@@ -194,19 +219,19 @@ impl DiagnosticsPage {
         description.set_wrap(true);
         description.set_halign(gtk4::Align::Start);
         description.add_css_class("dim-label");
-        container.append(&description);
+        health_box.append(&description);
 
         let scan_button = Button::with_label("Run Diagnostics");
         scan_button.add_css_class("suggested-action");
         scan_button.set_halign(gtk4::Align::Start);
-        container.append(&scan_button);
+        health_box.append(&scan_button);
 
         let status_label = Label::new(None);
         status_label.set_halign(gtk4::Align::Start);
         status_label.set_visible(false);
-        container.append(&status_label);
+        health_box.append(&status_label);
 
-        container.append(&Separator::new(Orientation::Horizontal));
+        health_box.append(&Separator::new(Orientation::Horizontal));
 
         let scrolled = ScrolledWindow::new();
         scrolled.set_vexpand(true);
@@ -214,11 +239,19 @@ impl DiagnosticsPage {
 
         let findings_list = ListBox::new();
         findings_list.set_selection_mode(gtk4::SelectionMode::None);
+        findings_list.set_activate_on_single_click(true);
         findings_list.add_css_class("boxed-list");
+        let on_toggle_expanded: ToggleCallback = Rc::new(RefCell::new(None));
+        let on_toggle_for_rows = on_toggle_expanded.clone();
+        findings_list.connect_row_activated(move |_, row| {
+            if let Some(callback) = on_toggle_for_rows.borrow().as_ref() {
+                callback(row.index() as usize);
+            }
+        });
         scrolled.set_child(Some(&findings_list));
-        container.append(&scrolled);
+        health_box.append(&scrolled);
 
-        container.append(&Separator::new(Orientation::Horizontal));
+        health_box.append(&Separator::new(Orientation::Horizontal));
 
         let smart_section = GtkBox::new(Orientation::Vertical, 8);
         smart_section.set_margin_top(12);
@@ -250,17 +283,43 @@ impl DiagnosticsPage {
         smart_drives_list.add_css_class("boxed-list");
         smart_section.append(&smart_drives_list);
 
-        container.append(&smart_section);
+        health_box.append(&smart_section);
+
+        let health_scrolled = ScrolledWindow::new();
+        health_scrolled.set_vexpand(true);
+        health_scrolled.set_hexpand(true);
+        health_scrolled.set_child(Some(&health_box));
+
+        let hw = maintainer_core::hardware::read_hardware_snapshot();
+        let gpu_view = build_gpu_view(&hw.gpu);
+        let usb_view = build_usb_view(&hw.usb_devices);
+        let pci_view = build_pci_view(&hw.pci_devices);
+        let bios_view = build_bios_view(&hw.bios);
+
+        stack.add_titled(&health_scrolled, Some("health"), "System Health");
+        stack.add_titled(&gpu_view, Some("gpu"), "GPU");
+        stack.add_titled(&usb_view, Some("usb"), "USB");
+        stack.add_titled(&pci_view, Some("pci"), "PCI");
+        stack.add_titled(&bios_view, Some("bios"), "BIOS");
+
+        let switcher = gtk4::StackSwitcher::new();
+        switcher.set_stack(Some(&stack));
+        switcher.set_halign(gtk4::Align::Center);
+        switcher.set_margin_bottom(8);
+        switcher.add_css_class("maintainer_stack_switcher");
+
+        container.append(&switcher);
+        container.append(&stack);
 
         Self {
             container,
             scan_button,
             status_label,
             findings_list,
-            smart_section,
             smart_refresh_button,
             smart_status_label,
             smart_drives_list,
+            on_toggle_expanded,
         }
     }
 
@@ -274,6 +333,28 @@ impl DiagnosticsPage {
         &self.scan_button
     }
 
+    /// Connect finding-row expansion for mouse and keyboard activation.
+    pub fn connect_toggle_expanded<F: Fn(usize) + 'static>(&self, callback: F) {
+        *self.on_toggle_expanded.borrow_mut() = Some(Box::new(callback));
+    }
+
+    /// Show scan progress directly.
+    pub fn show_scan_progress(&self, completed: u64, total: Option<u64>, message: &str) {
+        self.scan_button.set_sensitive(false);
+        let text = match total {
+            Some(t) if t > 0 => format!("{message} ({completed}/{t})"),
+            _ => format!("{message} ({completed} items)"),
+        };
+        self.status_label.set_text(&text);
+        self.status_label.set_visible(true);
+        self.status_label.remove_css_class("error");
+    }
+
+    /// Get a clone of the status label for use in progress closures.
+    pub fn status_label_handle(&self) -> Label {
+        self.status_label.clone()
+    }
+
     /// Access the SMART refresh button for signal connections.
     pub fn smart_refresh_button(&self) -> &Button {
         &self.smart_refresh_button
@@ -283,19 +364,23 @@ impl DiagnosticsPage {
     pub fn update(&self, state: &DiagnosticsState) {
         self.scan_button.set_sensitive(!state.scanning);
         if state.scanning {
+            self.scan_button.set_label("Running Diagnostics…");
             self.status_label.set_text("Scanning…");
             self.status_label.set_visible(true);
-        } else if let Some(ref err) = state.error {
-            self.status_label.set_text(err);
-            self.status_label.set_visible(true);
-            self.status_label.add_css_class("error");
-        } else if state.findings.is_empty() {
-            self.status_label
-                .set_text("No issues detected. System appears healthy.");
-            self.status_label.set_visible(true);
-            self.status_label.remove_css_class("error");
         } else {
-            self.status_label.set_visible(false);
+            self.scan_button.set_label("Run Diagnostics");
+            if let Some(ref err) = state.error {
+                self.status_label.set_text(err);
+                self.status_label.set_visible(true);
+                self.status_label.add_css_class("error");
+            } else if state.findings.is_empty() {
+                self.status_label
+                    .set_text("No issues detected. System appears healthy.");
+                self.status_label.set_visible(true);
+                self.status_label.remove_css_class("error");
+            } else {
+                self.status_label.set_visible(false);
+            }
         }
 
         while let Some(child) = self.findings_list.first_child() {
@@ -315,25 +400,30 @@ impl DiagnosticsPage {
         self.smart_refresh_button.set_sensitive(!smart.refreshing);
 
         if smart.refreshing {
+            self.smart_refresh_button
+                .set_label("Refreshing SMART Data…");
             self.smart_status_label.set_text("Querying SMART data…");
             self.smart_status_label.set_visible(true);
             self.smart_status_label.remove_css_class("error");
-        } else if smart.permission_required {
-            self.smart_status_label
-                .set_text("Permission required to read SMART data.");
-            self.smart_status_label.set_visible(true);
-            self.smart_status_label.remove_css_class("error");
-        } else if let Some(ref reason) = smart.unavailable_reason {
-            self.smart_status_label.set_text(reason);
-            self.smart_status_label.set_visible(true);
-            self.smart_status_label.add_css_class("error");
-        } else if smart.drives.is_empty() {
-            self.smart_status_label
-                .set_text("No drives queried yet. Press Refresh to load SMART data.");
-            self.smart_status_label.set_visible(true);
-            self.smart_status_label.remove_css_class("error");
         } else {
-            self.smart_status_label.set_visible(false);
+            self.smart_refresh_button.set_label("Refresh SMART Data");
+            if smart.permission_required {
+                self.smart_status_label
+                    .set_text("Permission required to read SMART data.");
+                self.smart_status_label.set_visible(true);
+                self.smart_status_label.remove_css_class("error");
+            } else if let Some(ref reason) = smart.unavailable_reason {
+                self.smart_status_label.set_text(reason);
+                self.smart_status_label.set_visible(true);
+                self.smart_status_label.add_css_class("error");
+            } else if smart.drives.is_empty() {
+                self.smart_status_label
+                    .set_text("No drives queried yet. Press Refresh to load SMART data.");
+                self.smart_status_label.set_visible(true);
+                self.smart_status_label.remove_css_class("error");
+            } else {
+                self.smart_status_label.set_visible(false);
+            }
         }
 
         while let Some(child) = self.smart_drives_list.first_child() {
@@ -470,6 +560,317 @@ fn build_smart_drive_row(drive: &SmartDriveView) -> GtkBox {
     details_label.add_css_class("dim-label");
     details_label.set_halign(gtk4::Align::Start);
     row.append(&details_label);
+
+    row
+}
+
+fn build_gpu_view(gpu: &maintainer_core::hardware::GpuInfo) -> ScrolledWindow {
+    let scrolled = ScrolledWindow::new();
+    scrolled.set_vexpand(true);
+    scrolled.set_hexpand(true);
+
+    let container = GtkBox::new(Orientation::Vertical, 16);
+    container.set_margin_top(16);
+    container.set_margin_bottom(24);
+    container.set_margin_start(24);
+    container.set_margin_end(24);
+
+    let gpu_title = Label::new(Some("Default GPU"));
+    gpu_title.add_css_class("title-2");
+    gpu_title.set_halign(gtk4::Align::Start);
+    container.append(&gpu_title);
+
+    let gpu_card = GtkBox::new(Orientation::Vertical, 0);
+    gpu_card.add_css_class("maintainer_surface");
+    gpu_card.add_css_class("maintainer_spec_card");
+
+    gpu_card.append(&build_hardware_row("Brand", &gpu.brand));
+    gpu_card.append(&build_hardware_row("Name", &gpu.name));
+    gpu_card.append(&build_hardware_row("PCI ID", &gpu.pci_id));
+    gpu_card.append(&build_hardware_row("Driver", &gpu.driver));
+    container.append(&gpu_card);
+
+    let accel_title = Label::new(Some("Hardware Acceleration"));
+    accel_title.add_css_class("title-2");
+    accel_title.set_halign(gtk4::Align::Start);
+    accel_title.set_margin_top(12);
+    container.append(&accel_title);
+
+    let accel_card = GtkBox::new(Orientation::Vertical, 0);
+    accel_card.add_css_class("maintainer_surface");
+    accel_card.add_css_class("maintainer_spec_card");
+
+    accel_card.append(&build_hardware_row("OpenGL", &gpu.opengl));
+    accel_card.append(&build_hardware_row("OpenGL ES", &gpu.opengl_es));
+    accel_card.append(&build_hardware_row("Vulkan", &gpu.vulkan));
+    accel_card.append(&build_hardware_row("Video Playback", &gpu.video_playback));
+    container.append(&accel_card);
+
+    scrolled.set_child(Some(&container));
+    scrolled
+}
+
+fn build_usb_view(devices: &[maintainer_core::hardware::UsbDevice]) -> ScrolledWindow {
+    let scrolled = ScrolledWindow::new();
+    scrolled.set_vexpand(true);
+    scrolled.set_hexpand(true);
+
+    let container = GtkBox::new(Orientation::Vertical, 16);
+    container.set_margin_top(16);
+    container.set_margin_bottom(24);
+    container.set_margin_start(24);
+    container.set_margin_end(24);
+
+    let header = GtkBox::new(Orientation::Horizontal, 12);
+    header.add_css_class("maintainer_process_header");
+    let name_col = Label::new(Some("Name"));
+    name_col.set_hexpand(true);
+    name_col.set_halign(gtk4::Align::Start);
+    let id_col = Label::new(Some("ID"));
+    id_col.set_width_chars(12);
+    id_col.set_halign(gtk4::Align::Start);
+    let speed_col = Label::new(Some("Speed"));
+    speed_col.set_width_chars(12);
+    speed_col.set_halign(gtk4::Align::Start);
+    let power_col = Label::new(Some("Power"));
+    power_col.set_width_chars(12);
+    power_col.set_halign(gtk4::Align::End);
+
+    header.append(&name_col);
+    header.append(&id_col);
+    header.append(&speed_col);
+    header.append(&power_col);
+    container.append(&header);
+
+    let list = ListBox::new();
+    list.add_css_class("boxed-list");
+    list.set_selection_mode(gtk4::SelectionMode::None);
+
+    for dev in devices {
+        let row = GtkBox::new(Orientation::Horizontal, 12);
+        row.set_margin_top(8);
+        row.set_margin_bottom(8);
+        row.set_margin_start(12);
+        row.set_margin_end(12);
+
+        let icon = gtk4::Image::from_icon_name(if dev.is_hub {
+            "network-server-symbolic"
+        } else if dev.name.to_lowercase().contains("camera") {
+            "camera-web-symbolic"
+        } else if dev.name.to_lowercase().contains("bluetooth") {
+            "bluetooth-active-symbolic"
+        } else {
+            "media-removable-symbolic"
+        });
+        icon.set_pixel_size(16);
+        icon.add_css_class("maintainer_text_muted");
+        row.append(&icon);
+
+        let name_lbl = Label::new(Some(&dev.name));
+        name_lbl.set_hexpand(true);
+        name_lbl.set_halign(gtk4::Align::Start);
+        name_lbl.set_ellipsize(gtk4::pango::EllipsizeMode::Middle);
+        row.append(&name_lbl);
+
+        let id_btn = Button::with_label(&dev.id);
+        id_btn.add_css_class("flat");
+        id_btn.add_css_class("maintainer_process_pid");
+        id_btn.set_tooltip_text(Some("Click to copy ID"));
+        let id_val = dev.id.clone();
+        id_btn.connect_clicked(move |btn| {
+            if let Some(display) = gtk4::gdk::Display::default() {
+                display.clipboard().set_text(&id_val);
+                btn.set_label("Copied!");
+                let btn_done = btn.clone();
+                let original_id = id_val.clone();
+                glib::timeout_add_local_once(std::time::Duration::from_millis(1500), move || {
+                    btn_done.set_label(&original_id);
+                });
+            }
+        });
+        row.append(&id_btn);
+
+        let speed_lbl = Label::new(Some(&dev.speed));
+        speed_lbl.set_width_chars(12);
+        speed_lbl.set_halign(gtk4::Align::Start);
+        speed_lbl.add_css_class("dim-label");
+        row.append(&speed_lbl);
+
+        let power_lbl = Label::new(Some(&dev.power));
+        power_lbl.set_width_chars(12);
+        power_lbl.set_halign(gtk4::Align::End);
+        power_lbl.add_css_class("dim-label");
+        row.append(&power_lbl);
+
+        list.append(&row);
+    }
+    container.append(&list);
+
+    let note = Label::new(Some(
+        "Note: Click a device's ID button to copy it to clipboard.",
+    ));
+    note.add_css_class("dim-label");
+    note.set_halign(gtk4::Align::Center);
+    note.set_margin_top(12);
+    container.append(&note);
+
+    scrolled.set_child(Some(&container));
+    scrolled
+}
+
+fn build_pci_view(devices: &[maintainer_core::hardware::PciDevice]) -> ScrolledWindow {
+    let scrolled = ScrolledWindow::new();
+    scrolled.set_vexpand(true);
+    scrolled.set_hexpand(true);
+
+    let container = GtkBox::new(Orientation::Vertical, 16);
+    container.set_margin_top(16);
+    container.set_margin_bottom(24);
+    container.set_margin_start(24);
+    container.set_margin_end(24);
+
+    let header = GtkBox::new(Orientation::Horizontal, 12);
+    header.add_css_class("maintainer_process_header");
+    let bus_col = Label::new(Some("Bus"));
+    bus_col.set_width_chars(14);
+    bus_col.set_halign(gtk4::Align::Start);
+    let type_col = Label::new(Some("Type"));
+    type_col.set_width_chars(16);
+    type_col.set_halign(gtk4::Align::Start);
+    let brand_col = Label::new(Some("Brand"));
+    brand_col.set_width_chars(12);
+    brand_col.set_halign(gtk4::Align::Start);
+    let dev_col = Label::new(Some("Device"));
+    dev_col.set_hexpand(true);
+    dev_col.set_halign(gtk4::Align::Start);
+    let id_col = Label::new(Some("ID"));
+    id_col.set_width_chars(12);
+    id_col.set_halign(gtk4::Align::Start);
+    let driver_col = Label::new(Some("Driver"));
+    driver_col.set_width_chars(14);
+    driver_col.set_halign(gtk4::Align::Start);
+
+    header.append(&bus_col);
+    header.append(&type_col);
+    header.append(&brand_col);
+    header.append(&dev_col);
+    header.append(&id_col);
+    header.append(&driver_col);
+    container.append(&header);
+
+    let list = ListBox::new();
+    list.add_css_class("boxed-list");
+    list.set_selection_mode(gtk4::SelectionMode::None);
+
+    for dev in devices {
+        let row = GtkBox::new(Orientation::Horizontal, 12);
+        row.set_margin_top(6);
+        row.set_margin_bottom(6);
+        row.set_margin_start(12);
+        row.set_margin_end(12);
+
+        let bus_lbl = Label::new(Some(&dev.slot));
+        bus_lbl.set_width_chars(14);
+        bus_lbl.set_halign(gtk4::Align::Start);
+        bus_lbl.add_css_class("maintainer_process_pid");
+        row.append(&bus_lbl);
+
+        let type_lbl = Label::new(Some(&dev.dev_type));
+        type_lbl.set_width_chars(16);
+        type_lbl.set_halign(gtk4::Align::Start);
+        type_lbl.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+        row.append(&type_lbl);
+
+        let brand_lbl = Label::new(Some(&dev.brand));
+        brand_lbl.set_width_chars(12);
+        brand_lbl.set_halign(gtk4::Align::Start);
+        row.append(&brand_lbl);
+
+        let dev_lbl = Label::new(Some(&dev.device));
+        dev_lbl.set_hexpand(true);
+        dev_lbl.set_halign(gtk4::Align::Start);
+        dev_lbl.set_ellipsize(gtk4::pango::EllipsizeMode::Middle);
+        row.append(&dev_lbl);
+
+        let id_btn = Button::with_label(&dev.id);
+        id_btn.add_css_class("flat");
+        id_btn.add_css_class("maintainer_process_pid");
+        id_btn.set_tooltip_text(Some("Click to copy ID"));
+        let id_val = dev.id.clone();
+        id_btn.connect_clicked(move |btn| {
+            if let Some(display) = gtk4::gdk::Display::default() {
+                display.clipboard().set_text(&id_val);
+                btn.set_label("Copied!");
+                let btn_done = btn.clone();
+                let original_id = id_val.clone();
+                glib::timeout_add_local_once(std::time::Duration::from_millis(1500), move || {
+                    btn_done.set_label(&original_id);
+                });
+            }
+        });
+        row.append(&id_btn);
+
+        let driver_lbl = Label::new(Some(&dev.driver));
+        driver_lbl.set_width_chars(14);
+        driver_lbl.set_halign(gtk4::Align::Start);
+        driver_lbl.add_css_class("dim-label");
+        row.append(&driver_lbl);
+
+        list.append(&row);
+    }
+    container.append(&list);
+
+    scrolled.set_child(Some(&container));
+    scrolled
+}
+
+fn build_bios_view(bios: &maintainer_core::hardware::BiosInfo) -> ScrolledWindow {
+    let scrolled = ScrolledWindow::new();
+    scrolled.set_vexpand(true);
+    scrolled.set_hexpand(true);
+
+    let container = GtkBox::new(Orientation::Vertical, 16);
+    container.set_margin_top(16);
+    container.set_margin_bottom(24);
+    container.set_margin_start(24);
+    container.set_margin_end(24);
+
+    let title = Label::new(Some("BIOS & Motherboard"));
+    title.add_css_class("title-2");
+    title.set_halign(gtk4::Align::Start);
+    container.append(&title);
+
+    let card = GtkBox::new(Orientation::Vertical, 0);
+    card.add_css_class("maintainer_surface");
+    card.add_css_class("maintainer_spec_card");
+
+    card.append(&build_hardware_row("BIOS Vendor", &bios.vendor));
+    card.append(&build_hardware_row("BIOS Version", &bios.version));
+    card.append(&build_hardware_row("Release Date", &bios.release_date));
+    card.append(&build_hardware_row("Motherboard", &bios.motherboard));
+    container.append(&card);
+
+    scrolled.set_child(Some(&container));
+    scrolled
+}
+
+fn build_hardware_row(label_text: &str, value_text: &str) -> GtkBox {
+    let row = GtkBox::new(Orientation::Horizontal, 12);
+    row.set_margin_top(10);
+    row.set_margin_bottom(10);
+    row.set_margin_start(16);
+    row.set_margin_end(16);
+
+    let label = Label::new(Some(label_text));
+    label.add_css_class("maintainer_spec_label");
+    label.set_halign(gtk4::Align::Start);
+    label.set_hexpand(true);
+    row.append(&label);
+
+    let value = Label::new(Some(value_text));
+    value.add_css_class("maintainer_spec_value");
+    value.set_halign(gtk4::Align::End);
+    row.append(&value);
 
     row
 }

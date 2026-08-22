@@ -7,6 +7,7 @@ use gtk4::prelude::*;
 use gtk4::{self, Align, Box as GtkBox, Button, Label, Orientation, ProgressBar};
 
 /// A composite widget showing scan progress with cancel control.
+#[derive(Clone)]
 pub struct JobProgress {
     container: GtkBox,
     label: Label,
@@ -18,7 +19,7 @@ impl JobProgress {
     /// Create a new progress widget with the given status label.
     pub fn new(status_text: &str) -> Self {
         let container = GtkBox::new(Orientation::Vertical, 8);
-        container.add_css_class("job-progress");
+        container.add_css_class("maintainer_job_progress");
 
         let header_row = GtkBox::new(Orientation::Horizontal, 8);
         header_row.set_hexpand(true);
@@ -26,11 +27,15 @@ impl JobProgress {
         let label = Label::new(Some(status_text));
         label.set_halign(Align::Start);
         label.set_hexpand(true);
-        label.add_css_class("job-progress-label");
+        label.add_css_class("maintainer_job_progress_label");
 
         let cancel_button = Button::with_label("Cancel");
-        cancel_button.add_css_class("destructive-action");
+        cancel_button.add_css_class("maintainer_destructive");
         cancel_button.set_halign(Align::End);
+        cancel_button.set_size_request(40, 40);
+        cancel_button.update_property(&[gtk4::accessible::Property::Label(
+            "Cancel current operation",
+        )]);
 
         header_row.append(&label);
         header_row.append(&cancel_button);

@@ -65,7 +65,7 @@ impl ConfirmCleanupDialog {
 
         if has_permanent {
             let warning = Label::new(Some(
-                "⚠️ The following items will be permanently deleted. \
+                "Warning: The following items will be permanently deleted. \
                  This action cannot be undone.",
             ));
             warning.set_wrap(true);
@@ -75,12 +75,12 @@ impl ConfirmCleanupDialog {
         }
 
         let summary = Label::new(Some(&format!(
-            "{} items • {} will be freed",
+            "{} items — {} will be freed",
             items.len(),
             format_bytes_short(total_bytes),
         )));
         summary.set_halign(gtk4::Align::Start);
-        summary.add_css_class("dim-label");
+        summary.add_css_class("maintainer_section_title");
         container.append(&summary);
 
         let scrolled = ScrolledWindow::new();

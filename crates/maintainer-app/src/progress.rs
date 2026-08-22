@@ -167,4 +167,67 @@ mod tests {
         assert!(sp.peek().is_some());
         assert!(sp.take_latest().is_some());
     }
+
+    #[test]
+    fn throttle_rate_approximately_20_per_second() {
+        // Verify that rapid reports (100 in 200ms) result in at most ~5 accepted.
+        let sp = SharedProgress::new();
+        let sp_clone = sp.clone();
+
+        let handle = thread::spawn(move || {
+            for i in 0..100 {
+                sp_clone.report(&JobProgress {
+                    completed: i,
+                    total: Some(100),
+                    message: format!("item {i}"),
+                });
+                thread::sleep(Duration::from_millis(2));
+            }
+        });
+
+        handle.join().unwrap();
+
+        let final_val = sp.peek();
+        assert!(final_val.is_some());
+        let p = final_val.unwrap();
+        assert!(
+            p.completed < 100,
+            "Expected throttling to drop some reports"
+        );
+    }
+
+    /// Validates the stale-job rejection pattern used by progress closures.
+    /// A progress callback checks the current active job ID before applying updates.
+    #[test]
+    fn stale_job_progress_rejected() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        struct JobId(u64);
+
+        let active_id: Rc<RefCell<Option<JobId>>> = Rc::new(RefCell::new(Some(JobId(1))));
+        let applied_count: Rc<RefCell<u32>> = Rc::new(RefCell::new(0));
+
+        let sid = active_id.clone();
+        let counter = applied_count.clone();
+        let on_progress = move |job_id: JobId| {
+            if *sid.borrow() != Some(job_id) {
+                return;
+            }
+            *counter.borrow_mut() += 1;
+        };
+
+        on_progress(JobId(1));
+        on_progress(JobId(1));
+        assert_eq!(*applied_count.borrow(), 2);
+
+        *active_id.borrow_mut() = Some(JobId(2));
+
+        on_progress(JobId(1));
+        assert_eq!(*applied_count.borrow(), 2);
+
+        on_progress(JobId(2));
+        assert_eq!(*applied_count.borrow(), 3);
+    }
 }

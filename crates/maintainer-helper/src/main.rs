@@ -16,9 +16,6 @@ fn main() {
         return;
     }
 
-    let policy = Arc::new(SystemPolicy);
-    let config = ServerConfig::default();
-
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -26,6 +23,15 @@ fn main() {
             eprintln!("maintainer-helper: failed to create runtime: {e}");
             std::process::exit(1);
         });
+
+    // Connect to system bus for credential resolution and Polkit checks.
+    let bus_connection = zbus::blocking::Connection::system().unwrap_or_else(|e| {
+        eprintln!("maintainer-helper: failed to connect to system bus: {e}");
+        std::process::exit(1);
+    });
+
+    let policy = Arc::new(SystemPolicy::new(bus_connection));
+    let config = ServerConfig::default();
 
     eprintln!(
         "maintainer-helper: starting on system bus as {}",

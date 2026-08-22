@@ -64,6 +64,7 @@ impl LargeFileObject {
 }
 
 /// View for large-file scan results with virtualized column view.
+#[derive(Clone)]
 pub struct LargeFilesView {
     container: GtkBox,
     column_view: ColumnView,

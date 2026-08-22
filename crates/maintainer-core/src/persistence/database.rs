@@ -95,6 +95,71 @@ impl Database {
         f(&mut conn)
     }
 
+    /// Delete all locally stored operation, diagnostic, and scan history.
+    pub fn clear_history(&self) -> Result<u64, MaintainerError> {
+        self.with_connection_mut(|conn| {
+            let transaction = conn
+                .transaction()
+                .map_err(|error| MaintainerError::Internal {
+                    context: "starting history deletion transaction".into(),
+                    message: error.to_string(),
+                })?;
+            let mut deleted = 0_u64;
+            for table in ["operation_history", "diagnostic_history", "scan_metadata"] {
+                deleted = deleted.saturating_add(
+                    transaction
+                        .execute(&format!("DELETE FROM {table}"), [])
+                        .map_err(|error| MaintainerError::Internal {
+                            context: "deleting local history".into(),
+                            message: error.to_string(),
+                        })? as u64,
+                );
+            }
+            transaction
+                .commit()
+                .map_err(|error| MaintainerError::Internal {
+                    context: "committing history deletion".into(),
+                    message: error.to_string(),
+                })?;
+            Ok(deleted)
+        })
+    }
+
+    /// Delete all user-owned application rows while preserving the schema.
+    pub fn clear_user_data(&self) -> Result<u64, MaintainerError> {
+        self.with_connection_mut(|conn| {
+            let transaction = conn
+                .transaction()
+                .map_err(|error| MaintainerError::Internal {
+                    context: "starting application data deletion transaction".into(),
+                    message: error.to_string(),
+                })?;
+            let mut deleted = 0_u64;
+            for table in [
+                "operation_history",
+                "diagnostic_history",
+                "scan_metadata",
+                "settings",
+            ] {
+                deleted = deleted.saturating_add(
+                    transaction
+                        .execute(&format!("DELETE FROM {table}"), [])
+                        .map_err(|error| MaintainerError::Internal {
+                            context: "deleting application data".into(),
+                            message: error.to_string(),
+                        })? as u64,
+                );
+            }
+            transaction
+                .commit()
+                .map_err(|error| MaintainerError::Internal {
+                    context: "committing application data deletion".into(),
+                    message: error.to_string(),
+                })?;
+            Ok(deleted)
+        })
+    }
+
     /// Apply pragmas and run migrations.
     fn configure_and_migrate(conn: Connection) -> Result<Self, MaintainerError> {
         conn.execute_batch("PRAGMA foreign_keys = ON;")
@@ -177,6 +242,77 @@ mod tests {
             })
             .unwrap();
         assert!(count >= 1);
+    }
+
+    #[test]
+    fn clear_history_preserves_settings_and_schema() {
+        let db = Database::open_in_memory().unwrap();
+        db.with_connection(|conn| {
+            conn.execute("INSERT INTO settings (key, value) VALUES ('theme', 'dark')", [])
+                .map_err(|error| MaintainerError::Internal {
+                    context: "seeding settings".into(),
+                    message: error.to_string(),
+                })?;
+            conn.execute(
+                "INSERT INTO operation_history (id, operation, started_at, status) VALUES ('1', 'cleanup', 1, 'success')",
+                [],
+            )
+            .map_err(|error| MaintainerError::Internal {
+                context: "seeding history".into(),
+                message: error.to_string(),
+            })?;
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(db.clear_history().unwrap(), 1);
+        db.with_connection(|conn| {
+            let settings: i64 = conn
+                .query_row("SELECT COUNT(*) FROM settings", [], |row| row.get(0))
+                .unwrap();
+            let migrations: i64 = conn
+                .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(settings, 1);
+            assert!(migrations >= 1);
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn clear_user_data_preserves_migrations() {
+        let db = Database::open_in_memory().unwrap();
+        db.with_connection(|conn| {
+            conn.execute(
+                "INSERT INTO settings (key, value) VALUES ('theme', 'dark')",
+                [],
+            )
+            .map_err(|error| MaintainerError::Internal {
+                context: "seeding settings".into(),
+                message: error.to_string(),
+            })?;
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(db.clear_user_data().unwrap(), 1);
+        db.with_connection(|conn| {
+            let settings: i64 = conn
+                .query_row("SELECT COUNT(*) FROM settings", [], |row| row.get(0))
+                .unwrap();
+            let migrations: i64 = conn
+                .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(settings, 0);
+            assert!(migrations >= 1);
+            Ok(())
+        })
+        .unwrap();
     }
 
     #[test]

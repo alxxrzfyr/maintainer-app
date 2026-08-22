@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use glib::ControlFlow;
 
-use maintainer_core::jobs::{CancellationToken, JobExecutor, JobMessage};
+use maintainer_core::jobs::{CancellationToken, JobExecutor, JobMessage, ProgressSink};
 use maintainer_core::storage::{DuplicateCandidate, DuplicateScanner, ScanPolicy, StorageScanner};
 
 use crate::progress::SharedProgress;
@@ -187,8 +187,12 @@ pub fn dispatch_duplicate_scan(
 
 /// Result of a cleanup scan.
 pub enum CleanupScanOutcome {
-    Completed { item_count: usize, total_bytes: u64 },
-    Failed { message: String },
+    Completed {
+        targets: Vec<maintainer_core::cleanup::CleanupTarget>,
+    },
+    Failed {
+        message: String,
+    },
 }
 
 /// Launch a cleanup scan through the shared `JobExecutor`.
@@ -212,12 +216,11 @@ pub fn dispatch_cleanup_scan(
         let analyzer = CleanupAnalyzer::new(home_dir);
 
         match analyzer.scan_all(&token_for_worker, &progress_for_worker) {
-            Ok(targets) => {
-                let total_bytes: u64 = targets.iter().map(|t| t.size_bytes).sum();
-                Ok(CleanupScanOutcome::Completed {
-                    item_count: targets.len(),
-                    total_bytes,
-                })
+            Ok(mut targets) => {
+                targets.retain(|target| {
+                    target.privilege == maintainer_core::cleanup::PrivilegeRequirement::None
+                });
+                Ok(CleanupScanOutcome::Completed { targets })
             }
             Err(maintainer_core::error::MaintainerError::Cancelled) => {
                 Ok(CleanupScanOutcome::Failed {
@@ -233,6 +236,57 @@ pub fn dispatch_cleanup_scan(
     let rx = executor.execute(vec![job]);
     install_progress_poller(rx, progress.clone(), on_progress, on_done);
 
+    (token, progress)
+}
+
+/// Result of executing a reviewed cleanup plan.
+pub enum CleanupExecutionOutcome {
+    Completed(maintainer_core::cleanup::CleanupResult),
+    Failed { message: String },
+}
+
+/// Execute explicitly selected cleanup items after confirmation.
+pub fn dispatch_cleanup_execution(
+    executor: &Arc<JobExecutor>,
+    plan: maintainer_core::cleanup::CleanupPlan,
+    selected_indices: Vec<usize>,
+    database: Arc<maintainer_core::persistence::database::Database>,
+    on_progress: impl Fn(&maintainer_core::jobs::JobProgress) + 'static,
+    on_done: impl FnOnce(CleanupExecutionOutcome) + 'static,
+) -> (CancellationToken, SharedProgress) {
+    let token = CancellationToken::new();
+    let worker_token = token.clone();
+    let progress = SharedProgress::new();
+    let worker_progress = progress.clone();
+
+    let job = move || -> maintainer_core::error::Result<CleanupExecutionOutcome> {
+        use maintainer_core::cleanup::{CleanupExecutor, ExecutionRequest};
+        use maintainer_core::persistence::history::SqliteHistoryRepository;
+
+        let home = std::env::var("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("/tmp"));
+        let selected_item_ids = selected_indices
+            .into_iter()
+            .filter_map(|index| plan.items.get(index).map(|item| item.id))
+            .collect();
+        let request = ExecutionRequest {
+            plan_id: plan.id,
+            selected_item_ids,
+            confirm_permanent: true,
+        };
+        let history = SqliteHistoryRepository::new(&database);
+        let cleanup = CleanupExecutor::new(&home);
+        match cleanup.execute(&plan, &request, &worker_token, &worker_progress, &history) {
+            Ok(result) => Ok(CleanupExecutionOutcome::Completed(result)),
+            Err(error) => Ok(CleanupExecutionOutcome::Failed {
+                message: error.to_string(),
+            }),
+        }
+    };
+
+    let receiver = executor.execute(vec![job]);
+    install_progress_poller(receiver, progress.clone(), on_progress, on_done);
     (token, progress)
 }
 
@@ -260,19 +314,24 @@ pub fn dispatch_diagnostics_scan(
     let job = move || -> maintainer_core::error::Result<DiagnosticsScanOutcome> {
         use maintainer_core::command::SystemCommandRunner;
         use maintainer_core::diagnostics::{
-            JournalCollector, JournalFilter, group_journal_entries, interpret_groups,
+            JournalCollector, JournalFilter, ServiceDiagnostics, group_journal_entries,
+            interpret_groups,
         };
 
         let runner = SystemCommandRunner;
+        let failed_services = match ServiceDiagnostics::list_failed(&runner, &token_for_worker) {
+            maintainer_core::capability::Capability::Available(services) => services,
+            _ => Vec::new(),
+        };
         let filter = JournalFilter::default();
         let journal = JournalCollector::collect(&filter, &runner, &token_for_worker);
 
         let findings = match journal {
             maintainer_core::capability::Capability::Available(entries) => {
                 let groups = group_journal_entries(&entries);
-                interpret_groups(&groups, &[])
+                interpret_groups(&groups, &failed_services)
             }
-            _ => Vec::new(),
+            _ => interpret_groups(&[], &failed_services),
         };
 
         Ok(DiagnosticsScanOutcome::Completed { findings })
@@ -290,6 +349,7 @@ pub enum UpdatesCheckOutcome {
         summary: String,
         security_count: usize,
         total_count: usize,
+        plan: maintainer_core::updates::UpdatePlan,
     },
     UpToDate,
     Failed {
@@ -336,6 +396,7 @@ pub fn dispatch_updates_check(
                         summary,
                         security_count,
                         total_count,
+                        plan,
                     }
                 }
             }
@@ -360,6 +421,226 @@ pub fn dispatch_updates_check(
     (token, progress)
 }
 
+/// Result of executing a reviewed update plan.
+pub enum UpdateExecutionOutcome {
+    Completed {
+        message: String,
+        restart_required: bool,
+    },
+    Failed {
+        message: String,
+    },
+}
+
+/// Revalidate and execute an immutable update plan through PackageKit's CLI.
+pub fn dispatch_update_execution(
+    executor: &Arc<JobExecutor>,
+    plan: maintainer_core::updates::UpdatePlan,
+    on_progress: impl Fn(&maintainer_core::jobs::JobProgress) + 'static,
+    on_done: impl FnOnce(UpdateExecutionOutcome) + 'static,
+) -> (CancellationToken, SharedProgress) {
+    let token = CancellationToken::new();
+    let worker_token = token.clone();
+    let progress = SharedProgress::new();
+    let worker_progress = progress.clone();
+
+    let job = move || -> maintainer_core::error::Result<UpdateExecutionOutcome> {
+        use maintainer_core::capability::Capability;
+        use maintainer_core::command::{CommandRunner, CommandSpec, SystemCommandRunner};
+        use maintainer_core::updates::{AptDiscovery, DiscoveryResult};
+
+        let runner = SystemCommandRunner;
+        let current = AptDiscovery::check_updates(&runner, &worker_token);
+        match current {
+            Capability::Available(DiscoveryResult::Available(current_plan))
+                if current_plan.content_hash == plan.content_hash => {}
+            Capability::Available(DiscoveryResult::UpToDate) => {
+                return Ok(UpdateExecutionOutcome::Completed {
+                    message: "The system is already up to date.".to_string(),
+                    restart_required: false,
+                });
+            }
+            Capability::Available(DiscoveryResult::Available(_)) => {
+                return Ok(UpdateExecutionOutcome::Failed {
+                    message: "Available updates changed. Check again before installing."
+                        .to_string(),
+                });
+            }
+            Capability::Available(DiscoveryResult::Failed(error)) => {
+                return Ok(UpdateExecutionOutcome::Failed {
+                    message: error.to_string(),
+                });
+            }
+            Capability::Unavailable(reason) => {
+                return Ok(UpdateExecutionOutcome::Failed {
+                    message: reason.message,
+                });
+            }
+            Capability::PermissionRequired(request) => {
+                return Ok(UpdateExecutionOutcome::Failed {
+                    message: request.explanation,
+                });
+            }
+        }
+
+        if plan.candidates.iter().any(|candidate| {
+            candidate.name.is_empty()
+                || !candidate
+                    .name
+                    .chars()
+                    .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '+' | '-' | '.' | ':'))
+        }) {
+            return Ok(UpdateExecutionOutcome::Failed {
+                message: "The reviewed plan contains an invalid package name.".to_string(),
+            });
+        }
+
+        worker_progress.report(&maintainer_core::jobs::JobProgress {
+            completed: 0,
+            total: None,
+            message: "Waiting for PackageKit authorization…".to_string(),
+        });
+        let mut arguments = vec![
+            "--plain".to_string(),
+            "--noninteractive".to_string(),
+            "update".to_string(),
+        ];
+        arguments.extend(
+            plan.candidates
+                .iter()
+                .map(|candidate| candidate.name.clone()),
+        );
+        let command = CommandSpec::new("/usr/bin/pkcon", arguments)
+            .map_err(
+                |error| maintainer_core::error::MaintainerError::CommandFailed {
+                    message: error.to_string(),
+                },
+            )?
+            .with_timeout(Duration::from_secs(6 * 60 * 60));
+
+        match runner.run(&command, &worker_token) {
+            Ok(output) if output.success() => {
+                let combined = format!("{}\n{}", output.stdout, output.stderr);
+                let restart_required = combined.to_ascii_lowercase().contains("restart");
+                Ok(UpdateExecutionOutcome::Completed {
+                    message: "Updates installed successfully.".to_string(),
+                    restart_required,
+                })
+            }
+            Ok(output) => {
+                let message = output
+                    .stderr
+                    .lines()
+                    .chain(output.stdout.lines())
+                    .find(|line| !line.trim().is_empty())
+                    .unwrap_or("PackageKit could not install the reviewed updates")
+                    .to_string();
+                Ok(UpdateExecutionOutcome::Failed { message })
+            }
+            Err(maintainer_core::error::MaintainerError::Cancelled) => {
+                Ok(UpdateExecutionOutcome::Failed {
+                    message: "Update cancelled.".to_string(),
+                })
+            }
+            Err(error) => Ok(UpdateExecutionOutcome::Failed {
+                message: error.to_string(),
+            }),
+        }
+    };
+
+    let receiver = executor.execute(vec![job]);
+    install_progress_poller(receiver, progress.clone(), on_progress, on_done);
+    (token, progress)
+}
+
+/// Run a blocking privileged-helper call on the bounded worker pool.
+/// Run a local blocking action on the bounded worker pool and deliver its
+/// typed result on the GTK main thread.
+pub fn dispatch_local_action<T: Send + 'static>(
+    executor: &Arc<JobExecutor>,
+    operation: impl FnOnce() -> T + Send + 'static,
+    on_done: impl FnOnce(T) + 'static,
+) -> CancellationToken {
+    let token = CancellationToken::new();
+    let job = move || -> maintainer_core::error::Result<T> { Ok(operation()) };
+    let receiver = executor.execute(vec![job]);
+    install_result_poller(receiver, on_done);
+    token
+}
+
+pub fn dispatch_helper_call(
+    executor: &Arc<JobExecutor>,
+    operation: impl FnOnce() -> crate::helper_client::HelperResult + Send + 'static,
+    on_done: impl FnOnce(crate::helper_client::HelperResult) + 'static,
+) -> CancellationToken {
+    let token = CancellationToken::new();
+    let job = move || -> maintainer_core::error::Result<crate::helper_client::HelperResult> {
+        Ok(operation())
+    };
+    let receiver = executor.execute(vec![job]);
+    install_result_poller(receiver, on_done);
+    token
+}
+
+/// Result of refreshing SMART data through the privileged helper.
+pub enum SmartRefreshOutcome {
+    Loaded(Vec<maintainer_core::diagnostics::SmartDrive>),
+    PermissionRequired,
+    Unavailable(String),
+}
+
+/// Discover drives, refresh each fixed UDisks object through the helper, then reload data.
+pub fn dispatch_smart_refresh(
+    executor: &Arc<JobExecutor>,
+    helper: crate::helper_client::SharedHelperClient,
+    on_done: impl FnOnce(SmartRefreshOutcome) + 'static,
+) -> CancellationToken {
+    let token = CancellationToken::new();
+    let job = move || -> maintainer_core::error::Result<SmartRefreshOutcome> {
+        use maintainer_core::capability::Capability;
+        use maintainer_core::diagnostics::{RealUDisksClient, query_smart_drives};
+
+        const DRIVE_PREFIX: &str = "/org/freedesktop/UDisks2/drives/";
+        let client = RealUDisksClient::new();
+        let drives = match query_smart_drives(&client) {
+            Capability::Available(drives) => drives,
+            Capability::Unavailable(reason) => {
+                return Ok(SmartRefreshOutcome::Unavailable(reason.message));
+            }
+            Capability::PermissionRequired(_) => {
+                return Ok(SmartRefreshOutcome::PermissionRequired);
+            }
+        };
+
+        for drive in &drives {
+            if drive.removable {
+                continue;
+            }
+            let Some(drive_id) = drive.object_path.strip_prefix(DRIVE_PREFIX) else {
+                continue;
+            };
+            match helper.refresh_smart(drive_id) {
+                Capability::Available(_) => {}
+                Capability::Unavailable(reason) => {
+                    return Ok(SmartRefreshOutcome::Unavailable(reason.message));
+                }
+                Capability::PermissionRequired(_) => {
+                    return Ok(SmartRefreshOutcome::PermissionRequired);
+                }
+            }
+        }
+
+        match query_smart_drives(&client) {
+            Capability::Available(drives) => Ok(SmartRefreshOutcome::Loaded(drives)),
+            Capability::Unavailable(reason) => Ok(SmartRefreshOutcome::Unavailable(reason.message)),
+            Capability::PermissionRequired(_) => Ok(SmartRefreshOutcome::PermissionRequired),
+        }
+    };
+    let receiver = executor.execute(vec![job]);
+    install_result_poller(receiver, on_done);
+    token
+}
+
 /// Reports generation result.
 pub enum ReportOutcome {
     Completed { text: String },
@@ -369,96 +650,142 @@ pub enum ReportOutcome {
 /// Launch report generation through the shared `JobExecutor`.
 pub fn dispatch_report_generation(
     executor: &Arc<JobExecutor>,
+    database: Option<Arc<maintainer_core::persistence::database::Database>>,
     on_done: impl FnOnce(ReportOutcome) + 'static,
 ) -> CancellationToken {
     let token = CancellationToken::new();
+    let worker_token = token.clone();
 
     let job = move || -> maintainer_core::error::Result<ReportOutcome> {
+        use std::path::Path;
+        use std::time::Instant;
+
         use maintainer_core::capability::{Capability, UnavailableReason};
+        use maintainer_core::command::SystemCommandRunner;
+        use maintainer_core::diagnostics::{
+            JournalCollector, JournalFilter, RealUDisksClient, ServiceDiagnostics,
+            group_journal_entries, query_smart_drives,
+        };
+        use maintainer_core::metrics::disk::read_mounts_with_capacity;
+        use maintainer_core::metrics::{
+            NetworkSnapshot, compute_cpu_snapshot, read_cpu_sample, read_memory, read_net_dev,
+            read_temperatures,
+        };
+        use maintainer_core::persistence::history::{HistoryRepository, SqliteHistoryRepository};
         use maintainer_core::reports::model::{
-            CapabilityNote, DiagnosticsSection, HardwareSection, HealthSection, MaintenanceSection,
-            RedactionPolicy, SoftwareUpdatesSection, SystemReport,
+            DiagnosticsSection, HardwareSection, HealthSection, MaintenanceSection,
+            RedactionPolicy, SoftwareUpdatesSection, SystemReport, UpdateInfo,
         };
         use maintainer_core::reports::{redact_report, render_text};
+        use maintainer_core::updates::{AptDiscovery, DiscoveryResult};
 
-        let os_section = build_os_section();
+        fn unavailable<T>(code: &'static str, message: String) -> Capability<T> {
+            Capability::Unavailable(UnavailableReason {
+                code,
+                message,
+                remediation: None,
+            })
+        }
+
+        let proc_path = Path::new("/proc");
+        let sys_path = Path::new("/sys");
+        let first_cpu = read_cpu_sample(proc_path, Instant::now());
+        std::thread::sleep(Duration::from_millis(100));
+        let cpu = match (first_cpu, read_cpu_sample(proc_path, Instant::now())) {
+            (Ok(first), Ok(second)) => Capability::Available(compute_cpu_snapshot(&first, &second)),
+            (Err(error), _) | (_, Err(error)) => unavailable("proc-stat-read", error.to_string()),
+        };
+        let memory = read_memory(proc_path)
+            .map(Capability::Available)
+            .unwrap_or_else(|error| unavailable("meminfo-read", error.to_string()));
+        let disks = read_mounts_with_capacity(proc_path)
+            .map(Capability::Available)
+            .unwrap_or_else(|error| unavailable("mounts-read", error.to_string()));
+        let network = read_net_dev(proc_path)
+            .map(|counters| {
+                counters
+                    .into_iter()
+                    .map(|(interface, value)| NetworkSnapshot {
+                        is_loopback: interface == "lo",
+                        interface,
+                        rx_bytes: value.rx_bytes,
+                        tx_bytes: value.tx_bytes,
+                        rx_packets: value.rx_packets,
+                        tx_packets: value.tx_packets,
+                        rx_errors: value.rx_errors,
+                        tx_errors: value.tx_errors,
+                        rx_bytes_per_sec: None,
+                        tx_bytes_per_sec: None,
+                    })
+                    .collect()
+            })
+            .map(Capability::Available)
+            .unwrap_or_else(|error| unavailable("net-dev-read", error.to_string()));
+        let temperatures = read_temperatures(sys_path)
+            .map(Capability::Available)
+            .unwrap_or_else(|error| unavailable("hwmon-read", error.to_string()));
+        let smart_drives = query_smart_drives(&RealUDisksClient::new());
+
+        let runner = SystemCommandRunner;
+        let failed_services = ServiceDiagnostics::list_failed(&runner, &worker_token);
+        let event_groups =
+            match JournalCollector::collect(&JournalFilter::default(), &runner, &worker_token) {
+                Capability::Available(entries) => {
+                    Capability::Available(group_journal_entries(&entries))
+                }
+                Capability::Unavailable(reason) => Capability::Unavailable(reason),
+                Capability::PermissionRequired(request) => Capability::PermissionRequired(request),
+            };
+        let pending_updates = match AptDiscovery::check_updates(&runner, &worker_token) {
+            Capability::Available(DiscoveryResult::Available(plan)) => Capability::Available(
+                plan.candidates
+                    .into_iter()
+                    .map(|candidate| UpdateInfo {
+                        package_name: candidate.name,
+                        current_version: candidate
+                            .installed_version
+                            .unwrap_or_else(|| "not installed".to_string()),
+                        available_version: candidate.available_version,
+                    })
+                    .collect(),
+            ),
+            Capability::Available(DiscoveryResult::UpToDate) => Capability::Available(Vec::new()),
+            Capability::Available(DiscoveryResult::Failed(error)) => {
+                unavailable("apt-check-failed", error.to_string())
+            }
+            Capability::Unavailable(reason) => Capability::Unavailable(reason),
+            Capability::PermissionRequired(request) => Capability::PermissionRequired(request),
+        };
+        let recent_history = database
+            .as_deref()
+            .and_then(|database| SqliteHistoryRepository::new(database).recent(20).ok())
+            .unwrap_or_default();
 
         let report = SystemReport {
             generated_at: chrono_like_now(),
-            os: os_section,
+            os: build_os_section(),
             hardware: HardwareSection {
-                cpu: Capability::Unavailable(UnavailableReason {
-                    code: "not-sampled",
-                    message: "Report does not trigger live sampling".into(),
-                    remediation: None,
-                }),
-                memory: Capability::Unavailable(UnavailableReason {
-                    code: "not-sampled",
-                    message: "Report does not trigger live sampling".into(),
-                    remediation: None,
-                }),
-                disks: Capability::Unavailable(UnavailableReason {
-                    code: "not-sampled",
-                    message: "Report does not trigger live sampling".into(),
-                    remediation: None,
-                }),
-                network: Capability::Unavailable(UnavailableReason {
-                    code: "not-sampled",
-                    message: "Report does not trigger live sampling".into(),
-                    remediation: None,
-                }),
-                temperatures: Capability::Unavailable(UnavailableReason {
-                    code: "not-sampled",
-                    message: "Report does not trigger live sampling".into(),
-                    remediation: None,
-                }),
+                cpu,
+                memory,
+                disks,
+                network,
+                temperatures,
             },
-            health: HealthSection {
-                smart_drives: Capability::Unavailable(UnavailableReason {
-                    code: "not-queried",
-                    message: "SMART data not queried for report".into(),
-                    remediation: None,
-                }),
-            },
+            health: HealthSection { smart_drives },
+            software_updates: SoftwareUpdatesSection { pending_updates },
             diagnostics: DiagnosticsSection {
-                failed_services: Capability::Unavailable(UnavailableReason {
-                    code: "not-queried",
-                    message: "Service diagnostics not queried for report".into(),
-                    remediation: None,
-                }),
-                event_groups: Capability::Unavailable(UnavailableReason {
-                    code: "not-queried",
-                    message: "Journal events not queried for report".into(),
-                    remediation: None,
-                }),
+                failed_services,
+                event_groups,
             },
-            maintenance: MaintenanceSection {
-                recent_history: Vec::new(),
-            },
-            software_updates: SoftwareUpdatesSection {
-                pending_updates: Capability::Unavailable(UnavailableReason {
-                    code: "not-checked",
-                    message: "Update check not performed for report".into(),
-                    remediation: None,
-                }),
-            },
-            capability_notes: vec![CapabilityNote {
-                name: "Live metrics".into(),
-                status: "not sampled".into(),
-                reason: Some("Report does not trigger live sampling".into()),
-            }],
+            maintenance: MaintenanceSection { recent_history },
+            capability_notes: Vec::new(),
         };
-
-        let policy = RedactionPolicy::default();
-        let redacted = redact_report(report, &policy);
-        let text = render_text(&redacted);
-
+        let text = render_text(&redact_report(report, &RedactionPolicy::default()));
         Ok(ReportOutcome::Completed { text })
     };
 
-    let rx = executor.execute(vec![job]);
-    install_result_poller(rx, on_done);
-
+    let receiver = executor.execute(vec![job]);
+    install_result_poller(receiver, on_done);
     token
 }
 
@@ -534,8 +861,28 @@ fn chrono_like_now() -> String {
     let duration = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap_or_default();
-    let secs = duration.as_secs();
-    format!("{secs} (Unix timestamp)")
+    format_unix_time_utc(duration.as_secs())
+}
+
+fn format_unix_time_utc(secs: u64) -> String {
+    let mut days = (secs / 86400) as i64;
+    let rem_secs = secs % 86400;
+    let hours = rem_secs / 3600;
+    let minutes = (rem_secs % 3600) / 60;
+    let seconds = rem_secs % 60;
+
+    days += 719468;
+    let era = if days >= 0 { days } else { days - 146096 } / 146097;
+    let doe = (days - era * 146097) as u32;
+    let yoe = (doe - doe / 1024 + doe / 1461 - doe / 142401) / 365;
+    let y = (yoe as i64) + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+
+    format!("{y:04}-{m:02}-{d:02} {hours:02}:{minutes:02}:{seconds:02} UTC")
 }
 
 fn build_os_section() -> maintainer_core::reports::model::OsSection {

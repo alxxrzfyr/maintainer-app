@@ -107,6 +107,35 @@ impl Default for SampleRing {
     }
 }
 
+/// Detailed hardware and system specifications.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceInfo {
+    /// Laptop / Hardware model (e.g. "LENOVO ThinkPad T460p (20FXS06A2K)").
+    pub model: String,
+    /// Operating system distribution (e.g. "Linux Mint 22.3 (64-bit)").
+    pub os: String,
+    /// Linux kernel version (e.g. "Linux 6.8.0-52-generic").
+    pub kernel: String,
+    /// Processor model and core configuration (e.g. "Intel Core i5-6440HQ @ 2.60GHz x 4").
+    pub cpu: String,
+    /// Graphics card / GPU (e.g. "Intel Corporation HD Graphics 530").
+    pub gpu: String,
+    /// Total RAM installed (e.g. "7.9 GB").
+    pub memory: String,
+    /// Storage / Hard Drives (e.g. "120.3 GB (ext4)").
+    pub storage: String,
+    /// Desktop environment (e.g. "XFCE", "GNOME", "Cinnamon").
+    pub desktop_env: String,
+    /// Display server (e.g. "X11", "Wayland").
+    pub display_server: String,
+}
+
+impl Default for DeviceInfo {
+    fn default() -> Self {
+        collect_device_info()
+    }
+}
+
 /// Presentation state for the Overview page.
 #[derive(Debug, Clone)]
 pub struct OverviewViewModel {
@@ -124,6 +153,8 @@ pub struct OverviewViewModel {
     pub network_text: String,
     /// Attention items derived from explicit evidence.
     pub attention_items: Vec<AttentionItem>,
+    /// Hardware and system specifications.
+    pub device_info: DeviceInfo,
     /// Whether CPU data is available.
     pub cpu_available: bool,
     /// Whether memory data is available.
@@ -144,6 +175,7 @@ impl Default for OverviewViewModel {
             disk_text: "—".into(),
             network_text: "—".into(),
             attention_items: Vec::new(),
+            device_info: DeviceInfo::default(),
             cpu_available: false,
             memory_available: false,
             cpu_unavailable_reason: None,
@@ -480,6 +512,263 @@ fn format_bytes_rate(bytes_per_sec: f64) -> String {
     } else {
         format!("{:.0} B", bytes_per_sec)
     }
+}
+
+/// Collect hardware and system specifications.
+pub fn collect_device_info() -> DeviceInfo {
+    use std::fs;
+    use std::path::Path;
+
+    let vendor = fs::read_to_string("/sys/devices/virtual/dmi/id/sys_vendor")
+        .or_else(|_| fs::read_to_string("/sys/class/dmi/id/sys_vendor"))
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let product_name = fs::read_to_string("/sys/devices/virtual/dmi/id/product_name")
+        .or_else(|_| fs::read_to_string("/sys/class/dmi/id/product_name"))
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let product_version = fs::read_to_string("/sys/devices/virtual/dmi/id/product_version")
+        .or_else(|_| fs::read_to_string("/sys/class/dmi/id/product_version"))
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let arm_model = fs::read_to_string("/proc/device-tree/model")
+        .unwrap_or_default()
+        .trim_matches('\0')
+        .trim()
+        .to_string();
+
+    let model = if !product_version.is_empty()
+        && product_version != "None"
+        && product_version != product_name
+    {
+        if !vendor.is_empty() && !product_name.is_empty() {
+            format!("{vendor} {product_version} ({product_name})")
+        } else if !vendor.is_empty() {
+            format!("{vendor} {product_version}")
+        } else {
+            product_version
+        }
+    } else if !product_name.is_empty()
+        && product_name != "System Product Name"
+        && product_name != "To be filled by O.E.M."
+    {
+        if !vendor.is_empty()
+            && !product_name
+                .to_lowercase()
+                .starts_with(&vendor.to_lowercase())
+        {
+            format!("{vendor} {product_name}")
+        } else {
+            product_name
+        }
+    } else if !arm_model.is_empty() {
+        arm_model
+    } else if !vendor.is_empty() && vendor != "System manufacturer" {
+        format!("{vendor} PC")
+    } else {
+        "Linux Device".to_string()
+    };
+
+    let os_release = fs::read_to_string("/etc/os-release").unwrap_or_default();
+    let pretty_name = os_release
+        .lines()
+        .find(|l| l.starts_with("PRETTY_NAME="))
+        .map(|l| {
+            l.trim_start_matches("PRETTY_NAME=")
+                .trim_matches('"')
+                .to_string()
+        })
+        .unwrap_or_else(|| "Linux".to_string());
+    let arch = std::env::consts::ARCH;
+    let arch_label = match arch {
+        "x86_64" => "64-bit",
+        "aarch64" => "ARM64",
+        "x86" => "32-bit",
+        other => other,
+    };
+    let os = format!("{pretty_name} ({arch_label})");
+
+    let kernel_ver = fs::read_to_string("/proc/sys/kernel/osrelease")
+        .unwrap_or_else(|_| {
+            fs::read_to_string("/proc/version")
+                .unwrap_or_default()
+                .split_whitespace()
+                .nth(2)
+                .unwrap_or("unknown")
+                .to_string()
+        })
+        .trim()
+        .to_string();
+    let kernel = format!("Linux {kernel_ver}");
+
+    let cpuinfo = fs::read_to_string("/proc/cpuinfo").unwrap_or_default();
+    let cpu_name = cpuinfo
+        .lines()
+        .find(|l| {
+            l.starts_with("model name") || l.starts_with("Processor") || l.starts_with("Hardware")
+        })
+        .and_then(|l| l.split(':').nth(1))
+        .map(|name| {
+            name.replace("(R)", "")
+                .replace("(TM)", "")
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .unwrap_or_else(|| "CPU".to_string());
+    let thread_count = cpuinfo
+        .lines()
+        .filter(|l| l.starts_with("processor\t") || l.starts_with("processor :"))
+        .count();
+    let cpu = if thread_count > 0 {
+        format!("{cpu_name} x {thread_count}")
+    } else {
+        cpu_name
+    };
+
+    let gpu = detect_gpu();
+
+    let meminfo = fs::read_to_string("/proc/meminfo").unwrap_or_default();
+    let mem_total_kb = meminfo
+        .lines()
+        .find(|l| l.starts_with("MemTotal:"))
+        .and_then(|l| l.split_whitespace().nth(1))
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(0);
+    let memory = if mem_total_kb > 0 {
+        let gb = mem_total_kb as f64 / 1_000_000.0;
+        format!("{gb:.1} GB")
+    } else {
+        "—".to_string()
+    };
+
+    let storage =
+        match maintainer_core::metrics::disk::read_mounts_with_capacity(Path::new("/proc")) {
+            Ok(mounts) => {
+                if let Some(root) = mounts.iter().find(|m| m.mount_point == "/") {
+                    let total_gb = root.total_bytes as f64 / 1_000_000_000.0;
+                    format!("{total_gb:.1} GB (ext4)")
+                } else {
+                    let total: u64 = mounts.iter().map(|m| m.total_bytes).sum();
+                    let total_gb = total as f64 / 1_000_000_000.0;
+                    format!("{total_gb:.1} GB")
+                }
+            }
+            Err(_) => "Storage available".to_string(),
+        };
+
+    let desktop_env = std::env::var("XDG_CURRENT_DESKTOP")
+        .or_else(|_| std::env::var("DESKTOP_SESSION"))
+        .unwrap_or_else(|_| "Desktop".to_string());
+
+    let display_server = std::env::var("XDG_SESSION_TYPE").unwrap_or_else(|_| {
+        if std::env::var("WAYLAND_DISPLAY").is_ok() {
+            "Wayland".to_string()
+        } else if std::env::var("DISPLAY").is_ok() {
+            "X11".to_string()
+        } else {
+            "Unknown".to_string()
+        }
+    });
+
+    DeviceInfo {
+        model,
+        os,
+        kernel,
+        cpu,
+        gpu,
+        memory,
+        storage,
+        desktop_env,
+        display_server,
+    }
+}
+
+/// Detect graphics card model name via lspci or sysfs.
+fn detect_gpu() -> String {
+    use std::fs;
+    use std::process::Command;
+
+    if let Ok(output) = Command::new("lspci").args(["-mm"]).output() {
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let mut gpus = Vec::new();
+            for line in stdout.lines() {
+                if line.contains("VGA compatible controller")
+                    || line.contains("3D controller")
+                    || line.contains("Display controller")
+                {
+                    let parts: Vec<&str> = line
+                        .split('"')
+                        .enumerate()
+                        .filter_map(|(idx, s)| if idx % 2 == 1 { Some(s.trim()) } else { None })
+                        .collect();
+                    if parts.len() >= 3 {
+                        let vendor = parts[1];
+                        let device = parts[2];
+                        let name = if device.to_lowercase().starts_with(&vendor.to_lowercase()) {
+                            device.to_string()
+                        } else {
+                            format!("{vendor} {device}")
+                        };
+                        if !gpus.contains(&name) {
+                            gpus.push(name);
+                        }
+                    }
+                }
+            }
+            if !gpus.is_empty() {
+                return gpus.join(" / ");
+            }
+        }
+    }
+
+    if let Ok(entries) = fs::read_dir("/sys/bus/pci/devices") {
+        let mut gpus = Vec::new();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if let Ok(class) = fs::read_to_string(path.join("class")) {
+                let class_trimmed = class.trim();
+                if class_trimmed.starts_with("0x0300")
+                    || class_trimmed.starts_with("0x0302")
+                    || class_trimmed.starts_with("0x0380")
+                {
+                    let vendor_id = fs::read_to_string(path.join("vendor"))
+                        .unwrap_or_default()
+                        .trim()
+                        .to_string();
+                    let driver = fs::read_link(path.join("driver"))
+                        .ok()
+                        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+                        .unwrap_or_default();
+
+                    let vendor_name = match vendor_id.to_lowercase().as_str() {
+                        "0x8086" => "Intel Corporation",
+                        "0x10de" => "NVIDIA Corporation",
+                        "0x1002" => "AMD",
+                        _ => "Integrated",
+                    };
+
+                    let entry_desc = if !driver.is_empty() {
+                        format!("{vendor_name} Graphics ({driver})")
+                    } else {
+                        format!("{vendor_name} Graphics")
+                    };
+                    if !gpus.contains(&entry_desc) {
+                        gpus.push(entry_desc);
+                    }
+                }
+            }
+        }
+        if !gpus.is_empty() {
+            return gpus.join(" / ");
+        }
+    }
+
+    "Integrated Graphics".to_string()
 }
 
 #[cfg(test)]

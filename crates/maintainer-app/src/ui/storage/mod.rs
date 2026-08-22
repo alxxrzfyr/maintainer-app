@@ -15,6 +15,7 @@ use gtk4::{self, Box as GtkBox, Orientation, Stack, StackSwitcher};
 use crate::state::{StorageState, StorageSubPage};
 
 /// Top-level storage page containing sub-page navigation and content stack.
+#[derive(Clone)]
 pub struct StoragePage {
     container: GtkBox,
     stack: Stack,
@@ -47,6 +48,7 @@ impl StoragePage {
         switcher.set_halign(gtk4::Align::Center);
         switcher.set_margin_top(12);
         switcher.set_margin_bottom(12);
+        switcher.add_css_class("maintainer_stack_switcher");
 
         container.append(&switcher);
         container.append(&stack);
@@ -65,7 +67,12 @@ impl StoragePage {
         &self.container
     }
 
-    /// Update the visible sub-page based on state.
+    /// Get the storage stack widget.
+    pub fn stack_handle(&self) -> &Stack {
+        &self.stack
+    }
+
+    /// Update all storage sub-pages from the current state.
     pub fn apply_state(&self, state: &StorageState) {
         let page_name = match state.sub_page {
             StorageSubPage::Overview => "overview",
@@ -73,6 +80,9 @@ impl StoragePage {
             StorageSubPage::Duplicates => "duplicates",
         };
         self.stack.set_visible_child_name(page_name);
+        self.overview.apply_state(state);
+        self.large_files.apply_state(state);
+        self.duplicates.apply_state(state);
     }
 }
 

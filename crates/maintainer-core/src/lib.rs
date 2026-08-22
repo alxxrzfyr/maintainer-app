@@ -5,6 +5,7 @@ pub mod cleanup;
 pub mod command;
 pub mod diagnostics;
 pub mod error;
+pub mod hardware;
 pub mod jobs;
 pub mod metrics;
 pub mod persistence;

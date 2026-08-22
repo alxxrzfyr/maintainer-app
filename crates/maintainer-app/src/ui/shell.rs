@@ -8,8 +8,8 @@ use std::time::Duration;
 use glib::ControlFlow;
 use gtk4::prelude::*;
 use gtk4::{
-    Align, ApplicationWindow, Box as GtkBox, Button, HeaderBar, Image, Label, MenuButton,
-    Orientation, Popover, Stack, StackTransitionType,
+    Align, ApplicationWindow, Box as GtkBox, Button, Image, Label, MenuButton, Orientation,
+    Popover, Stack, StackTransitionType,
 };
 
 use maintainer_core::settings::SettingsRepository;
@@ -45,6 +45,7 @@ impl Shell {
             .build();
 
         window.add_css_class("maintainer_window");
+        window.set_size_request(360, 480);
 
         let overview_page = OverviewPage::new();
         let system_page = SystemPage::new();
@@ -52,21 +53,38 @@ impl Shell {
         let cleanup_page = CleanupPage::new();
         let updates_page = UpdatesPage::new();
         let diagnostics_page = DiagnosticsPage::new();
-        let reports_widget = build_reports_page();
+        let reports_widget = build_reports_page(runtime.clone());
 
         let settings_snapshot = runtime.borrow().settings.clone();
         let runtime_for_settings = runtime.clone();
-        let settings_widget = build_settings_page(&settings_snapshot, move |intent| {
-            let mut rt = runtime_for_settings.borrow_mut();
-            let mut settings_state =
-                crate::state::SettingsState::from_snapshot(rt.settings.clone());
-            if settings_state.reduce(intent) {
-                rt.settings = settings_state.snapshot.clone();
-                if let Some(db) = rt.database() {
-                    let repo = maintainer_core::settings::SqliteSettingsRepository::new(db);
-                    let core_settings = to_core_settings(&settings_state.snapshot);
-                    if let Err(e) = repo.save(&core_settings) {
-                        eprintln!("warning: failed to save settings: {e}");
+        let window_for_settings = window.clone();
+        let settings_widget = build_settings_page(&settings_snapshot, move |intent| match intent {
+            crate::state::SettingsIntent::RequestDeleteAllHistory => {
+                Self::confirm_settings_deletion(&window_for_settings, &runtime_for_settings, false);
+            }
+            crate::state::SettingsIntent::RequestDeleteAllData => {
+                Self::confirm_settings_deletion(&window_for_settings, &runtime_for_settings, true);
+            }
+            intent => {
+                let requested_theme = match &intent {
+                    crate::state::SettingsIntent::SetTheme(theme) => Some(*theme),
+                    _ => None,
+                };
+                let mut rt = runtime_for_settings.borrow_mut();
+                let mut settings_state =
+                    crate::state::SettingsState::from_snapshot(rt.settings.clone());
+                if settings_state.reduce(intent) {
+                    rt.settings = settings_state.snapshot.clone();
+                    if let Some(db) = rt.database() {
+                        let repo = maintainer_core::settings::SqliteSettingsRepository::new(db);
+                        let core_settings = to_core_settings(&settings_state.snapshot);
+                        if let Err(error) = repo.save(&core_settings) {
+                            eprintln!("warning: failed to save settings: {error}");
+                        }
+                    }
+                    drop(rt);
+                    if let Some(theme) = requested_theme {
+                        crate::application::apply_theme(theme);
                     }
                 }
             }
@@ -88,20 +106,21 @@ impl Shell {
 
         page_stack.set_visible_child_name("Overview");
 
-        let header = HeaderBar::new();
-        header.add_css_class("maintainer_header");
+        let drawer_strip = GtkBox::new(Orientation::Horizontal, 0);
+        drawer_strip.add_css_class("maintainer_drawer_strip");
+        drawer_strip.set_visible(false);
 
         let page_stack_ref = page_stack.clone();
         let state_for_drawer = state.clone();
         let menu_button = Self::build_drawer_menu_button(&state_for_drawer, &page_stack_ref);
-        menu_button.set_visible(false);
-        header.pack_start(&menu_button);
+        drawer_strip.append(&menu_button);
 
         let outer_box = GtkBox::new(Orientation::Vertical, 0);
-        outer_box.append(&header);
+        outer_box.append(&drawer_strip);
 
         let root_box = GtkBox::new(Orientation::Horizontal, 0);
         root_box.set_vexpand(true);
+        root_box.add_css_class("maintainer_layout_wide");
 
         let sidebar_container = GtkBox::new(Orientation::Vertical, 0);
         sidebar_container.set_width_request(220);
@@ -122,36 +141,102 @@ impl Shell {
             NavigationMode::Persistent,
         );
 
-        let state_for_notify = state.clone();
-        let sidebar_for_notify = sidebar_container.clone();
-        let stack_for_notify = page_stack.clone();
-        let menu_button_for_notify = menu_button.clone();
-        window.connect_default_width_notify(move |win| {
-            let width = win.width();
-            if width > 0 {
+        let state_for_resize = state.clone();
+        let sidebar_for_resize = sidebar_container.clone();
+        let stack_for_resize = page_stack.clone();
+        let menu_button_for_resize = menu_button.clone();
+        let drawer_strip_for_resize = drawer_strip.clone();
+        let root_for_resize = root_box.clone();
+        window.connect_realize(move |win| {
+            let Some(surface) = win.surface() else {
+                return;
+            };
+
+            let state = state_for_resize.clone();
+            let sidebar = sidebar_for_resize.clone();
+            let stack = stack_for_resize.clone();
+            let menu_button = menu_button_for_resize.clone();
+            let drawer_strip = drawer_strip_for_resize.clone();
+            let root = root_for_resize.clone();
+            let apply_width = Rc::new(move |width: i32| {
+                if width <= 0 {
+                    return;
+                }
                 let mode = NavigationMode::from_width(width);
+                for class_name in [
+                    "maintainer_layout_wide",
+                    "maintainer_layout_compact",
+                    "maintainer_layout_narrow",
+                ] {
+                    root.remove_css_class(class_name);
+                }
+                root.add_css_class(match mode {
+                    NavigationMode::Persistent => "maintainer_layout_wide",
+                    NavigationMode::Compact => "maintainer_layout_compact",
+                    NavigationMode::Drawer => "maintainer_layout_narrow",
+                });
                 let new_width = match mode {
                     NavigationMode::Persistent => 220,
                     NavigationMode::Compact => 60,
                     NavigationMode::Drawer => 0,
                 };
-                sidebar_for_notify.set_width_request(new_width);
-                sidebar_for_notify.set_visible(mode != NavigationMode::Drawer);
-                menu_button_for_notify.set_visible(mode == NavigationMode::Drawer);
-                Self::rebuild_sidebar_widget(
-                    &sidebar_for_notify,
-                    &stack_for_notify,
-                    &state_for_notify,
-                    mode,
-                );
-            }
+                sidebar.set_width_request(new_width);
+                sidebar.set_visible(mode != NavigationMode::Drawer);
+                menu_button.set_visible(mode == NavigationMode::Drawer);
+                drawer_strip.set_visible(mode == NavigationMode::Drawer);
+                Self::rebuild_sidebar_widget(&sidebar, &stack, &state, mode);
+            });
+
+            apply_width(surface.width());
+            let apply_width_for_notify = apply_width.clone();
+            surface.connect_width_notify(move |surface| {
+                apply_width_for_notify(surface.width());
+            });
+        });
+
+        let page_stack_for_overview = page_stack.clone();
+        let sidebar_for_overview = sidebar_container.clone();
+        let state_for_overview = state.clone();
+        overview_page.connect_navigate(move |target_page| {
+            state_for_overview
+                .borrow_mut()
+                .reduce(crate::state::AppIntent::Navigate(target_page));
+            page_stack_for_overview.set_visible_child_name(target_page.label());
+            crate::ui::navigation::update_active_buttons(&sidebar_for_overview, target_page);
         });
 
         let overview_ref = Rc::new(overview_page);
         let system_ref = Rc::new(system_page);
 
+        let runtime_for_sort = runtime.clone();
+        let system_for_sort = system_ref.clone();
+        system_ref.connect_sort_changed(move |sort| {
+            let mut rt = runtime_for_sort.borrow_mut();
+            rt.monitoring
+                .reduce(MonitoringMessage::SetProcessSort(sort));
+            system_for_sort.update(&rt.monitoring.system);
+        });
+
+        let runtime_for_terminate = runtime.clone();
+        let terminate_status = system_ref.operation_status_handle();
+        system_ref.connect_terminate(move |pid, start_time_ticks| {
+            terminate_status.remove_css_class("error");
+            terminate_status.set_text("Requesting authorization…");
+            terminate_status.set_visible(true);
+
+            let rt = runtime_for_terminate.borrow();
+            let helper = rt.helper.clone();
+            let executor = rt.executor.clone();
+            drop(rt);
+            let status = terminate_status.clone();
+            crate::dispatch::dispatch_helper_call(
+                &executor,
+                move || helper.terminate_process(pid, start_time_ticks),
+                move |result| Self::show_helper_result(&status, result),
+            );
+        });
         Self::wire_storage_dispatch(&storage_page, &runtime);
-        Self::wire_cleanup_dispatch(&cleanup_page, &runtime);
+        Self::wire_cleanup_dispatch(&cleanup_page, &runtime, &window);
         Self::wire_updates_dispatch(&updates_page, &runtime);
         Self::wire_diagnostics_dispatch(&diagnostics_page, &runtime);
 
@@ -177,9 +262,149 @@ impl Shell {
         Shell { window }
     }
 
+    fn confirm_settings_deletion(
+        parent: &ApplicationWindow,
+        runtime: &RuntimeHandle,
+        delete_all_data: bool,
+    ) {
+        let (title, body, confirm_label) = if delete_all_data {
+            (
+                "Delete all Maintainer data?",
+                "This permanently removes local settings and maintenance history. The database schema is preserved and default settings are recreated.",
+                "Delete All Data",
+            )
+        } else {
+            (
+                "Delete all history?",
+                "This permanently removes operation, diagnostic, and scan history. Settings are preserved.",
+                "Delete History",
+            )
+        };
+
+        let dialog = gtk4::MessageDialog::builder()
+            .transient_for(parent)
+            .modal(true)
+            .message_type(gtk4::MessageType::Warning)
+            .text(title)
+            .secondary_text(body)
+            .build();
+        dialog.add_button("Cancel", gtk4::ResponseType::Cancel);
+        dialog.add_button(confirm_label, gtk4::ResponseType::Accept);
+
+        let runtime_for_response = runtime.clone();
+        let parent_for_response = parent.clone();
+        dialog.connect_response(move |dialog, response| {
+            dialog.close();
+            if response != gtk4::ResponseType::Accept {
+                return;
+            }
+
+            let rt = runtime_for_response.borrow();
+            let Some(database) = rt.db.clone() else {
+                Self::show_settings_result(
+                    &parent_for_response,
+                    false,
+                    "Local database is unavailable; no data was changed.",
+                );
+                return;
+            };
+            let executor = rt.executor.clone();
+            drop(rt);
+
+            let runtime_for_done = runtime_for_response.clone();
+            let parent_for_done = parent_for_response.clone();
+            crate::dispatch::dispatch_local_action(
+                &executor,
+                move || {
+                    let result = if delete_all_data {
+                        database.clear_user_data()
+                    } else {
+                        database.clear_history()
+                    };
+                    result.map_err(|error| error.to_string())
+                },
+                move |result| match result {
+                    Ok(deleted) => {
+                        if delete_all_data {
+                            let defaults = crate::state::SettingsSnapshot::default();
+                            runtime_for_done.borrow_mut().settings = defaults.clone();
+                            if let Some(database) = runtime_for_done.borrow().db.as_deref() {
+                                let repository =
+                                    maintainer_core::settings::SqliteSettingsRepository::new(database);
+                                if let Err(error) = repository.save(&to_core_settings(&defaults)) {
+                                    Self::show_settings_result(
+                                        &parent_for_done,
+                                        false,
+                                        &format!("Data was cleared, but defaults could not be saved: {error}"),
+                                    );
+                                    return;
+                                }
+                            }
+                        }
+                        Self::show_settings_result(
+                            &parent_for_done,
+                            true,
+                            &format!("Deleted {deleted} local record(s)."),
+                        );
+                    }
+                    Err(error) => Self::show_settings_result(
+                        &parent_for_done,
+                        false,
+                        &format!("Nothing was deleted: {error}"),
+                    ),
+                },
+            );
+        });
+        dialog.present();
+    }
+
+    fn show_settings_result(parent: &ApplicationWindow, success: bool, message: &str) {
+        let dialog = gtk4::MessageDialog::builder()
+            .transient_for(parent)
+            .modal(true)
+            .message_type(if success {
+                gtk4::MessageType::Info
+            } else {
+                gtk4::MessageType::Error
+            })
+            .text(if success {
+                "Completed"
+            } else {
+                "Action failed"
+            })
+            .secondary_text(message)
+            .build();
+        dialog.add_button("Close", gtk4::ResponseType::Close);
+        dialog.connect_response(|dialog, _| dialog.close());
+        dialog.present();
+    }
+
     /// Present the window.
     pub fn present(&self) {
         self.window.present();
+    }
+
+    fn show_helper_result(label: &Label, result: crate::helper_client::HelperResult) {
+        use maintainer_core::capability::Capability;
+
+        match result {
+            Capability::Available(response) => {
+                label.remove_css_class("error");
+                label.add_css_class("success");
+                label.set_text(&response.message);
+            }
+            Capability::Unavailable(reason) => {
+                label.remove_css_class("success");
+                label.add_css_class("error");
+                label.set_text(&reason.message);
+            }
+            Capability::PermissionRequired(request) => {
+                label.remove_css_class("success");
+                label.add_css_class("error");
+                label.set_text(&request.explanation);
+            }
+        }
+        label.set_visible(true);
     }
 
     /// Get a reference to the application window.
@@ -371,7 +596,8 @@ impl Shell {
             })
             .expect("failed to spawn metric-worker thread");
 
-        // updates the visible page, a page switched to would otherwise show
+        // Refresh a page as soon as it becomes visible. The timer only updates
+        // the page on screen, so without this a page switched to would show
         // whatever it rendered when it was last visible until the next tick.
         {
             let runtime_for_switch = runtime.clone();
@@ -398,7 +624,11 @@ impl Shell {
 
             let should_sample = immediate || *ticks >= interval_secs;
 
-            // frame and forces a repaint. Doing that for a hidden page costs
+            // Only refresh the page on screen. Both update() paths rebuild
+            // widget subtrees, which dirties the frame and forces a repaint;
+            // doing that for a hidden page costs CPU and changes nothing
+            // visible. The view models are still updated by reduce(), and the
+            // page-switch handler repaints the incoming page immediately.
             let visible_page = page_stack.visible_child_name();
             let visible_page = visible_page.as_deref();
             while let Ok(snapshot) = snapshot_rx.try_recv() {
@@ -487,6 +717,9 @@ impl Shell {
         btn.set_child(Some(&btn_content));
         btn.set_tooltip_text(Some(page.label()));
         btn.update_property(&[gtk4::accessible::Property::Label(page.label())]);
+        if state.borrow().active_page == page {
+            btn.add_css_class("maintainer_nav_active");
+        }
 
         let popover_ref = popover.clone();
         let state_ref = state.clone();
@@ -496,6 +729,7 @@ impl Shell {
                 let mut s = state_ref.borrow_mut();
                 s.active_page = page;
             }
+            navigation::update_active_buttons(&popover_ref, page);
             stack_ref.set_visible_child_name(page.label());
             popover_ref.popdown();
         });
@@ -529,133 +763,762 @@ impl Shell {
         sidebar_container.append(&sidebar);
     }
 
-    /// Wire storage page buttons to JobExecutor-backed dispatch.
+    /// Wire storage scans to state and render their results.
     fn wire_storage_dispatch(storage_page: &StoragePage, runtime: &RuntimeHandle) {
-        use crate::dispatch;
-        use crate::state::ScanJobId;
+        use crate::dispatch::{self, DuplicateScanJobResult, StorageScanResult};
+        use crate::state::{StorageIntent, StorageState, StorageSubPage};
+        use std::cell::Cell;
 
-        let active_token: Rc<RefCell<Option<maintainer_core::jobs::CancellationToken>>> =
+        let page = storage_page.clone();
+        let home = PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/home".to_string()));
+        let storage_state = Rc::new(RefCell::new(StorageState::default()));
+        storage_state
+            .borrow_mut()
+            .reduce(StorageIntent::SetScanRoot(home));
+        page.apply_state(&storage_state.borrow());
+
+        let state_for_change = storage_state.clone();
+        let page_for_change = page.clone();
+        storage_page
+            .overview
+            .change_root_button()
+            .connect_clicked(move |_| {
+                let dialog = gtk4::FileChooserDialog::new(
+                    Some("Select Scan Directory"),
+                    gtk4::Window::NONE,
+                    gtk4::FileChooserAction::SelectFolder,
+                    &[
+                        ("Cancel", gtk4::ResponseType::Cancel),
+                        ("Select", gtk4::ResponseType::Accept),
+                    ],
+                );
+                let state_done = state_for_change.clone();
+                let page_done = page_for_change.clone();
+                dialog.connect_response(move |dialog, response| {
+                    if response == gtk4::ResponseType::Accept {
+                        if let Some(file) = dialog.file() {
+                            if let Some(path) = file.path() {
+                                state_done
+                                    .borrow_mut()
+                                    .reduce(StorageIntent::SetScanRoot(path));
+                                page_done.apply_state(&state_done.borrow());
+                            }
+                        }
+                    }
+                    dialog.close();
+                });
+                dialog.show();
+            });
+
+        let state_for_subpage = storage_state.clone();
+        storage_page
+            .stack_handle()
+            .connect_visible_child_name_notify(move |stack| {
+                if let Some(name) = stack.visible_child_name() {
+                    let sub = match name.as_str() {
+                        "large-files" => StorageSubPage::LargeFiles,
+                        "duplicates" => StorageSubPage::Duplicates,
+                        _ => StorageSubPage::Overview,
+                    };
+                    let mut st = state_for_subpage.borrow_mut();
+                    if st.sub_page != sub {
+                        st.sub_page = sub;
+                    }
+                }
+            });
+
+        let active_kind = Rc::new(Cell::new(0_u8));
+        let scan_token: Rc<RefCell<Option<maintainer_core::jobs::CancellationToken>>> =
             Rc::new(RefCell::new(None));
-        let dup_active_token: Rc<RefCell<Option<maintainer_core::jobs::CancellationToken>>> =
+        let duplicate_token: Rc<RefCell<Option<maintainer_core::jobs::CancellationToken>>> =
             Rc::new(RefCell::new(None));
 
         let runtime_for_scan = runtime.clone();
-        let token_ref = active_token.clone();
+        let state_for_scan = storage_state.clone();
+        let page_for_scan = page.clone();
+        let token_for_scan = scan_token.clone();
+        let kind_for_scan = active_kind.clone();
         storage_page.overview.connect_scan(move || {
+            if kind_for_scan.get() != 0 {
+                return;
+            }
+
+            let (job_id, mut policy) = {
+                let mut state = state_for_scan.borrow_mut();
+                if !state.reduce(StorageIntent::StartStorageScan) {
+                    return;
+                }
+                let Some(scan) = state.storage_scan.as_ref() else {
+                    return;
+                };
+                (scan.job_id, scan.policy.clone())
+            };
+
             let rt = runtime_for_scan.borrow();
-            let settings = rt.settings.clone();
+            policy.large_file_threshold_bytes = rt.settings.large_file_threshold_bytes;
+            policy
+                .exclusions
+                .extend(rt.settings.scan_exclusions.iter().map(PathBuf::from));
             let executor = rt.executor.clone();
             drop(rt);
 
-            let root = PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/home".to_string()));
-            let mut policy = maintainer_core::storage::ScanPolicy::with_roots(vec![root]);
-            policy.large_file_threshold_bytes = settings.large_file_threshold_bytes;
-            for excl in &settings.scan_exclusions {
-                policy.exclusions.push(PathBuf::from(excl));
-            }
+            kind_for_scan.set(1);
+            page_for_scan.apply_state(&state_for_scan.borrow());
 
-            let job_id = ScanJobId(1);
-            let (token, _progress) =
-                dispatch::dispatch_storage_scan(&executor, job_id, policy, |_p| {}, |_result| {});
-            *token_ref.borrow_mut() = Some(token);
+            let progress_state = state_for_scan.clone();
+            let progress_page = page_for_scan.clone();
+            let done_state = state_for_scan.clone();
+            let done_page = page_for_scan.clone();
+            let done_kind = kind_for_scan.clone();
+            let done_token = token_for_scan.clone();
+            let (token, _) = dispatch::dispatch_storage_scan(
+                &executor,
+                job_id,
+                policy,
+                move |progress| {
+                    if progress_state
+                        .borrow_mut()
+                        .reduce(StorageIntent::StorageScanProgress {
+                            job_id,
+                            completed: progress.completed,
+                            total: progress.total,
+                        })
+                    {
+                        progress_page.overview.apply_state(&progress_state.borrow());
+                    }
+                },
+                move |result| {
+                    let accepted = match result {
+                        StorageScanResult::Completed {
+                            job_id,
+                            large_files,
+                            issues,
+                        } => {
+                            let mut state = done_state.borrow_mut();
+                            state.reduce(StorageIntent::StorageScanCompleted {
+                                job_id,
+                                large_files,
+                                issues,
+                            }) && state
+                                .reduce(StorageIntent::NavigateSubPage(StorageSubPage::LargeFiles))
+                        }
+                        StorageScanResult::Cancelled { job_id } => done_state
+                            .borrow_mut()
+                            .reduce(StorageIntent::CancelStorageScan { job_id }),
+                        StorageScanResult::Failed { job_id, message } => {
+                            let accepted = done_state
+                                .borrow_mut()
+                                .reduce(StorageIntent::CancelStorageScan { job_id });
+                            if accepted {
+                                done_page.overview.show_error(&message);
+                            }
+                            accepted
+                        }
+                    };
+                    if accepted {
+                        done_page.apply_state(&done_state.borrow());
+                        done_kind.set(0);
+                        done_token.borrow_mut().take();
+                    }
+                },
+            );
+            *token_for_scan.borrow_mut() = Some(token);
         });
 
-        let cancel_token_ref = active_token.clone();
-        storage_page.overview.connect_cancel(move || {
-            if let Some(token) = cancel_token_ref.borrow().as_ref() {
+        let runtime_for_duplicates = runtime.clone();
+        let state_for_duplicates = storage_state.clone();
+        let page_for_duplicates = page.clone();
+        let token_for_duplicates = duplicate_token.clone();
+        let kind_for_duplicates = active_kind.clone();
+        storage_page.overview.connect_duplicate_scan(move || {
+            if kind_for_duplicates.get() != 0 {
+                return;
+            }
+
+            let (job_id, mut policy) = {
+                let mut state = state_for_duplicates.borrow_mut();
+                if !state.reduce(StorageIntent::StartDuplicateScan) {
+                    return;
+                }
+                let Some(scan) = state.duplicate_scan.as_ref() else {
+                    return;
+                };
+                (scan.job_id, scan.policy.clone())
+            };
+
+            let rt = runtime_for_duplicates.borrow();
+            policy.large_file_threshold_bytes = 1;
+            policy
+                .exclusions
+                .extend(rt.settings.scan_exclusions.iter().map(PathBuf::from));
+            let executor = rt.executor.clone();
+            drop(rt);
+
+            kind_for_duplicates.set(2);
+            page_for_duplicates.apply_state(&state_for_duplicates.borrow());
+
+            let progress_state = state_for_duplicates.clone();
+            let progress_page = page_for_duplicates.clone();
+            let done_state = state_for_duplicates.clone();
+            let done_page = page_for_duplicates.clone();
+            let done_kind = kind_for_duplicates.clone();
+            let done_token = token_for_duplicates.clone();
+            let (token, _) = dispatch::dispatch_duplicate_scan(
+                &executor,
+                job_id,
+                policy,
+                move |progress| {
+                    if progress_state
+                        .borrow_mut()
+                        .reduce(StorageIntent::DuplicateScanProgress {
+                            job_id,
+                            completed: progress.completed,
+                            total: progress.total,
+                        })
+                    {
+                        progress_page.overview.apply_state(&progress_state.borrow());
+                    }
+                },
+                move |result| {
+                    let accepted = match result {
+                        DuplicateScanJobResult::Completed {
+                            job_id,
+                            groups,
+                            issues,
+                        } => {
+                            let mut state = done_state.borrow_mut();
+                            state.reduce(StorageIntent::DuplicateScanCompleted {
+                                job_id,
+                                groups,
+                                issues,
+                            }) && state
+                                .reduce(StorageIntent::NavigateSubPage(StorageSubPage::Duplicates))
+                        }
+                        DuplicateScanJobResult::Cancelled { job_id } => done_state
+                            .borrow_mut()
+                            .reduce(StorageIntent::CancelDuplicateScan { job_id }),
+                        DuplicateScanJobResult::Failed { job_id, message } => {
+                            let accepted = done_state
+                                .borrow_mut()
+                                .reduce(StorageIntent::CancelDuplicateScan { job_id });
+                            if accepted {
+                                done_page.overview.show_error(&message);
+                            }
+                            accepted
+                        }
+                    };
+                    if accepted {
+                        done_page.apply_state(&done_state.borrow());
+                        done_kind.set(0);
+                        done_token.borrow_mut().take();
+                    }
+                },
+            );
+            *token_for_duplicates.borrow_mut() = Some(token);
+        });
+
+        let state_for_back = storage_state.clone();
+        let page_for_back = page.clone();
+        storage_page.large_files.connect_back(move || {
+            if state_for_back.borrow_mut().reduce(StorageIntent::DrillUp) {
+                page_for_back.apply_state(&state_for_back.borrow());
+            }
+        });
+
+        let state_for_selection = storage_state.clone();
+        let page_for_selection = page.clone();
+        storage_page
+            .duplicates
+            .connect_selection_changed(move |group_idx, file_idx| {
+                if state_for_selection.borrow_mut().reduce(
+                    StorageIntent::ToggleDuplicateSelection {
+                        group_idx,
+                        file_idx,
+                    },
+                ) {
+                    page_for_selection.apply_state(&state_for_selection.borrow());
+                }
+            });
+
+        let state_for_review = storage_state.clone();
+        let page_for_review = page.clone();
+        storage_page.duplicates.connect_review(move || {
+            if state_for_review
+                .borrow_mut()
+                .reduce(StorageIntent::BuildRemovalPlan)
+            {
+                if let Some(review) = state_for_review.borrow().removal_review.as_ref() {
+                    page_for_review.duplicates.show_review_plan(review);
+                }
+            }
+        });
+
+        let cancel_kind = active_kind;
+        storage_page
+            .overview
+            .connect_cancel(move || match cancel_kind.get() {
+                1 => {
+                    if let Some(token) = scan_token.borrow().as_ref() {
+                        token.cancel();
+                    }
+                }
+                2 => {
+                    if let Some(token) = duplicate_token.borrow().as_ref() {
+                        token.cancel();
+                    }
+                }
+                _ => {}
+            });
+    }
+
+    /// Wire cleanup scan, review, confirmation, and execution.
+    fn wire_cleanup_dispatch(
+        cleanup_page: &CleanupPage,
+        runtime: &RuntimeHandle,
+        parent: &ApplicationWindow,
+    ) {
+        use crate::dispatch::{self, CleanupExecutionOutcome, CleanupScanOutcome};
+        use crate::ui::dialogs::confirm_cleanup::{ConfirmCleanupDialog, ConfirmItem};
+        use maintainer_core::cleanup::CleanupPlan;
+
+        let page = cleanup_page.clone();
+        let current_plan: Rc<RefCell<Option<CleanupPlan>>> = Rc::new(RefCell::new(None));
+        let active_token: Rc<RefCell<Option<maintainer_core::jobs::CancellationToken>>> =
+            Rc::new(RefCell::new(None));
+
+        let runtime_for_scan = runtime.clone();
+        let page_for_scan = page.clone();
+        let plan_for_scan = current_plan.clone();
+
+        let runtime_for_cache = runtime.clone();
+        let cache_status = cleanup_page.status_label_handle();
+        cleanup_page
+            .package_cache_button()
+            .connect_clicked(move |btn| {
+                btn.set_sensitive(false);
+                btn.set_label("Cleaning Package Cache…");
+                cache_status.remove_css_class("error");
+                cache_status.set_text("Requesting authorization to clean package cache…");
+                cache_status.set_visible(true);
+                let rt = runtime_for_cache.borrow();
+                let helper = rt.helper.clone();
+                let executor = rt.executor.clone();
+                drop(rt);
+                let status = cache_status.clone();
+                let btn_done = btn.clone();
+                let request_id = format!(
+                    "cache-{}-{}",
+                    std::process::id(),
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                        .map(|duration| duration.as_secs())
+                        .unwrap_or(0)
+                );
+                dispatch::dispatch_helper_call(
+                    &executor,
+                    move || helper.clean_package_cache(&request_id),
+                    move |result| {
+                        btn_done.set_sensitive(true);
+                        btn_done.set_label("Clean Package Cache");
+                        Self::show_helper_result(&status, result);
+                    },
+                );
+            });
+
+        let runtime_for_journal = runtime.clone();
+        let journal_status = cleanup_page.status_label_handle();
+        cleanup_page
+            .journal_vacuum_button()
+            .connect_clicked(move |btn| {
+                btn.set_sensitive(false);
+                btn.set_label("Vacuuming Journal…");
+                journal_status.remove_css_class("error");
+                journal_status.set_text(
+                    "Requesting authorization to retain 500 MiB / 30 days of journal data…",
+                );
+                journal_status.set_visible(true);
+                let rt = runtime_for_journal.borrow();
+                let helper = rt.helper.clone();
+                let executor = rt.executor.clone();
+                drop(rt);
+                let status = journal_status.clone();
+                let btn_done = btn.clone();
+                dispatch::dispatch_helper_call(
+                    &executor,
+                    move || helper.vacuum_journal(500, 30),
+                    move |result| {
+                        btn_done.set_sensitive(true);
+                        btn_done.set_label("Vacuum Journal");
+                        Self::show_helper_result(&status, result);
+                    },
+                );
+            });
+        let token_for_scan = active_token.clone();
+        cleanup_page.scan_button().connect_clicked(move |_| {
+            page_for_scan.show_executing("Scanning reclaimable files…");
+            plan_for_scan.borrow_mut().take();
+            let executor = runtime_for_scan.borrow().executor.clone();
+            let progress_page = page_for_scan.clone();
+            let done_page = page_for_scan.clone();
+            let done_plan = plan_for_scan.clone();
+            let done_token = token_for_scan.clone();
+            let (token, _) = dispatch::dispatch_cleanup_scan(
+                &executor,
+                move |progress| {
+                    progress_page.show_scan_progress(
+                        progress.completed,
+                        progress.total,
+                        &progress.message,
+                    );
+                },
+                move |outcome| {
+                    match outcome {
+                        CleanupScanOutcome::Completed { targets } => {
+                            let home = std::env::var("HOME")
+                                .map(PathBuf::from)
+                                .unwrap_or_else(|_| PathBuf::from("/tmp"));
+                            match CleanupPlan::from_targets(targets, &home) {
+                                Ok(plan) => {
+                                    done_page.show_plan(&plan);
+                                    *done_plan.borrow_mut() = Some(plan);
+                                }
+                                Err(error) => done_page.show_error(&error.to_string()),
+                            }
+                        }
+                        CleanupScanOutcome::Failed { message } => done_page.show_error(&message),
+                    }
+                    done_token.borrow_mut().take();
+                },
+            );
+            *token_for_scan.borrow_mut() = Some(token);
+        });
+
+        let runtime_for_execute = runtime.clone();
+        let page_for_execute = page.clone();
+        let plan_for_execute = current_plan.clone();
+        let parent_for_execute = parent.clone();
+        let token_for_execute = active_token.clone();
+        cleanup_page.connect_execute(move || {
+            let selected_indices = page_for_execute.selected_indices();
+            if selected_indices.is_empty() {
+                return;
+            }
+            let Some(plan) = plan_for_execute.borrow().clone() else {
+                page_for_execute.show_error("Cleanup plan expired. Scan again.");
+                return;
+            };
+
+            let items: Vec<ConfirmItem> = selected_indices
+                .iter()
+                .filter_map(|index| plan.items.get(*index))
+                .map(|item| ConfirmItem {
+                    display_path: item.display_path.clone(),
+                    size_bytes: item.size_bytes,
+                    is_permanent: matches!(
+                        item.reversibility,
+                        maintainer_core::cleanup::Reversibility::PermanentOnly
+                    ),
+                })
+                .collect();
+            let total_bytes = items.iter().map(|item| item.size_bytes).sum();
+            let has_permanent = items.iter().any(|item| item.is_permanent);
+            let confirmation = ConfirmCleanupDialog::new(&items, total_bytes, has_permanent);
+            let dialog = gtk4::Window::builder()
+                .title("Confirm Cleanup")
+                .transient_for(&parent_for_execute)
+                .modal(true)
+                .default_width(560)
+                .default_height(480)
+                .build();
+            dialog.add_css_class("maintainer_dialog");
+            dialog.set_child(Some(confirmation.widget()));
+
+            let cancel_dialog = dialog.clone();
+            confirmation
+                .cancel_button()
+                .connect_clicked(move |_| cancel_dialog.close());
+
+            let confirm_dialog = dialog.clone();
+            let confirm_page = page_for_execute.clone();
+            let confirm_runtime = runtime_for_execute.clone();
+            let confirm_token = token_for_execute.clone();
+            let confirm_plan = plan.clone();
+            let confirm_indices = selected_indices.clone();
+            confirmation.confirm_button().connect_clicked(move |_| {
+                confirm_dialog.close();
+                let rt = confirm_runtime.borrow();
+                let Some(database) = rt.db.clone() else {
+                    confirm_page.show_error("Cleanup history database is unavailable.");
+                    return;
+                };
+                let executor = rt.executor.clone();
+                drop(rt);
+
+                confirm_page.show_executing("Removing selected items…");
+                let progress_page = confirm_page.clone();
+                let done_page = confirm_page.clone();
+                let done_token = confirm_token.clone();
+                let (token, _) = dispatch::dispatch_cleanup_execution(
+                    &executor,
+                    confirm_plan.clone(),
+                    confirm_indices.clone(),
+                    database,
+                    move |progress| {
+                        progress_page.show_executing(&progress.message);
+                    },
+                    move |outcome| {
+                        match outcome {
+                            CleanupExecutionOutcome::Completed(result) => {
+                                let summary = format!(
+                                    "Removed {} item(s), recovered {}.",
+                                    result.outcome.succeeded,
+                                    Self::format_size(result.actual_recovered_bytes)
+                                );
+                                done_page.show_result(&summary, result.outcome.failed == 0);
+                            }
+                            CleanupExecutionOutcome::Failed { message } => {
+                                done_page.show_result(&message, false);
+                            }
+                        }
+                        done_token.borrow_mut().take();
+                    },
+                );
+                *confirm_token.borrow_mut() = Some(token);
+            });
+            dialog.present();
+        });
+    }
+
+    /// Wire update discovery, review, and PackageKit execution.
+    fn wire_updates_dispatch(updates_page: &UpdatesPage, runtime: &RuntimeHandle) {
+        use crate::dispatch::{self, UpdateExecutionOutcome, UpdatesCheckOutcome};
+        use maintainer_core::updates::UpdatePlan;
+
+        let page = updates_page.clone();
+        let current_plan: Rc<RefCell<Option<UpdatePlan>>> = Rc::new(RefCell::new(None));
+        let active_token: Rc<RefCell<Option<maintainer_core::jobs::CancellationToken>>> =
+            Rc::new(RefCell::new(None));
+
+        let runtime_for_check = runtime.clone();
+        let page_for_check = page.clone();
+        let plan_for_check = current_plan.clone();
+        let token_for_check = active_token.clone();
+        updates_page.check_button().connect_clicked(move |_| {
+            let mut starting_page = page_for_check.clone();
+            starting_page.set_checking();
+            plan_for_check.borrow_mut().take();
+            let executor = runtime_for_check.borrow().executor.clone();
+            let progress_page = page_for_check.clone();
+            let mut done_page = page_for_check.clone();
+            let done_plan = plan_for_check.clone();
+            let done_token = token_for_check.clone();
+            let (token, _) = dispatch::dispatch_updates_check(
+                &executor,
+                move |progress| {
+                    progress_page.show_check_progress(
+                        progress.completed,
+                        progress.total,
+                        &progress.message,
+                    );
+                },
+                move |outcome| {
+                    match outcome {
+                        UpdatesCheckOutcome::Available {
+                            mut summary,
+                            security_count,
+                            total_count,
+                            plan,
+                        } => {
+                            if let Some(security) = crate::ui::updates::format_security_label(
+                                security_count,
+                                total_count,
+                            ) {
+                                summary.push_str(&format!(". {security}."));
+                            }
+                            done_page.set_reviewing_plan(&summary, &plan);
+                            *done_plan.borrow_mut() = Some(plan);
+                        }
+                        UpdatesCheckOutcome::UpToDate => done_page.set_up_to_date(),
+                        UpdatesCheckOutcome::Failed { message } => {
+                            done_page.set_check_failed(&message)
+                        }
+                    }
+                    done_token.borrow_mut().take();
+                },
+            );
+            *token_for_check.borrow_mut() = Some(token);
+        });
+
+        let runtime_for_execute = runtime.clone();
+        let page_for_execute = page.clone();
+        let plan_for_execute = current_plan.clone();
+        let token_for_execute = active_token.clone();
+        updates_page.confirm_button().connect_clicked(move |_| {
+            let Some(plan) = plan_for_execute.borrow().clone() else {
+                let mut ui = page_for_execute.clone();
+                ui.set_check_failed("Update plan expired. Check for updates again.");
+                return;
+            };
+            let executor = runtime_for_execute.borrow().executor.clone();
+            let mut executing_page = page_for_execute.clone();
+            executing_page.set_executing();
+            let progress_page = page_for_execute.clone();
+            let mut done_page = page_for_execute.clone();
+            let done_token = token_for_execute.clone();
+            let (token, _) = dispatch::dispatch_update_execution(
+                &executor,
+                plan,
+                move |progress| {
+                    let fraction = progress
+                        .total
+                        .filter(|total| *total > 0)
+                        .map(|total| progress.completed as f64 / total as f64)
+                        .unwrap_or(0.0);
+                    progress_page.set_progress(fraction, &progress.message, true);
+                },
+                move |outcome| {
+                    match outcome {
+                        UpdateExecutionOutcome::Completed {
+                            message,
+                            restart_required,
+                        } => done_page.set_result(true, &message, restart_required),
+                        UpdateExecutionOutcome::Failed { message } => {
+                            done_page.set_result(false, &message, false)
+                        }
+                    }
+                    done_token.borrow_mut().take();
+                },
+            );
+            *token_for_execute.borrow_mut() = Some(token);
+        });
+
+        let token_for_cancel = active_token;
+        updates_page.cancel_button().connect_clicked(move |_| {
+            if let Some(token) = token_for_cancel.borrow().as_ref() {
                 token.cancel();
             }
         });
-
-        let runtime_for_dup = runtime.clone();
-        let dup_token_ref = dup_active_token.clone();
-        storage_page.overview.connect_duplicate_scan(move || {
-            let rt = runtime_for_dup.borrow();
-            let settings = rt.settings.clone();
-            let executor = rt.executor.clone();
-            drop(rt);
-
-            let root = PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/home".to_string()));
-            let mut policy = maintainer_core::storage::ScanPolicy::with_roots(vec![root]);
-            policy.large_file_threshold_bytes = settings.large_file_threshold_bytes;
-
-            let job_id = ScanJobId(2);
-            let (token, _progress) =
-                dispatch::dispatch_duplicate_scan(&executor, job_id, policy, |_p| {}, |_result| {});
-            *dup_token_ref.borrow_mut() = Some(token);
-        });
     }
 
-    /// Wire cleanup page scan button to dispatch.
-    fn wire_cleanup_dispatch(cleanup_page: &CleanupPage, runtime: &RuntimeHandle) {
-        use crate::dispatch;
-
-        let active_token: Rc<RefCell<Option<maintainer_core::jobs::CancellationToken>>> =
-            Rc::new(RefCell::new(None));
-        let token_ref = active_token.clone();
-        let runtime_ref = runtime.clone();
-
-        cleanup_page.scan_button().connect_clicked(move |btn| {
-            btn.set_sensitive(false);
-            let btn_ref = btn.clone();
-            let executor = runtime_ref.borrow().executor.clone();
-            let (token, _progress) = dispatch::dispatch_cleanup_scan(
-                &executor,
-                |_p| {},
-                move |_outcome| {
-                    btn_ref.set_sensitive(true);
-                },
-            );
-            *token_ref.borrow_mut() = Some(token);
-        });
-    }
-
-    /// Wire updates page check button to dispatch.
-    fn wire_updates_dispatch(updates_page: &UpdatesPage, runtime: &RuntimeHandle) {
-        use crate::dispatch;
-
-        let active_token: Rc<RefCell<Option<maintainer_core::jobs::CancellationToken>>> =
-            Rc::new(RefCell::new(None));
-        let token_ref = active_token.clone();
-        let runtime_ref = runtime.clone();
-
-        updates_page.check_button().connect_clicked(move |btn| {
-            btn.set_sensitive(false);
-            let btn_ref = btn.clone();
-            let executor = runtime_ref.borrow().executor.clone();
-            let (token, _progress) = dispatch::dispatch_updates_check(
-                &executor,
-                |_p| {},
-                move |_outcome| {
-                    btn_ref.set_sensitive(true);
-                },
-            );
-            *token_ref.borrow_mut() = Some(token);
-        });
-    }
-
-    /// Wire diagnostics page scan button to dispatch.
+    /// Wire diagnostics collection and render evidence-first findings.
     fn wire_diagnostics_dispatch(diagnostics_page: &DiagnosticsPage, runtime: &RuntimeHandle) {
-        use crate::dispatch;
+        use crate::dispatch::{self, DiagnosticsScanOutcome, SmartRefreshOutcome};
+        use crate::ui::diagnostics::{DiagnosticsIntent, DiagnosticsState};
 
+        let page = diagnostics_page.clone();
+        let state = Rc::new(RefCell::new(DiagnosticsState::default()));
         let active_token: Rc<RefCell<Option<maintainer_core::jobs::CancellationToken>>> =
             Rc::new(RefCell::new(None));
-        let token_ref = active_token.clone();
-        let runtime_ref = runtime.clone();
+        let runtime_for_scan = runtime.clone();
+        let state_for_scan = state.clone();
+        let page_for_scan = page.clone();
+        let token_for_scan = active_token.clone();
 
-        diagnostics_page.scan_button().connect_clicked(move |btn| {
-            btn.set_sensitive(false);
-            let btn_ref = btn.clone();
-            let executor = runtime_ref.borrow().executor.clone();
-            let (token, _progress) = dispatch::dispatch_diagnostics_scan(
+        let state_for_expand = state.clone();
+        let page_for_expand = page.clone();
+        diagnostics_page.connect_toggle_expanded(move |index| {
+            state_for_expand
+                .borrow_mut()
+                .reduce(DiagnosticsIntent::ToggleExpanded(index));
+            page_for_expand.update(&state_for_expand.borrow());
+        });
+
+        diagnostics_page.scan_button().connect_clicked(move |_| {
+            state_for_scan
+                .borrow_mut()
+                .reduce(DiagnosticsIntent::StartScan);
+            page_for_scan.update(&state_for_scan.borrow());
+            let executor = runtime_for_scan.borrow().executor.clone();
+            let progress_page = page_for_scan.clone();
+            let done_state = state_for_scan.clone();
+            let done_page = page_for_scan.clone();
+            let done_token = token_for_scan.clone();
+            let (token, _) = dispatch::dispatch_diagnostics_scan(
                 &executor,
-                |_p| {},
-                move |_outcome| {
-                    btn_ref.set_sensitive(true);
+                move |progress| {
+                    progress_page.show_scan_progress(
+                        progress.completed,
+                        progress.total,
+                        &progress.message,
+                    );
+                },
+                move |outcome| {
+                    match outcome {
+                        DiagnosticsScanOutcome::Completed { findings } => done_state
+                            .borrow_mut()
+                            .reduce(DiagnosticsIntent::ScanCompleted(findings)),
+                        DiagnosticsScanOutcome::Failed { message } => done_state
+                            .borrow_mut()
+                            .reduce(DiagnosticsIntent::ScanFailed(message)),
+                    }
+                    done_page.update(&done_state.borrow());
+                    done_token.borrow_mut().take();
                 },
             );
-            *token_ref.borrow_mut() = Some(token);
+            *token_for_scan.borrow_mut() = Some(token);
         });
+
+        let runtime_for_smart = runtime.clone();
+        let state_for_smart = state.clone();
+        let page_for_smart = page.clone();
+        let token_for_smart = active_token;
+        diagnostics_page
+            .smart_refresh_button()
+            .connect_clicked(move |_| {
+                state_for_smart
+                    .borrow_mut()
+                    .reduce(DiagnosticsIntent::RefreshSmart);
+                page_for_smart.update(&state_for_smart.borrow());
+                let rt = runtime_for_smart.borrow();
+                let executor = rt.executor.clone();
+                let helper = rt.helper.clone();
+                drop(rt);
+                let done_state = state_for_smart.clone();
+                let done_page = page_for_smart.clone();
+                let done_token = token_for_smart.clone();
+                let token = dispatch::dispatch_smart_refresh(&executor, helper, move |outcome| {
+                    match outcome {
+                        SmartRefreshOutcome::Loaded(drives) => {
+                            let views = drives
+                                .iter()
+                                .map(crate::ui::diagnostics::SmartDriveView::from_smart_drive)
+                                .collect();
+                            done_state
+                                .borrow_mut()
+                                .reduce(DiagnosticsIntent::SmartLoaded(views));
+                        }
+                        SmartRefreshOutcome::PermissionRequired => {
+                            done_state
+                                .borrow_mut()
+                                .reduce(DiagnosticsIntent::SmartPermissionRequired);
+                        }
+                        SmartRefreshOutcome::Unavailable(reason) => {
+                            done_state
+                                .borrow_mut()
+                                .reduce(DiagnosticsIntent::SmartUnavailable(reason));
+                        }
+                    }
+                    done_page.update(&done_state.borrow());
+                    done_token.borrow_mut().take();
+                });
+                *token_for_smart.borrow_mut() = Some(token);
+            });
+    }
+
+    fn format_size(bytes: u64) -> String {
+        const KIB: f64 = 1024.0;
+        const MIB: f64 = KIB * 1024.0;
+        const GIB: f64 = MIB * 1024.0;
+        let bytes = bytes as f64;
+        if bytes >= GIB {
+            format!("{:.1} GiB", bytes / GIB)
+        } else if bytes >= MIB {
+            format!("{:.1} MiB", bytes / MIB)
+        } else if bytes >= KIB {
+            format!("{:.1} KiB", bytes / KIB)
+        } else {
+            format!("{} B", bytes as u64)
+        }
     }
 }
 

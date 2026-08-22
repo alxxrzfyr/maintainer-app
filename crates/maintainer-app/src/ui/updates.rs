@@ -9,6 +9,7 @@
 
 use gtk4::prelude::*;
 use gtk4::{self, Box as GtkBox, Button, Label, ListBox, Orientation, ProgressBar, ScrolledWindow};
+use maintainer_core::updates::{UpdateClassification, UpdatePlan};
 
 /// The phases of the update workflow.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,12 +29,13 @@ pub enum UpdatePhase {
 }
 
 /// Top-level updates page widget.
+#[derive(Clone)]
 pub struct UpdatesPage {
     container: GtkBox,
     check_button: Button,
     status_label: Label,
-    #[allow(dead_code)]
     package_list: ListBox,
+    package_scrolled: ScrolledWindow,
     confirm_button: Button,
     cancel_button: Button,
     progress_bar: ProgressBar,
@@ -93,17 +95,20 @@ impl UpdatesPage {
         scrolled.set_child(Some(&package_list));
         container.append(&scrolled);
 
+        let action_footer = GtkBox::new(Orientation::Horizontal, 8);
+        action_footer.set_halign(gtk4::Align::Start);
+
         let confirm_button = Button::with_label("Install Updates");
         confirm_button.add_css_class("suggested-action");
-        confirm_button.set_halign(gtk4::Align::Start);
         confirm_button.set_visible(false);
-        container.append(&confirm_button);
+        action_footer.append(&confirm_button);
 
         let cancel_button = Button::with_label("Cancel");
         cancel_button.add_css_class("destructive-action");
-        cancel_button.set_halign(gtk4::Align::Start);
         cancel_button.set_visible(false);
-        container.append(&cancel_button);
+        action_footer.append(&cancel_button);
+
+        container.append(&action_footer);
 
         let progress_bar = ProgressBar::new();
         progress_bar.set_visible(false);
@@ -126,6 +131,7 @@ impl UpdatesPage {
             check_button,
             status_label,
             package_list,
+            package_scrolled: scrolled,
             confirm_button,
             cancel_button,
             progress_bar,
@@ -148,6 +154,7 @@ impl UpdatesPage {
     /// Transition to the checking state.
     pub fn set_checking(&mut self) {
         self.phase = UpdatePhase::Checking;
+        self.check_button.set_label("Checking for Updates…");
         self.check_button.set_sensitive(false);
         self.status_label.set_text("Checking for updates…");
         self.status_label.set_visible(true);
@@ -158,6 +165,7 @@ impl UpdatesPage {
     /// Transition to reviewing state with update summary.
     pub fn set_reviewing(&mut self, summary: &str) {
         self.phase = UpdatePhase::Reviewing;
+        self.check_button.set_label("Check Again");
         self.check_button.set_sensitive(true);
         self.status_label.set_text(summary);
         self.status_label.set_visible(true);
@@ -165,18 +173,68 @@ impl UpdatesPage {
         self.confirm_button.set_sensitive(true);
     }
 
+    /// Show the immutable update plan that will be handed to PackageKit.
+    pub fn set_reviewing_plan(&mut self, summary: &str, plan: &UpdatePlan) {
+        self.set_reviewing(summary);
+        while let Some(child) = self.package_list.first_child() {
+            self.package_list.remove(&child);
+        }
+
+        for candidate in &plan.candidates {
+            let row = GtkBox::new(Orientation::Vertical, 4);
+            row.set_margin_top(6);
+            row.set_margin_bottom(6);
+            row.set_margin_start(8);
+            row.set_margin_end(8);
+
+            let title_box = GtkBox::new(Orientation::Horizontal, 8);
+            let title = Label::new(Some(&candidate.name));
+            title.set_halign(gtk4::Align::Start);
+            title.add_css_class("heading");
+            title_box.append(&title);
+
+            if candidate.classification == UpdateClassification::Security {
+                let security_badge = Label::new(Some("Security"));
+                security_badge.add_css_class("security-badge");
+                title_box.append(&security_badge);
+            }
+            row.append(&title_box);
+
+            let current = candidate
+                .installed_version
+                .as_deref()
+                .unwrap_or("not installed");
+            let versions = Label::new(Some(&format!(
+                "{} → {}",
+                current, candidate.available_version
+            )));
+            versions.set_halign(gtk4::Align::Start);
+            versions.add_css_class("dim-label");
+            row.append(&versions);
+            self.package_list.append(&row);
+        }
+
+        self.package_scrolled
+            .set_visible(!plan.candidates.is_empty());
+        self.progress_bar.set_visible(false);
+    }
+
     /// Show that no updates are available.
     pub fn set_up_to_date(&mut self) {
         self.phase = UpdatePhase::Idle;
+        self.check_button.set_label("Check for Updates");
         self.check_button.set_sensitive(true);
         self.status_label.set_text("System is up to date.");
         self.status_label.set_visible(true);
         self.confirm_button.set_visible(false);
+        self.package_scrolled.set_visible(false);
+        self.progress_bar.set_visible(false);
     }
 
     /// Show a discovery error.
     pub fn set_check_failed(&mut self, message: &str) {
         self.phase = UpdatePhase::Idle;
+        self.check_button.set_label("Check for Updates");
         self.check_button.set_sensitive(true);
         self.status_label.set_text(message);
         self.status_label.set_visible(true);
@@ -188,6 +246,7 @@ impl UpdatesPage {
     pub fn set_executing(&mut self) {
         self.phase = UpdatePhase::Executing;
         self.confirm_button.set_visible(false);
+        self.check_button.set_label("Installing Updates…");
         self.check_button.set_sensitive(false);
         self.progress_bar.set_visible(true);
         self.progress_bar.set_fraction(0.0);
@@ -198,7 +257,7 @@ impl UpdatesPage {
     }
 
     /// Update progress display during execution.
-    pub fn set_progress(&mut self, fraction: f64, message: &str, allow_cancel: bool) {
+    pub fn set_progress(&self, fraction: f64, message: &str, allow_cancel: bool) {
         self.progress_bar.set_fraction(fraction);
         self.progress_label.set_text(message);
         self.cancel_button.set_sensitive(allow_cancel);
@@ -217,6 +276,7 @@ impl UpdatesPage {
         self.progress_bar.set_visible(false);
         self.progress_label.set_visible(false);
         self.cancel_button.set_visible(false);
+        self.check_button.set_label("Check for Updates");
         self.check_button.set_sensitive(true);
 
         let mut text = message.to_string();
@@ -239,6 +299,36 @@ impl UpdatesPage {
     /// Get a reference to the check button for signal connections.
     pub fn check_button(&self) -> &Button {
         &self.check_button
+    }
+
+    /// Show progress during the update check phase.
+    pub fn show_check_progress(&self, completed: u64, total: Option<u64>, message: &str) {
+        let text = match total {
+            Some(t) if t > 0 => format!("{message} ({completed}/{t})"),
+            _ => format!("{message} ({completed} items)"),
+        };
+        self.status_label.set_text(&text);
+        self.status_label.set_visible(true);
+        self.progress_bar.set_visible(true);
+        match total {
+            Some(t) if t > 0 => {
+                let fraction = completed as f64 / t as f64;
+                self.progress_bar.set_fraction(fraction.clamp(0.0, 1.0));
+            }
+            _ => {
+                self.progress_bar.pulse();
+            }
+        }
+    }
+
+    /// Get a clone of the status label for use in progress closures.
+    pub fn status_label_handle(&self) -> Label {
+        self.status_label.clone()
+    }
+
+    /// Get a clone of the progress bar for use in progress closures.
+    pub fn progress_bar_handle(&self) -> ProgressBar {
+        self.progress_bar.clone()
     }
 
     /// Get a reference to the confirm button for signal connections.

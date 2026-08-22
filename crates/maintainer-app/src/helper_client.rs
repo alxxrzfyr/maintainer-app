@@ -191,35 +191,52 @@ pub fn create_helper_client() -> SharedHelperClient {
 mod tests {
     use super::*;
 
+    /// Without an activatable helper the call must refuse, but which refusal
+    /// depends on the machine: with no reachable system bus the name cannot be
+    /// resolved and the result is `Unavailable`, while on a desktop with a bus
+    /// and Polkit present the authorization is refused first and the result is
+    /// `PermissionRequired`. Both are correct; succeeding would not be.
     #[test]
-    fn client_unavailable_when_no_system_bus() {
+    fn client_refuses_without_activatable_helper() {
         let client = HelperClient::new();
         let result = client.terminate_process(1234, 99999);
         assert!(
-            matches!(result, Capability::Unavailable(_)),
-            "expected Unavailable without system bus, got: {result:?}"
+            matches!(
+                result,
+                Capability::Unavailable(_) | Capability::PermissionRequired(_)
+            ),
+            "expected a refusal without an activatable helper, got: {result:?}"
         );
     }
 
     #[test]
-    fn client_package_cache_unavailable_without_bus() {
+    fn client_package_cache_refuses_without_activatable_helper() {
         let client = HelperClient::new();
         let result = client.clean_package_cache("test-req-1");
-        assert!(matches!(result, Capability::Unavailable(_)));
+        assert!(matches!(
+            result,
+            Capability::Unavailable(_) | Capability::PermissionRequired(_)
+        ));
     }
 
     #[test]
-    fn client_vacuum_journal_unavailable_without_bus() {
+    fn client_vacuum_journal_refuses_without_activatable_helper() {
         let client = HelperClient::new();
         let result = client.vacuum_journal(500, 30);
-        assert!(matches!(result, Capability::Unavailable(_)));
+        assert!(matches!(
+            result,
+            Capability::Unavailable(_) | Capability::PermissionRequired(_)
+        ));
     }
 
     #[test]
-    fn client_refresh_smart_unavailable_without_bus() {
+    fn client_refresh_smart_refuses_without_activatable_helper() {
         let client = HelperClient::new();
         let result = client.refresh_smart("TEST_DRIVE_123");
-        assert!(matches!(result, Capability::Unavailable(_)));
+        assert!(matches!(
+            result,
+            Capability::Unavailable(_) | Capability::PermissionRequired(_)
+        ));
     }
 
     #[test]

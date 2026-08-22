@@ -31,14 +31,30 @@ pub fn build_drive_object_path(drive_id: &str) -> String {
 pub fn execute_smart_refresh(
     request: &SmartRefreshRequest,
 ) -> Result<OperationResponse, HelperError> {
+    use std::collections::HashMap;
+    use zbus::zvariant::OwnedValue;
+
     let object_path = build_drive_object_path(&request.drive_id);
+    let connection =
+        zbus::blocking::Connection::system().map_err(|error| HelperError::OperationFailed {
+            reason: format!("failed to connect to system bus: {error}"),
+        })?;
+    let options: HashMap<String, OwnedValue> = HashMap::new();
+    connection
+        .call_method(
+            Some(UDISKS2_BUS_NAME),
+            object_path.as_str(),
+            Some(UDISKS2_ATA_INTERFACE),
+            "SmartUpdate",
+            &(options,),
+        )
+        .map_err(|error| HelperError::OperationFailed {
+            reason: format!("UDisks2 SMART refresh failed: {error}"),
+        })?;
 
-    let _ = (UDISKS2_BUS_NAME, UDISKS2_ATA_INTERFACE);
-
-    Err(HelperError::OperationFailed {
-        reason: format!(
-            "UDisks2 SMART refresh not available in this context (path: {object_path})"
-        ),
+    Ok(OperationResponse {
+        success: true,
+        message: "SMART data refreshed successfully".to_string(),
     })
 }
 

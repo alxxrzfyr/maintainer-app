@@ -886,6 +886,8 @@ impl SettingsState {
 pub enum HistoryIntent {
     /// Request deletion of a single entry by ID (triggers confirmation).
     RequestDeleteOne(String),
+    /// Request deletion of multiple entries by ID (triggers confirmation).
+    RequestDeleteMany(Vec<String>),
     /// Request deletion of all entries (triggers confirmation).
     RequestDeleteAll,
     /// Confirm the pending deletion.
@@ -899,6 +901,8 @@ pub enum HistoryIntent {
 pub enum PendingHistoryDeletion {
     /// Deleting a single entry by ID.
     One(String),
+    /// Deleting multiple entries by ID.
+    Many(Vec<String>),
     /// Deleting all entries.
     All,
 }
@@ -916,6 +920,10 @@ impl HistoryState {
         match intent {
             HistoryIntent::RequestDeleteOne(id) => {
                 self.pending_deletion = Some(PendingHistoryDeletion::One(id));
+                true
+            }
+            HistoryIntent::RequestDeleteMany(ids) => {
+                self.pending_deletion = Some(PendingHistoryDeletion::Many(ids));
                 true
             }
             HistoryIntent::RequestDeleteAll => {

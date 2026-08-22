@@ -4,6 +4,9 @@
 //! Selections default empty — the user must explicitly check each file
 //! to include in the removal plan. Full paths are always visible.
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use gtk4::prelude::*;
 use gtk4::{
     self, Align, Box as GtkBox, Button, CheckButton, Label, ListItem, ListView, Orientation,
@@ -12,7 +15,9 @@ use gtk4::{
 
 use gio::prelude::*;
 
-use crate::state::StorageState;
+use crate::state::{RemovalPlanRequest, StorageState};
+
+type SelectionCallback = Rc<RefCell<Option<Box<dyn Fn(usize, usize)>>>>;
 
 /// GObject for a row in the duplicates list (one file within a group).
 mod imp {
@@ -81,6 +86,7 @@ impl DuplicateRowObject {
 }
 
 /// View for duplicate file results.
+#[derive(Clone)]
 pub struct DuplicatesView {
     container: GtkBox,
     list_view: ListView,
@@ -88,6 +94,8 @@ pub struct DuplicatesView {
     empty_label: Label,
     review_button: Button,
     selection_count_label: Label,
+    review_status: Label,
+    on_selection_changed: SelectionCallback,
 }
 
 impl DuplicatesView {
@@ -116,12 +124,23 @@ impl DuplicatesView {
         header.append(&review_button);
         container.append(&header);
 
+        let review_status = Label::new(None);
+        review_status.set_halign(Align::Start);
+        review_status.set_margin_start(12);
+        review_status.set_margin_end(12);
+        review_status.set_wrap(true);
+        review_status.set_visible(false);
+        review_status.add_css_class("maintainer_text_muted");
+        container.append(&review_status);
+
         let model = gio::ListStore::new::<DuplicateRowObject>();
         let selection = SingleSelection::new(Some(model.clone()));
         selection.set_autoselect(false);
 
+        let on_selection_changed: SelectionCallback = Rc::new(RefCell::new(None));
+        let on_selection_for_setup = on_selection_changed.clone();
         let factory = SignalListItemFactory::new();
-        factory.connect_setup(|_, item| {
+        factory.connect_setup(move |_, item| {
             let item = item.downcast_ref::<ListItem>().unwrap();
             let row = GtkBox::new(Orientation::Horizontal, 8);
             row.set_margin_start(12);
@@ -131,6 +150,23 @@ impl DuplicatesView {
 
             let check = CheckButton::new();
             check.set_halign(Align::Start);
+            let item_weak = item.downgrade();
+            let on_selection = on_selection_for_setup.clone();
+            check.connect_toggled(move |check| {
+                let Some(item) = item_weak.upgrade() else {
+                    return;
+                };
+                let Some(obj) = item.item().and_downcast::<DuplicateRowObject>() else {
+                    return;
+                };
+                if obj.is_group_header() || check.is_active() == obj.selected() {
+                    return;
+                }
+                obj.set_selected(check.is_active());
+                if let Some(callback) = on_selection.borrow().as_ref() {
+                    callback(obj.group_idx() as usize, obj.file_idx() as usize);
+                }
+            });
 
             let path_label = Label::new(None);
             path_label.set_halign(Align::Start);
@@ -157,19 +193,29 @@ impl DuplicatesView {
 
             if obj.is_group_header() {
                 check.set_visible(false);
+                row.add_css_class("duplicates-group-header");
                 path_label.set_text(&format!(
-                    "Group: {} ({})",
+                    "{} — {} each",
                     obj.digest_short(),
                     obj.size_display()
                 ));
-                path_label.add_css_class("heading");
-                size_label.set_text("");
+                path_label.remove_css_class("heading");
+                size_label.set_text("Oldest copy kept by default — review before confirming");
+                size_label.remove_css_class("dim-label");
+                size_label.add_css_class("duplicates-keep-hint");
             } else {
+                row.remove_css_class("duplicates-group-header");
                 check.set_visible(true);
                 check.set_active(obj.selected());
+                check.update_property(&[gtk4::accessible::Property::Label(&format!(
+                    "Select {}",
+                    obj.path()
+                ))]);
                 path_label.set_text(&obj.path());
                 path_label.remove_css_class("heading");
                 size_label.set_text(&obj.size_display());
+                size_label.remove_css_class("duplicates-keep-hint");
+                size_label.add_css_class("dim-label");
             }
         });
 
@@ -199,6 +245,8 @@ impl DuplicatesView {
             empty_label,
             review_button,
             selection_count_label,
+            review_status,
+            on_selection_changed,
         }
     }
 
@@ -268,9 +316,24 @@ impl DuplicatesView {
         }
     }
 
+    /// Connect duplicate selection changes.
+    pub fn connect_selection_changed<F: Fn(usize, usize) + 'static>(&self, callback: F) {
+        *self.on_selection_changed.borrow_mut() = Some(Box::new(callback));
+    }
+
     /// Connect the review button.
     pub fn connect_review<F: Fn() + 'static>(&self, callback: F) {
         self.review_button.connect_clicked(move |_| callback());
+    }
+
+    /// Show the immutable removal plan without deleting anything automatically.
+    pub fn show_review_plan(&self, review: &RemovalPlanRequest) {
+        self.review_status.set_text(&format!(
+            "Review ready: {} file(s), {} total. Duplicate files are never removed automatically.",
+            review.targets.len(),
+            format_bytes(review.total_bytes)
+        ));
+        self.review_status.set_visible(true);
     }
 
     /// Access the underlying model for testing.

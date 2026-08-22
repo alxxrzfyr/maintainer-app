@@ -17,11 +17,7 @@ use gtk4::{
     ResponseType, ScrolledWindow, TextView, WrapMode,
 };
 
-use maintainer_core::reports::model::{
-    CapabilityNote, DiagnosticsSection, HardwareSection, HealthSection, MaintenanceSection,
-    OsSection, RedactionPolicy, SoftwareUpdatesSection, SystemReport,
-};
-use maintainer_core::reports::{redact_report, render_text};
+use crate::runtime::RuntimeHandle;
 
 /// State for the reports page.
 struct ReportsState {
@@ -30,17 +26,18 @@ struct ReportsState {
 }
 
 /// Build the reports page widget tree.
-pub fn build_reports_page() -> GtkBox {
+pub fn build_reports_page(runtime: RuntimeHandle) -> GtkBox {
     let container = GtkBox::new(Orientation::Vertical, 12);
-    container.set_margin_top(16);
-    container.set_margin_bottom(16);
-    container.set_margin_start(16);
-    container.set_margin_end(16);
+    container.add_css_class("reports-page");
+    container.set_margin_top(24);
+    container.set_margin_bottom(24);
+    container.set_margin_start(24);
+    container.set_margin_end(24);
 
     let state = Rc::new(RefCell::new(ReportsState { preview_text: None }));
 
     let header = Label::new(Some("System Report"));
-    header.add_css_class("heading");
+    header.add_css_class("title-1");
     header.set_halign(Align::Start);
     container.append(&header);
 
@@ -50,6 +47,7 @@ pub fn build_reports_page() -> GtkBox {
     ));
     description.set_halign(Align::Start);
     description.set_wrap(true);
+    description.add_css_class("dim-label");
     container.append(&description);
 
     let text_view = TextView::new();
@@ -57,6 +55,14 @@ pub fn build_reports_page() -> GtkBox {
     text_view.set_monospace(true);
     text_view.set_wrap_mode(WrapMode::Word);
     text_view.set_vexpand(true);
+    text_view.set_left_margin(16);
+    text_view.set_right_margin(16);
+    text_view.set_top_margin(16);
+    text_view.set_bottom_margin(16);
+    text_view.add_css_class("maintainer_report_view");
+    text_view.buffer().set_text(
+        "Click \"Generate Preview\" below to create a redacted snapshot of your system state.",
+    );
 
     let scrolled = ScrolledWindow::new();
     scrolled.set_child(Some(&text_view));
@@ -66,8 +72,10 @@ pub fn build_reports_page() -> GtkBox {
 
     let button_bar = GtkBox::new(Orientation::Horizontal, 8);
     button_bar.set_halign(Align::End);
+    button_bar.set_vexpand(false);
 
     let generate_btn = Button::with_label("Generate Preview");
+    generate_btn.add_css_class("suggested-action");
     let copy_btn = Button::with_label("Copy to Clipboard");
     let save_btn = Button::with_label("Save to File");
 
@@ -84,20 +92,37 @@ pub fn build_reports_page() -> GtkBox {
         let text_view_clone = text_view.clone();
         let copy_btn_clone = copy_btn.clone();
         let save_btn_clone = save_btn.clone();
-        generate_btn.connect_clicked(move |_| {
-            let report = assemble_placeholder_report();
-            let policy = RedactionPolicy::default();
-            let redacted = redact_report(report, &policy);
-            let text = render_text(&redacted);
+        let runtime_clone = runtime.clone();
+        generate_btn.connect_clicked(move |button| {
+            button.set_sensitive(false);
+            button.set_label("Generating…");
+            copy_btn_clone.set_sensitive(false);
+            save_btn_clone.set_sensitive(false);
 
-            let buffer = text_view_clone.buffer();
-            buffer.set_text(&text);
+            let rt = runtime_clone.borrow();
+            let executor = rt.executor.clone();
+            let database = rt.db.clone();
+            drop(rt);
 
-            let mut st = state_clone.borrow_mut();
-            st.preview_text = Some(text);
-
-            copy_btn_clone.set_sensitive(true);
-            save_btn_clone.set_sensitive(true);
+            let state = state_clone.clone();
+            let text_view = text_view_clone.clone();
+            let copy_button = copy_btn_clone.clone();
+            let save_button = save_btn_clone.clone();
+            let generate_button = button.clone();
+            crate::dispatch::dispatch_report_generation(&executor, database, move |outcome| {
+                let text = match outcome {
+                    crate::dispatch::ReportOutcome::Completed { text } => text,
+                    crate::dispatch::ReportOutcome::Failed { message } => {
+                        format!("Could not generate report: {message}")
+                    }
+                };
+                text_view.buffer().set_text(&text);
+                state.borrow_mut().preview_text = Some(text);
+                copy_button.set_sensitive(true);
+                save_button.set_sensitive(true);
+                generate_button.set_label("Generate Preview");
+                generate_button.set_sensitive(true);
+            });
         });
     }
 
@@ -194,135 +219,6 @@ fn atomic_save(path: &Path, content: &str) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Assemble a placeholder report from available system state.
-/// In a full implementation this would consume the latest cached snapshot.
-/// Report assembly does NOT trigger expensive operations.
-fn assemble_placeholder_report() -> SystemReport {
-    use maintainer_core::capability::{Capability, UnavailableReason};
-
-    let hostname = hostname_or_redacted();
-    let username = username_or_redacted();
-
-    SystemReport {
-        generated_at: chrono_like_now(),
-        os: OsSection {
-            distro: read_os_release().unwrap_or_else(|| "Unknown".to_string()),
-            kernel: read_kernel_version().unwrap_or_else(|| "Unknown".to_string()),
-            uptime_seconds: read_uptime().unwrap_or(0),
-            desktop: std::env::var("XDG_CURRENT_DESKTOP").ok(),
-            hostname,
-            username,
-        },
-        hardware: HardwareSection {
-            cpu: Capability::Unavailable(UnavailableReason {
-                code: "not-sampled",
-                message: "No live metric snapshot available".into(),
-                remediation: None,
-            }),
-            memory: Capability::Unavailable(UnavailableReason {
-                code: "not-sampled",
-                message: "No live metric snapshot available".into(),
-                remediation: None,
-            }),
-            disks: Capability::Unavailable(UnavailableReason {
-                code: "not-sampled",
-                message: "No live metric snapshot available".into(),
-                remediation: None,
-            }),
-            network: Capability::Unavailable(UnavailableReason {
-                code: "not-sampled",
-                message: "No live metric snapshot available".into(),
-                remediation: None,
-            }),
-            temperatures: Capability::Unavailable(UnavailableReason {
-                code: "not-sampled",
-                message: "No live metric snapshot available".into(),
-                remediation: None,
-            }),
-        },
-        health: HealthSection {
-            smart_drives: Capability::Unavailable(UnavailableReason {
-                code: "not-queried",
-                message: "SMART data not queried for report".into(),
-                remediation: None,
-            }),
-        },
-        software_updates: SoftwareUpdatesSection {
-            pending_updates: Capability::Unavailable(UnavailableReason {
-                code: "not-checked",
-                message: "Update check not performed for report".into(),
-                remediation: None,
-            }),
-        },
-        diagnostics: DiagnosticsSection {
-            failed_services: Capability::Unavailable(UnavailableReason {
-                code: "not-queried",
-                message: "Service diagnostics not queried for report".into(),
-                remediation: None,
-            }),
-            event_groups: Capability::Unavailable(UnavailableReason {
-                code: "not-queried",
-                message: "Journal events not queried for report".into(),
-                remediation: None,
-            }),
-        },
-        maintenance: MaintenanceSection {
-            recent_history: Vec::new(),
-        },
-        capability_notes: vec![CapabilityNote {
-            name: "Live metrics".into(),
-            status: "not sampled".into(),
-            reason: Some("Report does not trigger live sampling".into()),
-        }],
-    }
-}
-
-/// Read hostname from /proc/sys/kernel/hostname.
-fn hostname_or_redacted() -> String {
-    fs::read_to_string("/proc/sys/kernel/hostname")
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|_| "unknown".to_string())
-}
-
-/// Read username from environment.
-fn username_or_redacted() -> String {
-    std::env::var("USER").unwrap_or_else(|_| "unknown".to_string())
-}
-
-/// Generate a timestamp string.
-fn chrono_like_now() -> String {
-    use std::time::SystemTime;
-    let duration = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default();
-    let secs = duration.as_secs();
-    format!("{secs} (Unix timestamp)")
-}
-
-/// Read /etc/os-release for PRETTY_NAME.
-fn read_os_release() -> Option<String> {
-    let content = fs::read_to_string("/etc/os-release").ok()?;
-    for line in content.lines() {
-        if let Some(value) = line.strip_prefix("PRETTY_NAME=") {
-            return Some(value.trim_matches('"').to_string());
-        }
-    }
-    None
-}
-
-/// Read kernel version from /proc/version.
-fn read_kernel_version() -> Option<String> {
-    let content = fs::read_to_string("/proc/version").ok()?;
-    content.split_whitespace().nth(2).map(|s| s.to_string())
-}
-
-/// Read uptime from /proc/uptime.
-fn read_uptime() -> Option<u64> {
-    let content = fs::read_to_string("/proc/uptime").ok()?;
-    let seconds_str = content.split_whitespace().next()?;
-    seconds_str.parse::<f64>().ok().map(|s| s as u64)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -371,16 +267,5 @@ mod tests {
         assert_eq!(content, "second");
 
         let _ = fs::remove_file(&path);
-    }
-
-    #[test]
-    fn placeholder_report_assembles_without_panic() {
-        let report = assemble_placeholder_report();
-        let policy = RedactionPolicy::default();
-        let redacted = redact_report(report, &policy);
-        let text = render_text(&redacted);
-        assert!(text.contains("Maintainer System Report"));
-        assert!(text.contains("[hostname]"));
-        assert!(text.contains("[username]"));
     }
 }

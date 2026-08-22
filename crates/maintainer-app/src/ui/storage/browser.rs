@@ -10,6 +10,7 @@ use gtk4::prelude::*;
 use gtk4::{self, Align, Box as GtkBox, Button, Label, Orientation};
 
 /// Directory browser showing current drill-down path with navigation controls.
+#[derive(Clone)]
 pub struct DirectoryBrowser {
     container: GtkBox,
     path_label: Label,
