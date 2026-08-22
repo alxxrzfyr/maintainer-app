@@ -92,7 +92,8 @@ pub struct UpdatesPage {
     check_button: Button,
     status_label: Label,
     // Selection mode toggle
-    mode_box: GtkBox,
+    mode_row: GtkBox,
+    custom_selection_label: Label,
     everything_toggle: gtk4::ToggleButton,
     security_toggle: gtk4::ToggleButton,
     selection_mode: SelectionMode,
@@ -162,11 +163,16 @@ impl UpdatesPage {
         status_label.set_visible(false);
         container.append(&status_label);
 
-        // --- Selection mode toggle (hidden until reviewing) ---
+        // --- Selection mode row (hidden until reviewing) ---
+        // Wraps the coarse toggle and the custom-selection indicator together
+        // so the indicator reads as "what replaced the toggle" rather than an
+        // unrelated label elsewhere on the page.
+        let mode_row = GtkBox::new(Orientation::Horizontal, 8);
+        mode_row.set_halign(gtk4::Align::Start);
+        mode_row.set_visible(false);
+
         let mode_box = GtkBox::new(Orientation::Horizontal, 0);
         mode_box.add_css_class("linked");
-        mode_box.set_halign(gtk4::Align::Start);
-        mode_box.set_visible(false);
 
         let everything_toggle = gtk4::ToggleButton::with_label("Everything");
         everything_toggle.set_active(true);
@@ -176,9 +182,27 @@ impl UpdatesPage {
 
         mode_box.append(&everything_toggle);
         mode_box.append(&security_toggle);
-        container.append(&mode_box);
+        mode_row.append(&mode_box);
 
-        // --- Sticky top action bar (summary + Install button) ---
+        // Shown only while per-package checkboxes have overridden the coarse
+        // toggle, so the mode change is never communicated by the toggle
+        // buttons silently going blank alone.
+        let custom_selection_label = Label::new(Some("Custom selection"));
+        custom_selection_label.add_css_class("custom-selection-indicator");
+        custom_selection_label.set_visible(false);
+        custom_selection_label.set_tooltip_text(Some(
+            "A package was individually checked or unchecked, overriding the \
+             Everything / Security Only toggle above.",
+        ));
+        mode_row.append(&custom_selection_label);
+
+        container.append(&mode_row);
+
+        // --- Top action bar (summary + Install button) ----
+        // Pinned above the package list's own ScrolledWindow, not the page
+        // viewport: the page itself does not scroll as a whole, only the
+        // package list does, so this bar stays visible without needing a
+        // GTK "sticky" mechanism.
         let action_bar = GtkBox::new(Orientation::Horizontal, 12);
         action_bar.add_css_class("action-bar-top");
         action_bar.set_visible(false);
@@ -213,7 +237,7 @@ impl UpdatesPage {
         let reboot_notice = Label::new(Some(
             "⟳ A system restart will be required after installing these updates.",
         ));
-        reboot_notice.add_css_class("warning");
+        reboot_notice.add_css_class("reboot-notice");
         reboot_notice.set_halign(gtk4::Align::Start);
         reboot_notice.set_wrap(true);
         reboot_notice.set_visible(false);
@@ -264,7 +288,8 @@ impl UpdatesPage {
             container,
             check_button,
             status_label,
-            mode_box,
+            mode_row,
+            custom_selection_label,
             everything_toggle,
             security_toggle,
             selection_mode: SelectionMode::Everything,
@@ -311,8 +336,13 @@ impl UpdatesPage {
     }
 
     /// Update the internal selection mode. Called from toggle signal handlers.
+    ///
+    /// Keeps the visible "Custom selection" indicator in lockstep with the
+    /// mode, so Custom can never be active while the indicator is hidden.
     pub fn set_selection_mode(&mut self, mode: SelectionMode) {
         self.selection_mode = mode;
+        self.custom_selection_label
+            .set_visible(mode == SelectionMode::Custom);
     }
 
     /// Returns the "Review Selection" button for signal connections.
@@ -348,7 +378,7 @@ impl UpdatesPage {
         self.action_bar.set_visible(false);
         self.confirm_button.set_sensitive(false);
         self.review_button.set_visible(false);
-        self.mode_box.set_visible(false);
+        self.mode_row.set_visible(false);
         self.reboot_notice.set_visible(false);
         self.result_label.set_visible(false);
     }
@@ -365,7 +395,7 @@ impl UpdatesPage {
         self.summary_label.set_text(summary);
         self.confirm_button.set_sensitive(true);
         // Show mode toggle
-        self.mode_box.set_visible(true);
+        self.mode_row.set_visible(true);
     }
 
     /// Show the immutable update plan that will be handed to PackageKit.
@@ -510,6 +540,7 @@ impl UpdatesPage {
             let confirm_btn = self.confirm_button.clone();
             let everything_toggle = self.everything_toggle.clone();
             let security_toggle = self.security_toggle.clone();
+            let custom_label = self.custom_selection_label.clone();
 
             check.connect_toggled(move |btn| {
                 let mut selected = selected_ref.borrow_mut();
@@ -524,13 +555,16 @@ impl UpdatesPage {
                 // and switches to Custom mode.
                 *replanned_ref.borrow_mut() = false;
 
-                // Deactivate coarse toggle buttons to indicate Custom mode.
+                // Deactivate coarse toggle buttons to indicate Custom mode,
+                // and show the indicator label so the mode change is visible
+                // rather than communicated only by the toggles going blank.
                 // GTK ToggleButton in a group requires at least one active;
                 // we set neither active by temporarily removing from group.
                 // Since we can't truly deactivate both in a linked group
                 // cleanly, we unset both explicitly.
                 everything_toggle.set_active(false);
                 security_toggle.set_active(false);
+                custom_label.set_visible(true);
 
                 // Show Review Selection button, disable Install.
                 review_btn.set_visible(true);
@@ -554,7 +588,7 @@ impl UpdatesPage {
         self.status_label.set_visible(true);
         self.action_bar.set_visible(false);
         self.confirm_button.set_sensitive(false);
-        self.mode_box.set_visible(false);
+        self.mode_row.set_visible(false);
         self.reboot_notice.set_visible(false);
         self.package_scrolled.set_visible(false);
         self.progress_bar.set_visible(false);
@@ -570,7 +604,7 @@ impl UpdatesPage {
         self.status_label.add_css_class("error");
         self.action_bar.set_visible(false);
         self.confirm_button.set_sensitive(false);
-        self.mode_box.set_visible(false);
+        self.mode_row.set_visible(false);
         self.reboot_notice.set_visible(false);
     }
 
@@ -579,7 +613,7 @@ impl UpdatesPage {
         self.phase = UpdatePhase::Executing;
         self.action_bar.set_visible(false);
         self.confirm_button.set_sensitive(false);
-        self.mode_box.set_visible(false);
+        self.mode_row.set_visible(false);
         self.reboot_notice.set_visible(false);
         self.check_button.set_label("Installing Updates…");
         self.check_button.set_sensitive(false);
@@ -612,7 +646,7 @@ impl UpdatesPage {
         self.progress_label.set_visible(false);
         self.cancel_button.set_visible(false);
         self.action_bar.set_visible(false);
-        self.mode_box.set_visible(false);
+        self.mode_row.set_visible(false);
         self.reboot_notice.set_visible(false);
         self.check_button.set_label("Check for Updates");
         self.check_button.set_sensitive(true);

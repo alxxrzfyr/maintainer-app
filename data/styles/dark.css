@@ -903,11 +903,54 @@ spinbutton button:hover {
     font-weight: 500;
 }
 
-/* ---- Security Updates Pill ---- */
-.security-badge {
+/* ---- Updates: pinned action bar ----
+   Sits above the scrollable package list, not the viewport, since the page
+   itself does not scroll as a whole. Gets a surface + border so it reads as
+   a distinct, elevated control strip rather than blending into the page. */
+.action-bar-top {
+    background-color: @maintainer_surface_alt;
+    border: 1px solid @maintainer_border;
+    border-radius: 8px;
+    padding: 10px 12px;
+}
+
+/* ---- Updates: per-package status icons ----
+   Security and kernel are orthogonal and can appear together on one row, so
+   each gets its own color rather than sharing a single "important" tint. */
+.security-icon {
     color: @maintainer_danger;
-    background-color: alpha(@maintainer_danger, 0.14);
-    border: 1px solid alpha(@maintainer_danger, 0.3);
+}
+
+.kernel-icon {
+    color: @maintainer_warning;
+}
+
+.held-icon {
+    color: @maintainer_text_muted;
+}
+
+.backend-icon {
+    color: @maintainer_accent;
+}
+
+/* ---- Updates: page-level reboot notice ---- */
+.reboot-notice {
+    color: @maintainer_warning;
+    background-color: alpha(@maintainer_warning, 0.12);
+    border: 1px solid alpha(@maintainer_warning, 0.3);
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-weight: 600;
+}
+
+/* ---- Updates: custom-selection state indicator ----
+   Shown only while per-package checkboxes have overridden the coarse
+   Everything/Security Only toggle, so switching modes is never communicated
+   by the toggle buttons going blank alone. */
+.custom-selection-indicator {
+    color: @maintainer_accent;
+    background-color: alpha(@maintainer_accent, 0.12);
+    border: 1px solid alpha(@maintainer_accent, 0.3);
     border-radius: 6px;
     padding: 2px 8px;
     font-size: 11px;
