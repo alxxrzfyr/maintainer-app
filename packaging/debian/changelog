@@ -1,3 +1,15 @@
+maintainer (1.1.0-1) jammy; urgency=medium
+
+  * Ship the full interface: eight pages, device specifications, hardware
+    inventory, expanded diagnostics and cleanup flows, and the complete
+    stylesheets. The 1.0.0 package was built before this work was committed
+    and contained the earlier scaffold interface.
+  * Refresh only the page currently on screen, restoring the idle CPU
+    reduction that the scaffold build had.
+  * Cache hwmon topology so a sample reads only sensor values.
+
+ -- Maintainer Developers <maintainer@maintainerapp.io>  Sat, 22 Aug 2026 12:00:00 +0000
+
 maintainer (1.0.0-1) jammy; urgency=medium
 
   * Initial release.

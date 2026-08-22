@@ -28,7 +28,7 @@ Maintainer provides official `.deb` packages for `amd64` and `arm64` architectur
 
 ```bash
 # Install the package and all required dependencies
-sudo apt install ./maintainer_1.0.0-1_amd64.deb
+sudo apt install ./maintainer_1.1.0-1_amd64.deb
 ```
 
 Once installed, launch Maintainer from your application launcher or run:

@@ -5,6 +5,39 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-08-22
+
+### Added
+
+- The full interface now ships: the Overview, System, Storage, Cleanup,
+  Updates, Diagnostics, Reports, and Settings pages, a device specification
+  panel, a hardware inventory view covering GPU, USB, PCI, and BIOS, expanded
+  diagnostics and cleanup flows, storage sub-pages, and the complete light and
+  dark stylesheets.
+
+### Fixed
+
+- The 1.0.0 package was built before the interface work had been committed, so
+  it installed the earlier scaffold interface. Its changelog entry described
+  features the artifact did not contain. Nothing was wrong with the packaging
+  itself; the code simply was not in the repository at that point.
+- Four helper client tests asserted that an unreachable helper reports
+  `Unavailable`. That holds only where no system bus exists; on a desktop with
+  a bus and Polkit the authorization is refused first and the result is
+  `PermissionRequired`. Both are correct refusals, so either is now accepted.
+
+### Performance
+
+- Only the page on screen is refreshed. Both page update paths rebuild widget
+  subtrees, so refreshing a hidden page forced repaints that changed nothing
+  visible. Measured idle CPU fell from 2.79% to 1.39% under a software
+  rasterizer. Switching pages repaints the incoming page immediately, so no
+  stale content is shown.
+- hwmon topology and sensor labels are discovered once, so each sample reads
+  only the temperature value files.
+
+[1.1.0]: https://github.com/alxxrzfyr/maintainer-app/releases/tag/v1.1.0
+
 ## [1.0.0] - 2026-08-22
 
 First release.
