@@ -4,7 +4,7 @@
 //! sensors become `Unavailable` entries rather than zero Celsius.
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::capability::{Capability, UnavailableReason};
 use crate::error::MaintainerError;
@@ -144,6 +144,149 @@ fn read_hwmon_temps(
     Ok(readings)
 }
 
+/// A discovered sensor: the value file plus the metadata that never changes.
+#[derive(Debug, Clone)]
+struct SensorPath {
+    input_path: PathBuf,
+    hwmon_name: String,
+    label: Option<String>,
+}
+
+/// Samples temperatures without re-discovering hwmon topology every time.
+///
+/// [`read_temperatures`] re-reads every hwmon directory entry plus each `name`
+/// and `temp*_label` file on every call, which dominates the cost of a sampling
+/// tick. Device topology and sensor labels are fixed while the machine is
+/// running, so they are discovered once and only `temp*_input` is read per
+/// sample. Discovery is retried on the next call if it yielded no sensors, so a
+/// driver that loads later is still picked up.
+#[derive(Debug, Default)]
+pub struct TemperatureCollector {
+    sensors: Vec<SensorPath>,
+    discovered: bool,
+}
+
+impl TemperatureCollector {
+    /// Create a collector with no cached topology.
+    pub fn new() -> Self {
+        Self {
+            sensors: Vec::new(),
+            discovered: false,
+        }
+    }
+
+    /// Read current values for all known sensors, discovering them if needed.
+    pub fn read(&mut self, sys_path: &Path) -> Result<Vec<TemperatureReading>, MaintainerError> {
+        if !self.discovered || self.sensors.is_empty() {
+            self.sensors = discover_sensors(sys_path)?;
+            self.discovered = true;
+        }
+
+        let mut readings = Vec::with_capacity(self.sensors.len());
+        for sensor in &self.sensors {
+            readings.push(TemperatureReading {
+                hwmon_name: sensor.hwmon_name.clone(),
+                label: sensor.label.clone(),
+                celsius: read_celsius(&sensor.input_path),
+            });
+        }
+        Ok(readings)
+    }
+}
+
+/// Parse one `temp*_input` file, which holds millidegrees Celsius.
+fn read_celsius(input_path: &Path) -> Capability<f64> {
+    match fs::read_to_string(input_path) {
+        Ok(content) => match content.trim().parse::<i64>() {
+            Ok(millidegrees) => Capability::Available(millidegrees as f64 / 1000.0),
+            Err(_) => Capability::Unavailable(UnavailableReason {
+                code: "temp-parse",
+                message: format!("Could not parse {}", input_path.display()),
+                remediation: None,
+            }),
+        },
+        Err(e) => Capability::Unavailable(UnavailableReason {
+            code: "temp-read",
+            message: e.to_string(),
+            remediation: None,
+        }),
+    }
+}
+
+/// Walk `/sys/class/hwmon` once, recording each sensor's value path and labels.
+fn discover_sensors(sys_path: &Path) -> Result<Vec<SensorPath>, MaintainerError> {
+    let hwmon_dir = sys_path.join("class/hwmon");
+
+    let entries = match fs::read_dir(&hwmon_dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => {
+            return Err(MaintainerError::io(
+                format!("reading {}", hwmon_dir.display()),
+                e,
+            ));
+        }
+    };
+
+    let mut sensors = Vec::new();
+
+    for entry in entries {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        let hwmon_path = entry.path();
+        if !hwmon_path.is_dir() {
+            continue;
+        }
+
+        let hwmon_name = read_hwmon_name(&hwmon_path);
+
+        let inner = match fs::read_dir(&hwmon_path) {
+            Ok(inner) => inner,
+            Err(_) => continue,
+        };
+
+        let mut temp_indices: Vec<u32> = Vec::new();
+        for file in inner {
+            let file = match file {
+                Ok(f) => f,
+                Err(_) => continue,
+            };
+            let name = file.file_name();
+            let name_str = name.to_string_lossy();
+            if let Some(idx_str) = name_str
+                .strip_prefix("temp")
+                .and_then(|s| s.strip_suffix("_input"))
+            {
+                if let Ok(idx) = idx_str.parse::<u32>() {
+                    temp_indices.push(idx);
+                }
+            }
+        }
+        temp_indices.sort_unstable();
+
+        for idx in temp_indices {
+            let label = fs::read_to_string(hwmon_path.join(format!("temp{idx}_label")))
+                .ok()
+                .map(|s| s.trim().to_string());
+            sensors.push(SensorPath {
+                input_path: hwmon_path.join(format!("temp{idx}_input")),
+                hwmon_name: hwmon_name.clone(),
+                label,
+            });
+        }
+    }
+
+    sensors.sort_by(|a, b| {
+        a.hwmon_name
+            .cmp(&b.hwmon_name)
+            .then_with(|| a.label.cmp(&b.label))
+    });
+
+    Ok(sensors)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -151,6 +294,44 @@ mod tests {
 
     fn fixtures_path() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/sys")
+    }
+
+    #[test]
+    fn collector_matches_one_shot_read() {
+        let expected = read_temperatures(&fixtures_path()).unwrap();
+        let mut collector = TemperatureCollector::new();
+        let actual = collector.read(&fixtures_path()).unwrap();
+
+        assert_eq!(actual.len(), expected.len());
+        for (a, e) in actual.iter().zip(expected.iter()) {
+            assert_eq!(a.hwmon_name, e.hwmon_name);
+            assert_eq!(a.label, e.label);
+            assert_eq!(a.celsius.as_value().copied(), e.celsius.as_value().copied());
+        }
+    }
+
+    #[test]
+    fn collector_repeated_reads_are_stable() {
+        let mut collector = TemperatureCollector::new();
+        let first = collector.read(&fixtures_path()).unwrap();
+        let second = collector.read(&fixtures_path()).unwrap();
+
+        assert!(!first.is_empty());
+        assert_eq!(first.len(), second.len());
+        for (a, b) in first.iter().zip(second.iter()) {
+            assert_eq!(a.hwmon_name, b.hwmon_name);
+            assert_eq!(a.label, b.label);
+            assert_eq!(a.celsius.as_value().copied(), b.celsius.as_value().copied());
+        }
+    }
+
+    #[test]
+    fn collector_on_missing_hwmon_returns_empty() {
+        let mut collector = TemperatureCollector::new();
+        let readings = collector
+            .read(&PathBuf::from("/nonexistent-sys-path-for-test"))
+            .unwrap();
+        assert!(readings.is_empty());
     }
 
     #[test]

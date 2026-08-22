@@ -231,7 +231,7 @@ impl Shell {
                 use maintainer_core::metrics::{
                     CpuSample, NetworkSnapshot, ProcessSnapshot, SystemSnapshot,
                     compute_cpu_snapshot, read_cpu_sample, read_memory, read_net_dev,
-                    read_processes, read_temperatures,
+                    read_processes,
                 };
                 use std::collections::HashMap;
                 use std::path::Path;
@@ -242,6 +242,8 @@ impl Shell {
                 let mut prev_cpu: Option<CpuSample> = None;
                 let mut prev_net: Option<(HashMap<String, NetCounters>, Instant)> = None;
                 let mut last_processes: Option<Capability<Vec<ProcessSnapshot>>> = None;
+                let mut temperature_collector =
+                    maintainer_core::metrics::TemperatureCollector::new();
 
                 while let Ok(mut needs_processes) = request_rx.recv() {
                     // Drain coalesced ticks; keep the most recent request's flag.
@@ -342,7 +344,7 @@ impl Shell {
                         }),
                     };
 
-                    let temperatures = match read_temperatures(sys_path) {
+                    let temperatures = match temperature_collector.read(sys_path) {
                         Ok(t) => Capability::Available(t),
                         Err(e) => Capability::Unavailable(UnavailableReason {
                             code: "hwmon-read",

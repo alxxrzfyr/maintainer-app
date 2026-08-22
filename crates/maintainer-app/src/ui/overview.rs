@@ -4,6 +4,8 @@
 //! first two. Attention items are derived from explicit evidence (disk thresholds,
 //! temperature critical states) — never from transient CPU load.
 
+use std::cell::RefCell;
+
 use gtk4::prelude::*;
 use gtk4::{Align, Box as GtkBox, Image, Label, Orientation, ScrolledWindow};
 
@@ -18,6 +20,10 @@ pub struct OverviewPage {
     disk_card: MetricCard,
     network_card: MetricCard,
     attention_box: GtkBox,
+    /// Last rendered attention items. Rebuilding the list tears down and
+    /// recreates every row, which dirties the frame and forces a repaint, so
+    /// the rebuild is skipped when the items have not changed.
+    last_attention: RefCell<Vec<AttentionItem>>,
 }
 
 impl Default for OverviewPage {
@@ -92,6 +98,7 @@ impl OverviewPage {
             disk_card,
             network_card,
             attention_box,
+            last_attention: RefCell::new(Vec::new()),
         }
     }
 
@@ -140,6 +147,15 @@ impl OverviewPage {
     }
 
     fn update_attention(&self, items: &[AttentionItem]) {
+        if self.last_attention.borrow().as_slice() == items {
+            return;
+        }
+        {
+            let mut last = self.last_attention.borrow_mut();
+            last.clear();
+            last.extend_from_slice(items);
+        }
+
         // Clear existing children
         while let Some(child) = self.attention_box.first_child() {
             self.attention_box.remove(&child);
