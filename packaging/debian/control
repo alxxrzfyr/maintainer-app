@@ -18,15 +18,22 @@ Rules-Requires-Root: binary-targets
 
 Package: maintainer
 Architecture: any
+# Depends lists what the binaries link against plus the services required to
+# start and authorize privileged work. Optional integrations are Recommends or
+# Suggests: each capability reports itself as unavailable with a reason when the
+# backing service is absent, so a missing one degrades a single feature rather
+# than breaking the application.
 Depends:
  ${shlibs:Depends},
  ${misc:Depends},
  libgtk-4-1 (>= 4.6),
  libglib2.0-0 (>= 2.72),
  libsqlite3-0,
- policykit-1,
- libpackagekit-glib2-18,
+ polkitd | policykit-1,
  systemd
+Recommends:
+ packagekit,
+ udisks2
 Suggests:
  flatpak,
  fwupd

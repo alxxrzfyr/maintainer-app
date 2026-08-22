@@ -6,111 +6,155 @@
 [![Release](https://img.shields.io/github/v/release/alxxrzfyr/maintainer-app)](https://github.com/alxxrzfyr/maintainer-app/releases)
 [![License](https://img.shields.io/github/license/alxxrzfyr/maintainer-app)](LICENSE)
 
-**Your Linux computer's personal maintenance center.**
-
 </div>
 
-Checking on your own computer usually means five different tools and a browser tab of half-remembered terminal commands. Maintainer puts the useful parts in one window: what your machine is doing right now, what is eating your disk, what needs updating, and what is actually broken.
+Maintainer is a lightweight native desktop application for monitoring, maintaining, diagnosing, and understanding Ubuntu-based Linux systems. Built with Rust and GTK4, it provides system observability, storage analysis, safe previewed cleanup, update management, and diagnostics without background daemons, telemetry, or opaque optimizations.
 
-It runs on your machine, for you. No account, no telemetry, nothing uploaded.
+## Contents
 
-## What you get
+- [Installation](#installation)
+  - [Debian Package (.deb)](#debian-package-deb)
+  - [Building from Source](#building-from-source)
+- [Key Features](#key-features)
+- [Architecture and Security](#architecture-and-security)
+- [Platform Requirements](#platform-requirements)
+- [Performance Specifications](#performance-specifications)
+- [Project Documentation](#project-documentation)
+- [License](#license)
 
-| | |
-|---|---|
-| **Live monitoring** | CPU, memory, disk, network, temperature, and processes, with small history graphs |
-| **Disk detective** | Find the biggest files, and duplicates confirmed by content rather than by name |
-| **Cleanup you approve** | See exactly what would be removed before anything happens. Files go to Trash by default |
-| **Updates** | Review pending APT updates and apply them. Flatpak and firmware too, if you have them |
-| **Diagnostics** | Which services failed, which errors keep repeating, and what that probably means |
-| **Disk health** | SMART data and a plain verdict, for drives that report it |
-| **Shareable report** | A snapshot of your system with personal details stripped out, so you can paste it somewhere safe |
+---
 
-If your hardware or system does not support something, Maintainer says so and explains why. It never shows a fake zero.
+## Installation
 
-## What it refuses to do
+### Debian Package (.deb)
 
-This matters as much as the feature list:
-
-- The window never runs as root, and never asks for your password to keep
-- It will not run commands you type into it
-- It will not delete duplicates for you, and there is no "clean everything" button
-- It does not sit in the background. Nothing scans your disk unless you ask
-- No telemetry, no account, no data leaving your machine
-
-Anything needing admin rights goes through a small, separate helper with a fixed list of allowed operations, gated by your system's normal password prompt. Details in [`docs/threat-model.md`](docs/threat-model.md).
-
-## Install
-
-Grab the `.deb` for your architecture from the [releases page](https://github.com/alxxrzfyr/maintainer-app/releases):
+Pre-built packages are available on the [Releases](https://github.com/alxxrzfyr/maintainer-app/releases) page for `amd64` and `arm64` architectures.
 
 ```bash
-dpkg --print-architecture              # amd64 or arm64?
-
+# Install the package and its runtime dependencies
 sudo apt install ./maintainer_1.0.0-1_amd64.deb
 ```
 
-Anything it needs that you do not already have, apt pulls in automatically, so that one command is the whole install. To remove it later:
+Installed components:
+- `/usr/bin/maintainer`: Unprivileged GTK4 graphical interface
+- `/usr/libexec/maintainer-helper`: PolicyKit-authenticated system helper
+- Desktop launcher, icons, GSettings schemas, D-Bus service, and PolicyKit policy definitions
+
+To remove:
 
 ```bash
-sudo apt remove maintainer   # keeps your settings
-sudo apt purge  maintainer   # removes them too
+# Remove binaries while preserving user configuration
+sudo apt remove maintainer
+
+# Remove all files and configurations
+sudo apt purge maintainer
 ```
 
-**Works on:** Ubuntu 22.04 or newer, and Ubuntu-based systems like Mint and Pop!_OS. Other Linux families are not supported yet. There is no Windows or macOS version — Maintainer reads Linux-specific system interfaces directly, so there is nothing to port.
+### Building from Source
 
-## How it's put together
+#### Prerequisites
 
-Three parts, and the split is the point:
-
-```text
-maintainer-app      the window: buttons, graphs, layout
-      |             never touches the system directly
-      v
-maintainer-core     the brain: reads /proc and /sys, talks to D-Bus,
-      |             runs scans in the background, stores your settings
-      v
-maintainer-helper   the only part allowed to act as root, and only for a
-                    fixed list of operations with checked arguments
-```
-
-Why bother: the window can be sloppy and it still cannot hurt your system, because it has no power to. Anything dangerous has to pass through the helper, which is small enough to read in one sitting and refuses anything not on its list.
-
-When Maintainer needs to run an outside program, it calls it directly with an explicit list of arguments — never by building a shell command out of text. Output is parsed by small pieces of code tested against recorded real-world samples.
-
-## Speed and memory
-
-Maintainer is meant to be usable on an old laptop with 4 GB of RAM:
-
-- Starts in under 2 seconds
-- Sits under 1% CPU when you leave it open
-- Refreshes every 2 seconds, and slows down to every 10 when the window is hidden
-- Big jobs — disk scans, duplicate hunting, SMART, log searches — only run when you ask, show progress, and can be cancelled
-
-On memory, honesty is better than a small number: most of what Maintainer uses is GTK4 itself. An empty GTK4 window already costs about 135 MB. Maintainer adds roughly 35 MB on top of that, and around 100 MB of the total is genuinely private to it — about 2.5% of a 4 GB machine, which will not push it into swapping.
-
-## Build it yourself
+Install required development headers:
 
 ```bash
-sudo apt install libgtk-4-dev libsqlite3-dev libpolkit-gobject-1-dev pkg-config
+sudo apt update
+sudo apt install -y libgtk-4-dev libsqlite3-dev libpolkit-gobject-1-dev pkg-config
+```
 
+The Rust toolchain (1.85.0) is pinned in `rust-toolchain.toml` and will be installed automatically by `rustup`.
+
+#### Build and Run
+
+```bash
+# Compile release binaries
 cargo build --workspace --release
+
+# Run the GTK4 application (development mode)
 cargo run -p maintainer-app
+
+# Run the privileged helper standalone (development testing)
+cargo run -p maintainer-helper
 ```
 
-Rust installs its own pinned toolchain from `rust-toolchain.toml`, so you do not need to pick a version.
-
-Before sending a change:
+#### Verification
 
 ```bash
+# Run unit and integration tests
+cargo test --workspace --all-features
+
+# Check formatting and lints
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo test --workspace --all-features
+
+# Execute performance benchmark
 scripts/measure-performance.sh target/release/maintainer-app
 ```
 
-Architecture rules, conventions, and what counts as finished live in [`AGENTS.md`](AGENTS.md).
+---
+
+## Key Features
+
+- **System Monitoring:** Real-time tracking of CPU, memory, storage, temperatures, network, and processes with historical sparklines. Adaptive polling (2s active, 10s when hidden).
+- **Storage Analysis and Cleanup:** Asynchronous scanning for large files and content-hash verified duplicate groups. Mandatory preview, local audit history, and Trash integration.
+- **Update Management:** Review and apply APT package updates, with optional inspection of Flatpak runtimes and fwupd device firmware.
+- **Diagnostics and Health:** Inspect failed systemd services, recurring journal logs, and SMART disk telemetry via UDisks2.
+- **Redacted Reports:** Generate local diagnostic reports with automatic redaction of hostnames, usernames, IP addresses, serial numbers, and process arguments.
+
+---
+
+## Architecture and Security
+
+Maintainer enforces strict privilege separation between the UI and system interactions:
+
+```text
+GTK4 User Interface (maintainer-app)
+        │
+Application Services and State Management
+        │
+Capability Adapters and Cancellable Jobs (maintainer-core)
+        │
+System Interfaces: /proc, /sys, D-Bus, Polkit Helper
+        │
+Privileged Operations Daemon (maintainer-helper)
+```
+
+- **`maintainer-app`:** Unprivileged GTK4 presentation layer. Contains no direct system or root access.
+- **`maintainer-core`:** Typed domain models, persistence (SQLite), collectors, and system adapters.
+- **`maintainer-helper`:** PolicyKit-activated D-Bus helper executing only fixed operations with allowlisted parameters. Arbitrary shell or command execution is prohibited.
+
+---
+
+## Platform Requirements
+
+- **Supported Distributions:** Ubuntu 22.04 LTS (Jammy Jellyfish) and newer (including Ubuntu derivatives).
+- **Display Servers:** Wayland and X11 native support via GTK4.
+- **Runtime Dependencies:** GTK4 (>= 4.6), GLib (>= 2.72), SQLite3, PolicyKit, PackageKit, UDisks2, systemd.
+- **Optional Packages:** `flatpak` (Flatpak package review), `fwupd` (firmware update review).
+
+---
+
+## Performance Specifications
+
+| Metric | Target | Hard Ceiling |
+|---|---|---|
+| Idle Memory (PSS) | <= 150 MB | 220 MB |
+| Private / Dirty Idle Memory | <= 130 MB | 150 MB |
+| Idle CPU (hardware accelerated) | <= 0.5% | 1.0% |
+| Cold Start Time | <= 2.0s | 2.5s |
+| UI Responsiveness | Sub-frame event handling | Zero main-thread blocking operations |
+
+---
+
+## Project Documentation
+
+- [CHANGELOG.md](CHANGELOG.md): Release history and security fixes.
+- [AGENTS.md](AGENTS.md): Architecture rules and development guidelines.
+- [docs/threat-model.md](docs/threat-model.md): Threat analysis and helper security model.
+- [tests/system/](tests/system/): Manual accessibility, compatibility, and security test plans.
+
+---
 
 ## License
 
-[MIT](LICENSE) — do what you like with it.
+Maintainer is distributed under the terms of the [MIT License](LICENSE).
+

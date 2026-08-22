@@ -34,6 +34,16 @@ First release.
   natively, because linking requires the GTK4, GLib, SQLite, and Polkit
   development libraries for the target architecture.
 
+### Fixed
+
+- Package dependencies now match what the binaries actually use.
+  `libpackagekit-glib2-18` was declared but never linked, since PackageKit is
+  reached over D-Bus rather than through its C library. The `packagekit` and
+  `udisks2` services, which are needed at runtime for update execution and
+  SMART reporting, were not declared at all and are now Recommends. Polkit is
+  requested as `polkitd | policykit-1` so the package resolves on Ubuntu 22.04
+  and on releases where `policykit-1` became transitional.
+
 ### Security
 
 - The GUI never runs as root. All privileged work goes through a D-Bus helper
