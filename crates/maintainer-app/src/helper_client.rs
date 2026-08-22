@@ -145,8 +145,12 @@ impl HelperClient {
 
 /// Classify a D-Bus error into our capability taxonomy.
 fn classify_dbus_error(err: zbus::Error, method: &str) -> HelperCallError {
-    let msg = err.to_string();
+    classify_message(&err.to_string(), method)
+}
 
+/// Classify an error message body, split out so the mapping can be tested
+/// without constructing live D-Bus errors.
+fn classify_message(msg: &str, method: &str) -> HelperCallError {
     if msg.contains("ServiceUnknown")
         || msg.contains("org.freedesktop.DBus.Error.ServiceUnknown")
         || msg.contains("NameHasNoOwner")
@@ -158,7 +162,23 @@ fn classify_dbus_error(err: zbus::Error, method: &str) -> HelperCallError {
         ));
     }
 
-    // AccessDenied and AuthFailed indicate Polkit denial/cancellation.
+    // A bus-level rejection is not a Polkit denial. The system bus refuses the
+    // message before the helper is activated, so Polkit is never consulted and
+    // the user is never given the chance to authenticate. Reporting this as
+    // "authentication required" would tell the user to supply a password that
+    // they were never asked for and that would not help. It means the bus
+    // policy is missing or does not permit the interface.
+    if msg.contains("not allowed to send message")
+        || msg.contains("rejected send message")
+        || msg.contains("Rejected send message")
+    {
+        return HelperCallError::Unavailable(format!(
+            "the system bus refused the call to {method}, so the helper was never reached: {msg}"
+        ));
+    }
+
+    // AccessDenied and AuthFailed from the helper itself indicate Polkit denial
+    // or a dismissed prompt.
     if msg.contains("AccessDenied")
         || msg.contains("org.freedesktop.DBus.Error.AccessDenied")
         || msg.contains("AuthFailed")
@@ -169,14 +189,14 @@ fn classify_dbus_error(err: zbus::Error, method: &str) -> HelperCallError {
     }
 
     if msg.contains("InvalidArgs") || msg.contains("org.freedesktop.DBus.Error.InvalidArgs") {
-        return HelperCallError::ValidationFailed(msg);
+        return HelperCallError::ValidationFailed(msg.to_string());
     }
 
     if msg.contains("LimitsExceeded") || msg.contains("org.freedesktop.DBus.Error.LimitsExceeded") {
         return HelperCallError::Busy;
     }
 
-    HelperCallError::OperationFailed(msg)
+    HelperCallError::OperationFailed(msg.to_string())
 }
 
 /// Shared, thread-safe handle to the helper client.
@@ -251,5 +271,33 @@ mod tests {
             err,
             HelperCallError::Unavailable(_) | HelperCallError::OperationFailed(_)
         ));
+    }
+
+    #[test]
+    fn bus_rejection_is_not_reported_as_authentication_required() {
+        // The system bus refuses the message before the helper is activated, so
+        // Polkit never runs and no prompt was ever shown. Telling the user that
+        // authentication is required would ask for a password that was never
+        // requested and would not fix a missing bus policy.
+        let classified = classify_message(
+            "org.freedesktop.DBus.Error.AccessDenied: Rejected send message, 1 matched rules",
+            "CleanPackageCache",
+        );
+        assert!(
+            matches!(classified, HelperCallError::Unavailable(ref r) if r.contains("never reached")),
+            "bus rejection must surface as unavailable, got {classified:?}"
+        );
+    }
+
+    #[test]
+    fn polkit_denial_is_reported_as_permission_required() {
+        let classified = classify_message(
+            "org.freedesktop.DBus.Error.AccessDenied: authorization denied for action",
+            "VacuumJournal",
+        );
+        assert!(
+            matches!(classified, HelperCallError::PermissionDenied(ref a) if a == "VacuumJournal"),
+            "polkit denial must stay permission-required, got {classified:?}"
+        );
     }
 }

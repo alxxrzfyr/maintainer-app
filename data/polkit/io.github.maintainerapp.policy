@@ -2,48 +2,92 @@
 <!DOCTYPE policyconfig PUBLIC
  "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
  "https://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<!--
+  Authorization policy for the Maintainer helper.
+
+  allow_any and allow_inactive stay at auth_admin for every action. A remote or
+  switched-away session never gets a lighter check than the person sitting at
+  the machine.
+
+  allow_active is set per action according to whether the action can be undone:
+
+    auth_admin  Irreversible. The password is requested every time, because the
+                authorization is not retained. This matches
+                org.freedesktop.packagekit.package-install-untrusted, which
+                documents the same reasoning for not retaining.
+
+    yes         Reversible or read-only, so the active local user may proceed
+                without a prompt. This matches
+                org.freedesktop.udisks2.ata-smart-update and
+                org.freedesktop.udisks2.modify-device, both of which are yes
+                for an active session.
+
+  auth_admin_keep is deliberately unused. Retaining an authorization for several
+  minutes means a later destructive action can run without a prompt, which is
+  the opposite of what a confirmation is for.
+-->
 <policyconfig>
   <vendor>Maintainer</vendor>
-  <vendor_url>https://github.com/maintainerapp</vendor_url>
-  <icon_name>maintainer</icon_name>
+  <vendor_url>https://github.com/alxxrzfyr/maintainer-app</vendor_url>
+  <icon_name>io.github.maintainerapp.Maintainer</icon_name>
 
+  <!--
+    Terminating a process cannot be undone and can lose unsaved work or take
+    down a service, so the password is required on every attempt.
+  -->
   <action id="io.github.maintainerapp.terminate-process">
     <description>Terminate a system process</description>
     <message>Authentication is required to terminate a system process.</message>
     <defaults>
       <allow_any>auth_admin</allow_any>
       <allow_inactive>auth_admin</allow_inactive>
-      <allow_active>auth_admin_keep</allow_active>
+      <allow_active>auth_admin</allow_active>
     </defaults>
   </action>
 
+  <!--
+    Vacuuming the journal permanently destroys system logs, including the
+    record of earlier privileged actions, and they cannot be recovered. It
+    resembles clearing a cache but is not reversible, so it is treated as a
+    destructive action and the password is required every time.
+  -->
+  <action id="io.github.maintainerapp.vacuum-journal">
+    <description>Vacuum the systemd journal</description>
+    <message>Authentication is required to permanently delete system logs.</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+  </action>
+
+  <!--
+    The APT cache holds downloaded package files that APT will fetch again when
+    needed. Removing them frees space and loses nothing, so the active local
+    user is not prompted.
+  -->
   <action id="io.github.maintainerapp.clean-package-cache">
     <description>Clean the APT package cache</description>
     <message>Authentication is required to clean the package cache.</message>
     <defaults>
       <allow_any>auth_admin</allow_any>
       <allow_inactive>auth_admin</allow_inactive>
-      <allow_active>auth_admin_keep</allow_active>
+      <allow_active>yes</allow_active>
     </defaults>
   </action>
 
-  <action id="io.github.maintainerapp.vacuum-journal">
-    <description>Vacuum the systemd journal</description>
-    <message>Authentication is required to vacuum the system journal.</message>
-    <defaults>
-      <allow_any>auth_admin</allow_any>
-      <allow_inactive>auth_admin</allow_inactive>
-      <allow_active>auth_admin_keep</allow_active>
-    </defaults>
-  </action>
-
+  <!--
+    Refreshing SMART data reads health attributes from the drive and changes no
+    system state. udisks2 treats the same operation as yes for an active
+    session.
+  -->
   <action id="io.github.maintainerapp.refresh-smart">
     <description>Refresh SMART disk health data</description>
-    <message>Authentication is required to refresh SMART disk data.</message>
+    <message>Authentication is required to read SMART disk data.</message>
     <defaults>
       <allow_any>auth_admin</allow_any>
       <allow_inactive>auth_admin</allow_inactive>
-      <allow_active>auth_admin_keep</allow_active>
+      <allow_active>yes</allow_active>
     </defaults>
   </action>
 </policyconfig>

@@ -5,6 +5,34 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Privileged actions failed with "Administrator authentication is required for
+  this action" instead of asking for a password. No system bus policy was
+  installed, and the system bus denies by default, so the call was rejected
+  before the helper started and Polkit was never consulted. A bus policy is now
+  shipped to `/usr/share/dbus-1/system.d/`, and a bus-level rejection is
+  reported as the configuration fault it is rather than as a missing password.
+- The D-Bus service file delegated activation to `maintainer-helper.service`,
+  which was never shipped, so activation would have failed even once the bus
+  permitted the call. The unit is now installed and carries the sandbox the
+  threat model describes.
+
+### Security
+
+- Irreversible actions now require the password on every attempt. Terminating a
+  process and vacuuming the journal use `auth_admin` rather than
+  `auth_admin_keep`, so an authorization cannot be reused for a later action.
+- Reversible and read-only actions no longer prompt for an active local session.
+  Cleaning the APT cache only discards files APT can fetch again, and refreshing
+  SMART data changes nothing, matching how udisks2 treats the same read.
+- The threat model previously listed systemd hardening for a unit that did not
+  exist. The unit now ships with those protections, and the two directives that
+  cannot be asserted without a live privileged test are named as outstanding
+  rather than claimed.
+
 ## [1.1.0] - 2026-08-22
 
 ### Added

@@ -19,11 +19,11 @@ The Maintainer privileged helper (`maintainer-helper`) runs as root via D-Bus ac
 ```text
 Unprivileged GUI process (UID 1000)
   │
-  │  D-Bus system bus (message routing, credential lookup)
+  │  D-Bus system bus (bus policy permits delivery, credential lookup)
   │
 Privileged helper (UID 0, D-Bus activated)
   │
-  │  Polkit authority (interactive or cached authorization)
+  │  Polkit authority (decides, and prompts for a password when required)
   │
 Linux kernel / system services
 ```
@@ -74,7 +74,9 @@ Linux kernel / system services
 
 **Threat:** A cached Polkit authorization token from a legitimate session is replayed after the user logs out or the session changes.
 
-**Mitigation:** Each D-Bus method call triggers a fresh Polkit `CheckAuthorization` with the caller's current subject (system-bus-name). Polkit session lifecycle handles token expiry. The helper does not cache authorization results.
+**Mitigation:** Each D-Bus method call triggers a fresh Polkit `CheckAuthorization` with the caller's current subject (system-bus-name). The helper caches no authorization results.
+
+The policy also declines to retain them. Irreversible actions (terminating a process, vacuuming the journal) use `auth_admin` rather than `auth_admin_keep`, so the password is requested on every attempt and an authorization obtained for one action cannot carry a later one. Reversible or read-only actions (cleaning the APT cache, reading SMART data) resolve to `yes` for an active local session and are not prompted at all, matching `org.freedesktop.udisks2.ata-smart-update`.
 
 **Test:** `test_polkit_denial_rejected`
 
@@ -133,15 +135,42 @@ Linux kernel / system services
 
 ## Systemd Hardening
 
-The helper unit applies:
-- `NoNewPrivileges=yes` (except for required capability)
-- `PrivateTmp=yes`
-- `ProtectSystem=strict`
-- `ProtectHome=yes`
-- `RestrictNamespaces=yes`
-- `RestrictRealtime=yes`
-- `MemoryMax=128M`
-- `CPUQuota=25%`
-- `IPAddressDeny=any`
-- `CapabilityBoundingSet=CAP_KILL CAP_DAC_READ_SEARCH`
-- `SystemCallFilter=@system-service`
+The helper is D-Bus activated through `maintainer-helper.service`, which has no
+`[Install]` section, so it never runs at boot and never becomes a permanent
+daemon. The unit applies:
+
+- `ProtectSystem=strict` with `ReadWritePaths=/var/cache/apt /var/log/journal`,
+  the only two locations any operation empties
+- `ProtectHome=yes` and `PrivateTmp=yes`
+- `NoNewPrivileges=yes`
+- `IPAddressDeny=any` and `RestrictAddressFamilies=AF_UNIX`; no operation uses
+  the network, and the system bus is a unix socket
+- `ProtectKernelModules`, `ProtectKernelTunables`, `ProtectKernelLogs`,
+  `ProtectControlGroups`, `ProtectClock`
+- `RestrictNamespaces`, `RestrictRealtime`, `RestrictSUIDSGID`, `LockPersonality`
+- `MemoryMax=128M`, `CPUQuota=25%`, `TasksMax=32`
+
+`ProtectProc` is deliberately left at its default. Terminating a process
+revalidates the target by reading `/proc/<pid>/stat`, so hiding other processes
+would break the PID-reuse guard described in T2.
+
+`CapabilityBoundingSet` and `SystemCallFilter` are not yet applied. Both would
+narrow a root service usefully, but a wrong set fails as a silent refusal inside
+`apt-get` or `journalctl` rather than a clear error, so they need a live
+privileged test before being enabled rather than being asserted here untested.
+
+## D-Bus Access Control
+
+Two distinct mechanisms are involved and they are not interchangeable:
+
+- The **system bus policy** (`/usr/share/dbus-1/system.d/`) decides whether a
+  message may be delivered to the helper at all. It permits any user to send to
+  the helper interface, and permits only root to own the name.
+- **Polkit** decides whether the caller may perform the requested action, and
+  prompts for a password when the action requires one.
+
+Reaching the helper is intentionally not the authorization boundary. If the bus
+policy denied unprivileged callers, the message would be rejected before the
+helper started, Polkit would never be consulted, and the user would see a
+refusal with no opportunity to authenticate. Restricting delivery would
+therefore not add security; it would only remove the ability to authorize.

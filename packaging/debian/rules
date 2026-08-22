@@ -29,8 +29,14 @@ override_dh_auto_install:
 	install -Dm644 data/dbus/io.github.maintainerapp.Helper.service \
 		debian/maintainer/usr/share/dbus-1/system-services/io.github.maintainerapp.Helper.service
 	# Polkit policy
+	install -Dm644 data/dbus/io.github.maintainerapp.Helper.conf \
+		debian/maintainer/usr/share/dbus-1/system.d/io.github.maintainerapp.Helper.conf
+
 	install -Dm644 data/polkit/io.github.maintainerapp.policy \
 		debian/maintainer/usr/share/polkit-1/actions/io.github.maintainerapp.policy
+
+	install -Dm644 data/systemd/maintainer-helper.service \
+		debian/maintainer/lib/systemd/system/maintainer-helper.service
 	# Icons
 	install -Dm644 data/icons/hicolor/scalable/apps/io.github.maintainerapp.Maintainer.svg \
 		debian/maintainer/usr/share/icons/hicolor/scalable/apps/io.github.maintainerapp.Maintainer.svg

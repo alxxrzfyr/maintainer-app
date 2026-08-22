@@ -122,7 +122,9 @@ jobs:
           mkdir -p "${PKG_DIR}/usr/share/metainfo"
           mkdir -p "${PKG_DIR}/usr/share/glib-2.0/schemas"
           mkdir -p "${PKG_DIR}/usr/share/dbus-1/system-services"
+          mkdir -p "${PKG_DIR}/usr/share/dbus-1/system.d"
           mkdir -p "${PKG_DIR}/usr/share/polkit-1/actions"
+          mkdir -p "${PKG_DIR}/lib/systemd/system"
           mkdir -p "${PKG_DIR}/usr/share/icons/hicolor/scalable/apps"
           mkdir -p "${PKG_DIR}/usr/share/icons/hicolor/symbolic/apps"
           mkdir -p "${PKG_DIR}/usr/share/maintainer/styles"
@@ -140,8 +142,12 @@ jobs:
             "${PKG_DIR}/usr/share/glib-2.0/schemas/io.github.maintainerapp.Maintainer.gschema.xml"
           install -m644 data/dbus/io.github.maintainerapp.Helper.service \
             "${PKG_DIR}/usr/share/dbus-1/system-services/io.github.maintainerapp.Helper.service"
+          install -m644 data/dbus/io.github.maintainerapp.Helper.conf \
+            "${PKG_DIR}/usr/share/dbus-1/system.d/io.github.maintainerapp.Helper.conf"
           install -m644 data/polkit/io.github.maintainerapp.policy \
             "${PKG_DIR}/usr/share/polkit-1/actions/io.github.maintainerapp.policy"
+          install -m644 data/systemd/maintainer-helper.service \
+            "${PKG_DIR}/lib/systemd/system/maintainer-helper.service"
           install -m644 data/icons/hicolor/scalable/apps/io.github.maintainerapp.Maintainer.svg \
             "${PKG_DIR}/usr/share/icons/hicolor/scalable/apps/io.github.maintainerapp.Maintainer.svg"
           install -m644 data/icons/hicolor/symbolic/apps/io.github.maintainerapp.Maintainer-symbolic.svg \
