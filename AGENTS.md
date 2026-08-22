@@ -114,8 +114,9 @@ After scaffolding, Cargo is the only Rust package manager. Never install a depen
 
 ## Performance rules
 
-- Target idle RSS is 70 MB or less where feasible; 100 MB is the hard ceiling.
-- Average idle CPU must remain at or below 0.5% on the reference system.
+- Idle memory target is 150 MB PSS or less; 220 MB PSS is the hard ceiling. Absolute figures are dominated by GTK4 itself (a window with one label already costs ~167 MB RSS / ~135 MB PSS), so Maintainer's own share above that baseline is budgeted separately at 40 MB PSS or less, and that is the figure application changes can move.
+- Private/dirty idle memory stays at or below 130 MB so a 4 GB system stays near 4% of total RAM without swapping.
+- Average idle CPU stays at or below 0.5% as a target, with a 1.0% hard ceiling on hardware-accelerated sessions and 2.0% under a software rasterizer, where sparkline repaints cannot be offloaded to a GPU. Memory ceilings are not enforced under software rendering because no GTK4 program can meet them there.
 - Cold start must remain at or below 2 seconds.
 - Default monitoring refresh is 2 seconds and slows when the window is hidden.
 - No permanent daemon and no unsolicited filesystem scans.

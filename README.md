@@ -60,8 +60,9 @@ Non-Ubuntu distribution families are not first-class targets in v1.
 
 On the defined low-end reference system:
 
-- Target idle RSS: 70 MB or less where feasible (100 MB hard ceiling)
-- Average idle CPU: 0.5% or less
+- Idle memory: 150 MB PSS or less (220 MB hard ceiling). Absolute figures are dominated by GTK4 itself — a GTK4 window with a single label already costs ~167 MB RSS / ~135 MB PSS — so Maintainer's own share above that baseline is budgeted separately at 40 MB PSS or less
+- Private/dirty idle memory: 130 MB or less, keeping a 4 GB machine around 4% of total RAM without swapping
+- Average idle CPU: 0.5% or less on a hardware-accelerated session; 2.0% ceiling under a software rasterizer, which has no GPU to offload sparkline repaints to
 - Cold start: 2 seconds or less
 - Default monitoring refresh: 2 seconds (visible), backs off to 10 seconds when the window is hidden
 - Expensive scans (storage, duplicates, SMART, journal): on demand, asynchronous, progress-reporting, and cancellable

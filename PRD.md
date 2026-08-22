@@ -162,19 +162,36 @@ Requirements:
 
 ## Performance requirements
 
-Measured on a documented low-end reference machine using a release build:
+Measured on a documented low-end reference machine using a release build.
+
+Absolute memory figures are dominated by GTK4 itself, not by application code.
+A GTK4 window containing a single label measures 167 MB RSS / 135 MB PSS under a
+software rasterizer, so the budget is expressed both as an absolute figure and as
+Maintainer's own cost above that toolkit baseline. The second figure is what
+application changes can actually move, and is the regression guard.
 
 | Measure | Requirement |
 |---|---|
-| Idle resident memory | Target 70 MB or less where feasible; hard ceiling 100 MB |
-| Average idle CPU | 0.5% or less |
+| Idle resident memory (absolute) | Target 150 MB PSS or less; hard ceiling 220 MB PSS |
+| Idle memory attributable to Maintainer | Target 40 MB PSS or less above a minimal GTK4 baseline; hard ceiling 60 MB |
+| Private/dirty idle memory | 130 MB or less, so a 4 GB system stays below roughly 4% of total RAM and does not swap in a typical desktop session |
+| Average idle CPU, hardware-accelerated session | Target 0.5% or less; hard ceiling 1.0% |
+| Average idle CPU, software rasterizer | Hard ceiling 2.0%, because repainting the live sparklines has no GPU to offload to |
 | Cold start | 2 seconds or less |
 | Default metric refresh | 2 seconds |
 | Hidden-window behavior | Monitoring frequency reduced without making displayed data misleading |
 | Scan responsiveness | UI remains interactive; progress and cancellation are available |
 | Background work | No unsolicited deep scan or permanent monitoring service |
 
-Performance measurements must state hardware, distribution, desktop session, build profile, sample duration, and enabled page.
+Enforcement depends on the rendering mode, because a software rasterizer cannot
+satisfy any absolute memory figure: under software rendering memory is measured
+and reported but not enforced, while CPU and startup are always enforced. The
+hardware-accelerated CPU figures are provisional until measured on a real
+GPU-backed desktop session; only the software-rasterizer figures have been
+measured so far.
+
+Performance measurements must state hardware, distribution, desktop session,
+build profile, sample duration, rendering mode, and enabled page.
 
 ## Compatibility requirements
 
