@@ -13,7 +13,7 @@ pub mod fwupd;
 pub mod model;
 pub mod packagekit;
 
-pub use apt::{AptDiscovery, parse_apt_simulate};
+pub use apt::{AptDiscovery, parse_apt_simulate, reboot_required};
 pub use flatpak::FlatpakAdapter;
 pub use fwupd::FwupdAdapter;
 pub use model::{

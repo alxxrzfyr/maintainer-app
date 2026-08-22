@@ -125,6 +125,7 @@ fn parse_flatpak_updates(stdout: &str) -> Vec<UpdateCandidate> {
             hold_state: HoldState::None,
             backend: UpdateBackend::Flatpak,
             is_new: false,
+            is_kernel: false,
         });
     }
 

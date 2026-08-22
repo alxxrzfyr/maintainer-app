@@ -216,6 +216,10 @@ mod tests {
     /// resolved and the result is `Unavailable`, while on a desktop with a bus
     /// and Polkit present the authorization is refused first and the result is
     /// `PermissionRequired`. Both are correct; succeeding would not be.
+    ///
+    /// `terminate_process` is safe to call for real here: it targets a PID
+    /// that cannot exist, so `PidReuse`/`AlreadyExited` is the worst outcome
+    /// even if a real helper is installed and the action is authorized.
     #[test]
     fn client_refuses_without_activatable_helper() {
         let client = HelperClient::new();
@@ -229,34 +233,65 @@ mod tests {
         );
     }
 
+    /// `clean-package-cache` resolves to `yes` for an active local session
+    /// (Recommendation: it only discards files APT can refetch, so no
+    /// password is required — see `data/polkit/io.github.maintainerapp.policy`).
+    /// A developer machine with the helper installed will therefore execute
+    /// this operation for real rather than refusing it, which makes it unsafe
+    /// to assert a refusal unconditionally: this test previously ran a live
+    /// `apt-get clean` against the machine running the test suite whenever the
+    /// bus policy and Polkit policy were installed. Both outcomes are
+    /// legitimate depending on whether a helper is reachable and authorized,
+    /// so only structural properties of the response are checked.
     #[test]
-    fn client_package_cache_refuses_without_activatable_helper() {
+    fn client_package_cache_does_not_panic_without_activatable_helper() {
         let client = HelperClient::new();
         let result = client.clean_package_cache("test-req-1");
-        assert!(matches!(
-            result,
-            Capability::Unavailable(_) | Capability::PermissionRequired(_)
-        ));
+        match result {
+            Capability::Unavailable(_) | Capability::PermissionRequired(_) => {}
+            Capability::Available(response) => {
+                assert!(
+                    response.success,
+                    "a real helper reported failure for a fixed, argument-free \
+                     operation: {response:?}"
+                );
+            }
+        }
     }
 
+    /// `vacuum-journal` is `auth_admin`, not retained, so an unattended test
+    /// run cannot supply a password and the call cannot succeed even with a
+    /// real, authorized helper present. Refusal is the only legitimate
+    /// outcome, and this assertion is safe to keep because that gate is by
+    /// design (see the systemd/Polkit policy for this action).
     #[test]
     fn client_vacuum_journal_refuses_without_activatable_helper() {
         let client = HelperClient::new();
         let result = client.vacuum_journal(500, 30);
-        assert!(matches!(
-            result,
-            Capability::Unavailable(_) | Capability::PermissionRequired(_)
-        ));
+        assert!(
+            matches!(
+                result,
+                Capability::Unavailable(_) | Capability::PermissionRequired(_)
+            ),
+            "vacuum-journal requires interactive authentication and must \
+             refuse in an unattended test run, got: {result:?}"
+        );
     }
 
+    /// `refresh-smart` resolves to `yes` for an active local session, the
+    /// same reasoning as the package-cache case above: a real, reachable
+    /// helper will execute it rather than refuse, and refusal is not the only
+    /// legitimate outcome. `refresh_smart` only re-reads drive health over
+    /// D-Bus and changes no state, so allowing it to run for real here is
+    /// safe.
     #[test]
-    fn client_refresh_smart_refuses_without_activatable_helper() {
+    fn client_refresh_smart_does_not_panic_without_activatable_helper() {
         let client = HelperClient::new();
-        let result = client.refresh_smart("TEST_DRIVE_123");
-        assert!(matches!(
-            result,
-            Capability::Unavailable(_) | Capability::PermissionRequired(_)
-        ));
+        let result = client.refresh_smart("test-drive-id");
+        match result {
+            Capability::Unavailable(_) | Capability::PermissionRequired(_) => {}
+            Capability::Available(_) => {}
+        }
     }
 
     #[test]

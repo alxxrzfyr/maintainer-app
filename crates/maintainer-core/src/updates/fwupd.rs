@@ -124,6 +124,7 @@ fn parse_fwupd_updates(stdout: &str) -> Vec<UpdateCandidate> {
                     hold_state: HoldState::None,
                     backend: UpdateBackend::Fwupd,
                     is_new: false,
+                    is_kernel: false,
                 });
             }
             current_name = Some(trimmed.trim_end_matches(':').to_string());
@@ -160,6 +161,7 @@ fn parse_fwupd_updates(stdout: &str) -> Vec<UpdateCandidate> {
             hold_state: HoldState::None,
             backend: UpdateBackend::Fwupd,
             is_new: false,
+            is_kernel: false,
         });
     }
 

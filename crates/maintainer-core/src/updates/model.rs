@@ -58,6 +58,13 @@ pub struct UpdateCandidate {
     pub backend: UpdateBackend,
     /// Whether this package is being newly installed (dependency).
     pub is_new: bool,
+    /// Whether this is a kernel package (linux-image-*, linux-headers-*, etc.).
+    ///
+    /// This is a separate boolean flag rather than an `UpdateClassification` variant
+    /// because a kernel update can simultaneously be a security update. The kernel
+    /// nature of a package and its security classification are orthogonal dimensions
+    /// that are not mutually exclusive.
+    pub is_kernel: bool,
 }
 
 /// A package scheduled for removal as part of the update.
@@ -90,6 +97,9 @@ pub struct UpdatePlan {
     pub total_download_bytes: Option<u64>,
     /// Content hash of the candidate set for staleness detection.
     pub content_hash: String,
+    /// Whether the system currently requires a reboot (e.g., due to a previously
+    /// installed kernel update). Detected by the presence of `/var/run/reboot-required`.
+    pub reboot_required: bool,
 }
 
 impl UpdatePlan {

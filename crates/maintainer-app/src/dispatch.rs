@@ -421,6 +421,77 @@ pub fn dispatch_updates_check(
     (token, progress)
 }
 
+/// Re-plan for a user-selected subset of update candidates through apt's
+/// dependency resolver. Returns the same `UpdatesCheckOutcome` shape as
+/// `dispatch_updates_check` so the UI can display the re-planned result
+/// identically.
+///
+/// Safety: this is the ONLY code path that supports per-package deselection.
+/// It invokes `apt-get --simulate install pkg=ver ...` to ask apt what
+/// would actually happen, rather than fabricating a filtered plan client-side.
+pub fn dispatch_replan_selection(
+    executor: &Arc<JobExecutor>,
+    selected: Vec<maintainer_core::updates::UpdateCandidate>,
+    on_progress: impl Fn(&maintainer_core::jobs::JobProgress) + 'static,
+    on_done: impl FnOnce(UpdatesCheckOutcome) + 'static,
+) -> (CancellationToken, SharedProgress) {
+    let token = CancellationToken::new();
+    let token_for_worker = token.clone();
+    let progress = SharedProgress::new();
+
+    let job = move || -> maintainer_core::error::Result<UpdatesCheckOutcome> {
+        use maintainer_core::capability::Capability;
+        use maintainer_core::command::SystemCommandRunner;
+        use maintainer_core::updates::{AptDiscovery, DiscoveryResult};
+
+        let runner = SystemCommandRunner;
+        let result = AptDiscovery::plan_for_selection(&runner, &token_for_worker, &selected);
+
+        let outcome = match result {
+            Capability::Available(DiscoveryResult::Available(plan)) => {
+                let total_count = plan.candidates.len();
+                if total_count == 0 {
+                    UpdatesCheckOutcome::UpToDate
+                } else {
+                    let security_count = plan.security_count();
+                    let upgrade_count = plan.candidates.iter().filter(|c| !c.is_new).count();
+                    let new_count = plan.candidates.iter().filter(|c| c.is_new).count();
+                    let summary = crate::ui::updates::format_update_summary(
+                        upgrade_count,
+                        new_count,
+                        plan.removals.len(),
+                        plan.held.len(),
+                        plan.total_download_bytes,
+                    );
+                    UpdatesCheckOutcome::Available {
+                        summary,
+                        security_count,
+                        total_count,
+                        plan,
+                    }
+                }
+            }
+            Capability::Available(DiscoveryResult::UpToDate) => UpdatesCheckOutcome::UpToDate,
+            Capability::Available(DiscoveryResult::Failed(err)) => UpdatesCheckOutcome::Failed {
+                message: err.to_string(),
+            },
+            Capability::Unavailable(reason) => UpdatesCheckOutcome::Failed {
+                message: reason.message,
+            },
+            Capability::PermissionRequired(reason) => UpdatesCheckOutcome::Failed {
+                message: format!("Permission required: {}", reason.explanation),
+            },
+        };
+
+        Ok(outcome)
+    };
+
+    let rx = executor.execute(vec![job]);
+    install_progress_poller(rx, progress.clone(), on_progress, on_done);
+
+    (token, progress)
+}
+
 /// Result of executing a reviewed update plan.
 pub enum UpdateExecutionOutcome {
     Completed {

@@ -1,0 +1,17 @@
+Reading package lists...
+Building dependency tree...
+Reading state information...
+The following additional packages will be installed:
+  libgnutls30
+The following NEW packages will be installed:
+  libgnutls30
+The following packages will be upgraded:
+  curl libcurl4
+2 upgraded, 1 newly installed, 0 to remove and 3 not upgraded.
+Need to get 2.1 MB of archives.
+Inst libgnutls30 (3.7.3-4ubuntu1.4 Ubuntu:22.04/jammy-security [amd64])
+Inst curl [7.81.0-1ubuntu1.15] (7.81.0-1ubuntu1.16 Ubuntu:22.04/jammy-security [amd64])
+Inst libcurl4 [7.81.0-1ubuntu1.15] (7.81.0-1ubuntu1.16 Ubuntu:22.04/jammy-security [amd64])
+Conf libgnutls30 (3.7.3-4ubuntu1.4 Ubuntu:22.04/jammy-security [amd64])
+Conf curl (7.81.0-1ubuntu1.16 Ubuntu:22.04/jammy-security [amd64])
+Conf libcurl4 (7.81.0-1ubuntu1.16 Ubuntu:22.04/jammy-security [amd64])

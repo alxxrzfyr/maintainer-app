@@ -7,10 +7,52 @@ use crate::capability::{Capability, UnavailableReason};
 use crate::command::{CommandOutput, CommandRunner, CommandSpec};
 use crate::jobs::Cancellation;
 
+use std::path::Path;
+
 use super::model::{
     DiscoveryError, DiscoveryResult, HoldState, RemovalCandidate, UpdateBackend, UpdateCandidate,
     UpdateClassification, UpdatePlan,
 };
+
+/// Detect whether a package name refers to a Linux kernel package.
+///
+/// Matches package names that start with `linux-image-`, `linux-headers-`,
+/// `linux-modules-`, or equal `linux-generic`, `linux-image-generic`,
+/// `linux-headers-generic`, or `linux-modules-generic`.
+///
+/// `linux-libc-dev` is intentionally excluded: it is a userspace C library
+/// header package derived from kernel sources but does not install a kernel
+/// or kernel modules, and does not require a reboot.
+fn is_kernel_package(name: &str) -> bool {
+    // Meta-packages that always track the latest kernel.
+    const KERNEL_META: &[&str] = &[
+        "linux-generic",
+        "linux-image-generic",
+        "linux-headers-generic",
+        "linux-modules-generic",
+    ];
+
+    if KERNEL_META.contains(&name) {
+        return true;
+    }
+
+    name.starts_with("linux-image-")
+        || name.starts_with("linux-headers-")
+        || name.starts_with("linux-modules-")
+}
+
+/// Check whether the system currently requires a reboot.
+///
+/// On Debian/Ubuntu/Mint, the file `/var/run/reboot-required` is created by
+/// package postinst scripts (typically after kernel or libc upgrades) to signal
+/// that the running kernel or critical libraries are stale. The file's content
+/// is irrelevant; only its existence matters.
+///
+/// The `run_path` parameter allows tests to inject a temporary directory instead
+/// of reading from the real `/var/run`.
+pub fn reboot_required(run_path: &Path) -> bool {
+    run_path.join("reboot-required").exists()
+}
 
 /// APT update discovery adapter.
 pub struct AptDiscovery;
@@ -130,6 +172,100 @@ impl AptDiscovery {
     }
 }
 
+impl AptDiscovery {
+    /// Re-plan for a user-selected subset of update candidates.
+    ///
+    /// Instead of running `apt-get upgrade` (which upgrades everything), this
+    /// invokes `apt-get --simulate install pkg1=ver1 pkg2=ver2 ...` to ask apt's
+    /// own dependency resolver what would happen if only the selected packages
+    /// were requested. This is the ONLY safe way to implement per-package
+    /// deselection: we must never fabricate a filtered plan client-side, because
+    /// the remaining packages may have version constraints or dependencies that
+    /// involved deselected ones.
+    ///
+    /// Each candidate is pinned to its `available_version` so apt cannot silently
+    /// resolve to a newer version that appeared between the original discovery
+    /// and this re-plan call.
+    ///
+    /// Returns the same `Capability<DiscoveryResult>` shape as `check_updates`,
+    /// reusing the identical simulation-output parser.
+    pub fn plan_for_selection(
+        runner: &dyn CommandRunner,
+        cancel: &dyn Cancellation,
+        selected: &[UpdateCandidate],
+    ) -> Capability<DiscoveryResult> {
+        // Empty selection is a no-op: no packages to install means the system
+        // is effectively up-to-date from the user's perspective.
+        if selected.is_empty() {
+            return Capability::Available(DiscoveryResult::UpToDate);
+        }
+
+        // Build version-pinned arguments: "name=available_version" for each
+        // selected candidate. The version pin ensures apt resolves against
+        // exactly the versions the user reviewed, not newer ones that may
+        // have appeared since the original discovery.
+        let pinned_args: Vec<String> = selected
+            .iter()
+            .map(|c| format!("{}={}", c.name, c.available_version))
+            .collect();
+
+        let mut args = vec![
+            "--simulate".to_string(),
+            "--quiet".to_string(),
+            "--quiet".to_string(),
+            "install".to_string(),
+        ];
+        args.extend(pinned_args);
+
+        let spec = match CommandSpec::new("apt-get", args) {
+            Ok(s) => s,
+            Err(e) => {
+                return Capability::Unavailable(UnavailableReason {
+                    code: "apt-unavailable",
+                    message: format!("Cannot construct apt-get command: {e}"),
+                    remediation: Some("Ensure apt-get is installed and accessible".to_string()),
+                });
+            }
+        };
+
+        let output = match runner.run(&spec, cancel) {
+            Ok(o) => o,
+            Err(crate::error::MaintainerError::Cancelled) => {
+                return Capability::Available(DiscoveryResult::Failed(DiscoveryError::Cancelled));
+            }
+            Err(e) => {
+                return Capability::Available(DiscoveryResult::Failed(
+                    DiscoveryError::CommandFailed {
+                        message: e.to_string(),
+                    },
+                ));
+            }
+        };
+
+        if output.stderr.contains("Could not get lock") {
+            return Capability::Available(DiscoveryResult::Failed(DiscoveryError::DpkgLocked));
+        }
+
+        if output.stderr.contains("Could not resolve") || output.stderr.contains("Failed to fetch")
+        {
+            return Capability::Available(DiscoveryResult::Failed(
+                DiscoveryError::RepositoryOffline {
+                    details: first_error_line(&output.stderr),
+                },
+            ));
+        }
+
+        if !output.success() && output.exit_code != Some(0) {
+            return Capability::Available(DiscoveryResult::Failed(DiscoveryError::CommandFailed {
+                message: first_error_line(&output.stderr),
+            }));
+        }
+
+        let parse_result = parse_apt_simulate(&output);
+        Capability::Available(parse_result)
+    }
+}
+
 /// Parse `apt-get --simulate` output into a `DiscoveryResult`.
 pub fn parse_apt_simulate(output: &CommandOutput) -> DiscoveryResult {
     let mut candidates = Vec::new();
@@ -196,6 +332,7 @@ pub fn parse_apt_simulate(output: &CommandOutput) -> DiscoveryResult {
             hold_state: HoldState::Held,
             backend: UpdateBackend::Apt,
             is_new: false,
+            is_kernel: is_kernel_package(name),
         })
         .collect();
 
@@ -218,6 +355,7 @@ pub fn parse_apt_simulate(output: &CommandOutput) -> DiscoveryResult {
         held,
         total_download_bytes: download_bytes,
         content_hash,
+        reboot_required: reboot_required(Path::new("/var/run")),
     };
 
     DiscoveryResult::Available(plan)
@@ -276,6 +414,7 @@ fn parse_inst_line(line: &str, _new_packages: &[String]) -> Option<UpdateCandida
         hold_state: HoldState::None,
         backend: UpdateBackend::Apt,
         is_new,
+        is_kernel: is_kernel_package(name),
     })
 }
 
@@ -304,11 +443,16 @@ fn parse_remv_line(line: &str) -> Option<RemovalCandidate> {
 
 /// Classify an update based on its repository origin string.
 fn classify_origin(origin: &str) -> UpdateClassification {
-    if origin.contains("-security") || origin.contains("/security") {
+    let lower = origin.to_ascii_lowercase();
+
+    if lower.contains("-security") || lower.contains("/security") {
         UpdateClassification::Security
     } else if origin.contains("Ubuntu:")
         || origin.contains("Debian:")
         || origin.contains("-updates")
+        // Linux Mint native packages report origins like "o=linuxmint" or
+        // "linuxmint/mint-repository". Classify as Standard explicitly.
+        || lower.contains("linuxmint")
     {
         UpdateClassification::Standard
     } else if origin.is_empty() {
@@ -605,6 +749,45 @@ mod tests {
     }
 
     #[test]
+    fn classify_security_origin_case_insensitive() {
+        // Debian uses "Debian-Security" with capital S and hyphen.
+        assert_eq!(
+            classify_origin("Debian-Security:12/stable-security"),
+            UpdateClassification::Security
+        );
+        assert_eq!(
+            classify_origin("o=Debian,l=Debian-Security"),
+            UpdateClassification::Security
+        );
+    }
+
+    #[test]
+    fn classify_security_origin_lowercase_variants() {
+        // Standard lowercase forms must still match.
+        assert_eq!(
+            classify_origin("Ubuntu:22.04/jammy-security"),
+            UpdateClassification::Security
+        );
+        assert_eq!(
+            classify_origin("archive.ubuntu.com/security"),
+            UpdateClassification::Security
+        );
+    }
+
+    #[test]
+    fn classify_linuxmint_origin_standard() {
+        // Linux Mint native packages use origins like "o=linuxmint".
+        assert_eq!(
+            classify_origin("o=linuxmint,a=wilma"),
+            UpdateClassification::Standard
+        );
+        assert_eq!(
+            classify_origin("linuxmint/mint-repository"),
+            UpdateClassification::Standard
+        );
+    }
+
+    #[test]
     fn plan_immutability_content_hash() {
         let stdout = include_str!("../../../../fixtures/apt/security_updates.txt");
         let output = make_output(stdout, "", 0);
@@ -622,5 +805,277 @@ mod tests {
 
         assert_eq!(plan1.content_hash, plan2.content_hash);
         assert_ne!(plan1.plan_id, plan2.plan_id);
+    }
+
+    #[test]
+    fn kernel_package_detection_true_cases() {
+        // Versioned kernel image packages.
+        assert!(is_kernel_package("linux-image-6.8.0-40-generic"));
+        assert!(is_kernel_package("linux-image-5.15.0-101-generic"));
+        // Meta-packages.
+        assert!(is_kernel_package("linux-image-generic"));
+        assert!(is_kernel_package("linux-headers-generic"));
+        assert!(is_kernel_package("linux-generic"));
+        assert!(is_kernel_package("linux-modules-generic"));
+        // Versioned headers and modules.
+        assert!(is_kernel_package("linux-headers-6.8.0-40-generic"));
+        assert!(is_kernel_package("linux-modules-6.8.0-40-generic"));
+        assert!(is_kernel_package("linux-modules-extra-6.8.0-40-generic"));
+    }
+
+    #[test]
+    fn kernel_package_detection_false_cases() {
+        // linux-libc-dev is a userspace header package, not a bootable kernel.
+        // It does not require a reboot and should not be flagged as kernel.
+        assert!(!is_kernel_package("linux-libc-dev"));
+        // Regular packages.
+        assert!(!is_kernel_package("curl"));
+        assert!(!is_kernel_package("libssl3"));
+        assert!(!is_kernel_package("openssl"));
+        // Packages that contain "linux" but are not kernel packages.
+        assert!(!is_kernel_package("linux-base"));
+        assert!(!is_kernel_package("linux-firmware"));
+    }
+
+    #[test]
+    fn kernel_flag_set_in_parsed_output() {
+        let stdout = include_str!("../../../../fixtures/apt/security_updates.txt");
+        let output = make_output(stdout, "", 0);
+        let result = parse_apt_simulate(&output);
+
+        let plan = match result {
+            DiscoveryResult::Available(p) => p,
+            other => panic!("Expected Available, got {other:?}"),
+        };
+
+        let kernel = plan
+            .candidates
+            .iter()
+            .find(|c| c.name == "linux-image-generic")
+            .unwrap();
+        assert!(kernel.is_kernel);
+
+        let curl = plan.candidates.iter().find(|c| c.name == "curl").unwrap();
+        assert!(!curl.is_kernel);
+    }
+
+    #[test]
+    fn reboot_required_file_present() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("reboot-required"),
+            "*** System restart required ***\n",
+        )
+        .unwrap();
+        assert!(reboot_required(dir.path()));
+    }
+
+    #[test]
+    fn reboot_required_file_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!reboot_required(dir.path()));
+    }
+
+    #[test]
+    fn reboot_required_empty_file() {
+        // An empty file still signals reboot required (existence is the signal).
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("reboot-required"), "").unwrap();
+        assert!(reboot_required(dir.path()));
+    }
+
+    // --- plan_for_selection tests ---
+
+    /// Mock runner that captures the command spec for assertion and returns
+    /// a pre-configured output.
+    struct CapturingMockRunner {
+        output: CommandOutput,
+        captured_spec: std::sync::Mutex<Option<(String, Vec<String>)>>,
+    }
+
+    impl CapturingMockRunner {
+        fn new(output: CommandOutput) -> Self {
+            Self {
+                output,
+                captured_spec: std::sync::Mutex::new(None),
+            }
+        }
+
+        fn captured_args(&self) -> Vec<String> {
+            self.captured_spec
+                .lock()
+                .unwrap()
+                .as_ref()
+                .map(|(_, args)| args.clone())
+                .unwrap_or_default()
+        }
+
+        fn captured_program(&self) -> String {
+            self.captured_spec
+                .lock()
+                .unwrap()
+                .as_ref()
+                .map(|(prog, _)| prog.clone())
+                .unwrap_or_default()
+        }
+    }
+
+    impl CommandRunner for CapturingMockRunner {
+        fn run(
+            &self,
+            spec: &CommandSpec,
+            _cancel: &dyn Cancellation,
+        ) -> crate::error::Result<CommandOutput> {
+            *self.captured_spec.lock().unwrap() =
+                Some((spec.program().to_string(), spec.args().to_vec()));
+            Ok(self.output.clone())
+        }
+    }
+
+    fn make_test_candidate(name: &str, version: &str) -> UpdateCandidate {
+        UpdateCandidate {
+            name: name.to_string(),
+            installed_version: Some("1.0.0".to_string()),
+            available_version: version.to_string(),
+            classification: UpdateClassification::Security,
+            download_bytes: None,
+            hold_state: HoldState::None,
+            backend: UpdateBackend::Apt,
+            is_new: false,
+            is_kernel: false,
+        }
+    }
+
+    #[test]
+    fn plan_for_selection_empty_returns_up_to_date() {
+        let output = make_output("", "", 0);
+        let runner = CapturingMockRunner::new(output);
+        let cancel = crate::jobs::CancellationToken::new();
+
+        let result = AptDiscovery::plan_for_selection(&runner, &cancel, &[]);
+
+        match result {
+            Capability::Available(DiscoveryResult::UpToDate) => {}
+            other => panic!("Expected UpToDate for empty selection, got {other:?}"),
+        }
+        // Verify runner was never called for empty selection.
+        assert!(runner.captured_spec.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn plan_for_selection_builds_install_command_with_pinned_versions() {
+        let stdout = include_str!("../../../../fixtures/apt/selective_install.txt");
+        let output = make_output(stdout, "", 0);
+        let runner = CapturingMockRunner::new(output);
+        let cancel = crate::jobs::CancellationToken::new();
+
+        let selected = vec![
+            make_test_candidate("curl", "7.81.0-1ubuntu1.16"),
+            make_test_candidate("libcurl4", "7.81.0-1ubuntu1.16"),
+        ];
+
+        let result = AptDiscovery::plan_for_selection(&runner, &cancel, &selected);
+
+        // Verify the command uses `install` (not `upgrade`) with version-pinned args.
+        assert_eq!(runner.captured_program(), "apt-get");
+        let args = runner.captured_args();
+        assert!(args.contains(&"install".to_string()));
+        assert!(!args.contains(&"upgrade".to_string()));
+        assert!(args.contains(&"curl=7.81.0-1ubuntu1.16".to_string()));
+        assert!(args.contains(&"libcurl4=7.81.0-1ubuntu1.16".to_string()));
+        // Verify simulation flags are present.
+        assert!(args.contains(&"--simulate".to_string()));
+        assert_eq!(args.iter().filter(|a| *a == "--quiet").count(), 2);
+
+        // Verify the result parses correctly.
+        match result {
+            Capability::Available(DiscoveryResult::Available(plan)) => {
+                assert_eq!(plan.candidates.len(), 3);
+            }
+            other => panic!("Expected Available plan, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn plan_for_selection_discloses_additional_dependencies() {
+        // Core correctness property: when apt pulls in additional packages
+        // beyond what was selected (a dependency), those appear in the result.
+        let stdout = include_str!("../../../../fixtures/apt/selective_install.txt");
+        let output = make_output(stdout, "", 0);
+        let runner = CapturingMockRunner::new(output);
+        let cancel = crate::jobs::CancellationToken::new();
+
+        // User selected only curl and libcurl4, but apt pulls in libgnutls30.
+        let selected = vec![
+            make_test_candidate("curl", "7.81.0-1ubuntu1.16"),
+            make_test_candidate("libcurl4", "7.81.0-1ubuntu1.16"),
+        ];
+
+        let result = AptDiscovery::plan_for_selection(&runner, &cancel, &selected);
+
+        let plan = match result {
+            Capability::Available(DiscoveryResult::Available(p)) => p,
+            other => panic!("Expected Available plan, got {other:?}"),
+        };
+
+        // libgnutls30 was NOT in the user's selection but apt decided to
+        // install it as a dependency. It must appear in the plan as a new
+        // package so the user sees what apt actually decided.
+        let gnutls = plan
+            .candidates
+            .iter()
+            .find(|c| c.name == "libgnutls30")
+            .expect("Additional dependency libgnutls30 must be disclosed");
+        assert!(
+            gnutls.is_new,
+            "libgnutls30 should be marked is_new since it is newly installed"
+        );
+        assert_eq!(gnutls.available_version, "3.7.3-4ubuntu1.4");
+
+        // Original selections must also be present.
+        assert!(plan.candidates.iter().any(|c| c.name == "curl"));
+        assert!(plan.candidates.iter().any(|c| c.name == "libcurl4"));
+    }
+
+    #[test]
+    fn plan_for_selection_dpkg_locked_error() {
+        let stderr = include_str!("../../../../fixtures/apt/dpkg_lock.txt");
+        let output = make_output("", stderr, 100);
+        let runner = CapturingMockRunner::new(output);
+        let cancel = crate::jobs::CancellationToken::new();
+
+        let selected = vec![make_test_candidate("curl", "7.81.0-1ubuntu1.16")];
+        let result = AptDiscovery::plan_for_selection(&runner, &cancel, &selected);
+
+        match result {
+            Capability::Available(DiscoveryResult::Failed(DiscoveryError::DpkgLocked)) => {}
+            other => panic!("Expected DpkgLocked, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn plan_for_selection_cancelled() {
+        struct CancellingRunner;
+        impl CommandRunner for CancellingRunner {
+            fn run(
+                &self,
+                _spec: &CommandSpec,
+                _cancel: &dyn Cancellation,
+            ) -> crate::error::Result<CommandOutput> {
+                Err(crate::error::MaintainerError::Cancelled)
+            }
+        }
+
+        let runner = CancellingRunner;
+        let cancel = crate::jobs::CancellationToken::new();
+        cancel.cancel();
+
+        let selected = vec![make_test_candidate("curl", "7.81.0-1ubuntu1.16")];
+        let result = AptDiscovery::plan_for_selection(&runner, &cancel, &selected);
+
+        match result {
+            Capability::Available(DiscoveryResult::Failed(DiscoveryError::Cancelled)) => {}
+            other => panic!("Expected Cancelled, got {other:?}"),
+        }
     }
 }
