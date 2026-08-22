@@ -30,6 +30,14 @@ pub struct SystemPage {
     root: ScrolledWindow,
     cpu_card: MetricCard,
     memory_card: MetricCard,
+    // Per-core CPU detail
+    cpu_detail_box: GtkBox,
+    // Memory composition detail
+    memory_detail_box: GtkBox,
+    // Disk detail section
+    disk_detail_box: GtkBox,
+    // Network detail section
+    network_detail_box: GtkBox,
     process_list_box: GtkBox,
     sort_buttons: SortButtons,
     temperature_flow: FlowBox,
@@ -87,6 +95,50 @@ impl SystemPage {
         metrics_flow.insert(memory_card.widget(), -1);
 
         content.append(&metrics_flow);
+
+        // --- Per-core CPU detail card (below the sparkline cards) ---
+        let cpu_detail_box = GtkBox::new(Orientation::Vertical, 4);
+        cpu_detail_box.add_css_class("maintainer_detail_card");
+        cpu_detail_box.set_margin_top(8);
+
+        let cpu_detail_title = Label::new(Some("Per-Core Usage"));
+        cpu_detail_title.add_css_class("maintainer_detail_card_title");
+        cpu_detail_title.set_halign(Align::Start);
+        cpu_detail_box.append(&cpu_detail_title);
+        content.append(&cpu_detail_box);
+
+        // --- Memory composition detail card ---
+        let memory_detail_box = GtkBox::new(Orientation::Vertical, 4);
+        memory_detail_box.add_css_class("maintainer_detail_card");
+        memory_detail_box.set_margin_top(8);
+
+        let mem_detail_title = Label::new(Some("Memory Composition"));
+        mem_detail_title.add_css_class("maintainer_detail_card_title");
+        mem_detail_title.set_halign(Align::Start);
+        memory_detail_box.append(&mem_detail_title);
+        content.append(&memory_detail_box);
+
+        // --- Disk detail section ---
+        let disk_section_label = Label::new(Some("Disks"));
+        disk_section_label.add_css_class("maintainer_section_title");
+        disk_section_label.set_halign(Align::Start);
+        disk_section_label.set_margin_top(12);
+        content.append(&disk_section_label);
+
+        let disk_detail_box = GtkBox::new(Orientation::Vertical, 4);
+        disk_detail_box.add_css_class("maintainer_detail_card");
+        content.append(&disk_detail_box);
+
+        // --- Network detail section ---
+        let network_section_label = Label::new(Some("Network Interfaces"));
+        network_section_label.add_css_class("maintainer_section_title");
+        network_section_label.set_halign(Align::Start);
+        network_section_label.set_margin_top(12);
+        content.append(&network_section_label);
+
+        let network_detail_box = GtkBox::new(Orientation::Vertical, 4);
+        network_detail_box.add_css_class("maintainer_detail_card");
+        content.append(&network_detail_box);
 
         let temp_label = Label::new(Some("Temperatures"));
         temp_label.add_css_class("maintainer_section_title");
@@ -197,6 +249,10 @@ impl SystemPage {
             root,
             cpu_card,
             memory_card,
+            cpu_detail_box,
+            memory_detail_box,
+            disk_detail_box,
+            network_detail_box,
             process_list_box,
             sort_buttons: SortButtons {
                 cpu_btn,
@@ -236,6 +292,7 @@ impl SystemPage {
                 vm.cpu_ring.samples(),
                 &format!("CPU: {:.0}%", cpu.total_percent),
             );
+            self.update_cpu_detail(cpu, vm);
         }
 
         if let Some(ref mem) = vm.memory {
@@ -246,13 +303,202 @@ impl SystemPage {
             self.memory_card.set_value(&text);
             self.memory_card
                 .update_sparkline(vm.memory_ring.samples(), &format!("Memory: {text}"));
+            self.update_memory_detail(mem);
         }
 
+        self.update_disk_detail(&vm.disks);
+        self.update_network_detail(&vm.networks);
         self.update_temperatures(vm);
-
         self.update_processes(vm);
-
         self.update_sort_buttons(vm.process_sort);
+    }
+
+    /// Render per-core CPU breakdown bars.
+    fn update_cpu_detail(
+        &self,
+        cpu: &maintainer_core::metrics::CpuSnapshot,
+        _vm: &SystemViewModel,
+    ) {
+        // Only rebuild if core count changed (avoids widget churn every tick).
+        let current_children = count_children_of_class(&self.cpu_detail_box, "maintainer_core_row");
+        if current_children == cpu.per_core_percent.len() {
+            // Update existing bars in-place by iterating children.
+            update_core_bars_inplace(&self.cpu_detail_box, &cpu.per_core_percent);
+            return;
+        }
+
+        // Remove old rows (keep the title label).
+        remove_children_except_first(&self.cpu_detail_box);
+
+        for (i, &pct) in cpu.per_core_percent.iter().enumerate() {
+            let row = GtkBox::new(Orientation::Horizontal, 8);
+            row.add_css_class("maintainer_core_row");
+
+            let label = Label::new(Some(&format!("Core {}", i + 1)));
+            label.add_css_class("maintainer_core_label");
+            label.set_halign(Align::Start);
+            row.append(&label);
+
+            let bar_trough = GtkBox::new(Orientation::Horizontal, 0);
+            bar_trough.add_css_class("maintainer_core_bar_trough");
+            bar_trough.set_hexpand(true);
+
+            let bar_fill = GtkBox::new(Orientation::Horizontal, 0);
+            bar_fill.add_css_class("maintainer_core_bar_fill");
+            let fill_width = ((pct / 100.0) * 200.0) as i32;
+            bar_fill.set_size_request(fill_width.max(1), -1);
+            bar_trough.append(&bar_fill);
+            row.append(&bar_trough);
+
+            let pct_label = Label::new(Some(&format!("{pct:.0}%")));
+            pct_label.add_css_class("maintainer_core_percent");
+            pct_label.set_halign(Align::End);
+            row.append(&pct_label);
+
+            self.cpu_detail_box.append(&row);
+        }
+    }
+
+    /// Render memory composition (used, buffers/cache, available).
+    fn update_memory_detail(&self, mem: &maintainer_core::metrics::MemorySnapshot) {
+        // Remove old rows (keep title).
+        remove_children_except_first(&self.memory_detail_box);
+
+        let segments = [
+            ("Used", mem.used_bytes),
+            ("Buffers/Cache", mem.buffers_bytes + mem.cached_bytes),
+            ("Available", mem.available_bytes),
+            ("Total", mem.total_bytes),
+        ];
+
+        for (name, bytes) in segments {
+            let row = GtkBox::new(Orientation::Horizontal, 12);
+            row.set_margin_top(2);
+            row.set_margin_bottom(2);
+
+            let label = Label::new(Some(name));
+            label.add_css_class("maintainer_mem_segment_label");
+            label.set_halign(Align::Start);
+            label.set_hexpand(true);
+            row.append(&label);
+
+            let value = Label::new(Some(&format_gib(bytes)));
+            value.add_css_class("maintainer_mem_segment_value");
+            value.set_halign(Align::End);
+            row.append(&value);
+
+            self.memory_detail_box.append(&row);
+        }
+    }
+
+    /// Render per-disk breakdown with usage bars.
+    fn update_disk_detail(&self, disks: &[maintainer_core::metrics::DiskSnapshot]) {
+        // Remove old content.
+        while let Some(child) = self.disk_detail_box.first_child() {
+            self.disk_detail_box.remove(&child);
+        }
+
+        if disks.is_empty() {
+            let empty = Label::new(Some("No disk information available"));
+            empty.add_css_class("maintainer_text_muted");
+            self.disk_detail_box.append(&empty);
+            return;
+        }
+
+        for disk in disks {
+            let row = GtkBox::new(Orientation::Vertical, 2);
+            row.add_css_class("maintainer_disk_row");
+
+            let header = GtkBox::new(Orientation::Horizontal, 8);
+            let name = Label::new(Some(&disk.mount_point));
+            name.add_css_class("maintainer_disk_name");
+            name.set_halign(Align::Start);
+            name.set_hexpand(true);
+            name.set_ellipsize(gtk4::pango::EllipsizeMode::Middle);
+            header.append(&name);
+
+            let pct = if disk.total_bytes > 0 {
+                (disk.used_bytes as f64 / disk.total_bytes as f64) * 100.0
+            } else {
+                0.0
+            };
+            let detail_text = format!(
+                "{} / {} ({:.0}%)",
+                format_gib(disk.used_bytes),
+                format_gib(disk.total_bytes),
+                pct
+            );
+            let detail = Label::new(Some(&detail_text));
+            detail.add_css_class("maintainer_disk_detail");
+            detail.set_halign(Align::End);
+            header.append(&detail);
+
+            row.append(&header);
+
+            // Mini capacity bar per disk
+            let bar_trough = GtkBox::new(Orientation::Horizontal, 0);
+            bar_trough.add_css_class("maintainer_core_bar_trough");
+            bar_trough.set_hexpand(true);
+
+            let bar_fill = GtkBox::new(Orientation::Horizontal, 0);
+            bar_fill.add_css_class("maintainer_core_bar_fill");
+            let fill_w = ((pct / 100.0) * 200.0) as i32;
+            bar_fill.set_size_request(fill_w.max(1), -1);
+            if pct >= 90.0 {
+                bar_fill.add_css_class("maintainer_capacity_bar_fill_critical");
+            } else if pct >= 80.0 {
+                bar_fill.add_css_class("maintainer_capacity_bar_fill_warning");
+            }
+            bar_trough.append(&bar_fill);
+            row.append(&bar_trough);
+
+            self.disk_detail_box.append(&row);
+        }
+    }
+
+    /// Render per-interface network detail.
+    fn update_network_detail(&self, networks: &[maintainer_core::metrics::NetworkSnapshot]) {
+        while let Some(child) = self.network_detail_box.first_child() {
+            self.network_detail_box.remove(&child);
+        }
+
+        let non_loopback: Vec<_> = networks.iter().filter(|n| !n.is_loopback).collect();
+
+        if non_loopback.is_empty() {
+            let empty = Label::new(Some("No active network interfaces"));
+            empty.add_css_class("maintainer_text_muted");
+            self.network_detail_box.append(&empty);
+            return;
+        }
+
+        for iface in &non_loopback {
+            let row = GtkBox::new(Orientation::Horizontal, 12);
+            row.add_css_class("maintainer_iface_row");
+
+            let name = Label::new(Some(&iface.interface));
+            name.add_css_class("maintainer_iface_name");
+            name.set_halign(Align::Start);
+            name.set_hexpand(true);
+            row.append(&name);
+
+            let rx_text = match iface.rx_bytes_per_sec {
+                Some(rate) => format!("↓ {}/s", format_rate_bytes(rate)),
+                None => "↓ —".into(),
+            };
+            let rx = Label::new(Some(&rx_text));
+            rx.add_css_class("maintainer_iface_stat");
+            row.append(&rx);
+
+            let tx_text = match iface.tx_bytes_per_sec {
+                Some(rate) => format!("↑ {}/s", format_rate_bytes(rate)),
+                None => "↑ —".into(),
+            };
+            let tx = Label::new(Some(&tx_text));
+            tx.add_css_class("maintainer_iface_stat");
+            row.append(&tx);
+
+            self.network_detail_box.append(&row);
+        }
     }
 
     fn update_temperatures(&self, vm: &SystemViewModel) {
@@ -529,5 +775,94 @@ fn format_memory_bytes(bytes: u64) -> String {
         format!("{:.0} KiB", bytes as f64 / 1024.0)
     } else {
         format!("{bytes} B")
+    }
+}
+
+/// Format bytes as GiB for disk/memory display.
+fn format_gib(bytes: u64) -> String {
+    let gib = bytes as f64 / (1024.0 * 1024.0 * 1024.0);
+    if gib >= 1.0 {
+        format!("{gib:.1} GiB")
+    } else {
+        let mib = bytes as f64 / (1024.0 * 1024.0);
+        format!("{mib:.0} MiB")
+    }
+}
+
+/// Format bytes/s rate.
+fn format_rate_bytes(rate: f64) -> String {
+    if rate >= 1_000_000_000.0 {
+        format!("{:.1} GB", rate / 1_000_000_000.0)
+    } else if rate >= 1_000_000.0 {
+        format!("{:.1} MB", rate / 1_000_000.0)
+    } else if rate >= 1_000.0 {
+        format!("{:.1} KB", rate / 1_000.0)
+    } else {
+        format!("{:.0} B", rate)
+    }
+}
+
+/// Count children with a given CSS class.
+fn count_children_of_class(container: &GtkBox, class: &str) -> usize {
+    let mut count = 0;
+    let mut child = container.first_child();
+    while let Some(widget) = child {
+        if widget.has_css_class(class) {
+            count += 1;
+        }
+        child = widget.next_sibling();
+    }
+    count
+}
+
+/// Remove all children except the first (the title label).
+fn remove_children_except_first(container: &GtkBox) {
+    let first = container.first_child();
+    if let Some(first_widget) = first {
+        let mut sibling = first_widget.next_sibling();
+        while let Some(widget) = sibling {
+            let next = widget.next_sibling();
+            container.remove(&widget);
+            sibling = next;
+        }
+    }
+}
+
+/// Update existing per-core bars in-place without rebuilding.
+fn update_core_bars_inplace(container: &GtkBox, percentages: &[f64]) {
+    let mut child = container.first_child();
+    // Skip the title label.
+    if let Some(w) = child {
+        child = w.next_sibling();
+    }
+
+    for &pct in percentages {
+        let Some(widget) = child else { break };
+        if let Some(row) = widget.downcast_ref::<GtkBox>() {
+            // The row structure: [Label, GtkBox(trough > fill), Label(percent)]
+            let mut row_child = row.first_child();
+            // Skip the core label
+            if let Some(w) = row_child {
+                row_child = w.next_sibling();
+            }
+            // The trough box
+            if let Some(trough) = row_child.as_ref().and_then(|w| w.downcast_ref::<GtkBox>()) {
+                if let Some(fill) = trough
+                    .first_child()
+                    .and_then(|w| w.downcast::<GtkBox>().ok())
+                {
+                    let fill_width = ((pct / 100.0) * 200.0) as i32;
+                    fill.set_size_request(fill_width.max(1), -1);
+                }
+                row_child = row_child.as_ref().and_then(|w| w.next_sibling());
+            }
+            // The percent label
+            if let Some(pct_widget) = row_child {
+                if let Some(pct_label) = pct_widget.downcast_ref::<Label>() {
+                    pct_label.set_text(&format!("{pct:.0}%"));
+                }
+            }
+        }
+        child = widget.next_sibling();
     }
 }

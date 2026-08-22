@@ -884,7 +884,69 @@ mod tests {
         assert!(reboot_required(dir.path()));
     }
 
-    // --- plan_for_selection tests ---
+    // --- check_full_upgrade regression tests ---
+    //
+    // `dispatch_updates_check` in maintainer-app switched from `check_updates`
+    // (apt-get upgrade) to `check_full_upgrade` (apt-get dist-upgrade) because
+    // plain upgrade mode refuses anything that requires new packages or
+    // dependency changes, which silently hid kernel updates tied to the HWE
+    // metapackage chain on a real Mint/Ubuntu 24.04 system: apt-get upgrade
+    // showed 7 candidates, apt-get dist-upgrade showed 16, and the missing 9
+    // were exactly the kernel image/headers/modules/tools chain. These tests
+    // guard the two properties that fix depends on.
+
+    #[test]
+    fn check_full_upgrade_invokes_dist_upgrade_not_upgrade() {
+        let output = make_output("", "", 0);
+        let runner = CapturingMockRunner::new(output);
+        let cancel = crate::jobs::CancellationToken::new();
+
+        let _ = AptDiscovery::check_full_upgrade(&runner, &cancel);
+
+        let args = runner.captured_args();
+        assert!(
+            args.contains(&"dist-upgrade".to_string()),
+            "expected dist-upgrade in args, got {args:?}"
+        );
+        assert!(
+            !args.contains(&"upgrade".to_string()) || args.contains(&"dist-upgrade".to_string()),
+            "must not silently fall back to plain upgrade"
+        );
+    }
+
+    #[test]
+    fn check_full_upgrade_surfaces_kernel_hidden_by_plain_upgrade() {
+        // Fixture captured from a real Ubuntu 24.04 / Mint system: this exact
+        // dist-upgrade output was NOT reproducible by running apt-get upgrade
+        // on the same machine, because upgrade mode refuses the HWE kernel
+        // metapackage chain's dependency changes.
+        let stdout = include_str!("../../../../fixtures/apt/dist_upgrade_kernel.txt");
+        let output = make_output(stdout, "", 0);
+        let runner = CapturingMockRunner::new(output);
+        let cancel = crate::jobs::CancellationToken::new();
+
+        let result = AptDiscovery::check_full_upgrade(&runner, &cancel);
+
+        let plan = match result {
+            Capability::Available(DiscoveryResult::Available(p)) => p,
+            other => panic!("Expected Available plan, got {other:?}"),
+        };
+
+        assert!(
+            plan.candidates.iter().any(|c| c.is_kernel),
+            "dist-upgrade output must surface at least one kernel candidate"
+        );
+        let kernel_names: Vec<&str> = plan
+            .candidates
+            .iter()
+            .filter(|c| c.is_kernel)
+            .map(|c| c.name.as_str())
+            .collect();
+        assert!(
+            kernel_names.contains(&"linux-image-7.0.0-30-generic"),
+            "expected linux-image-7.0.0-30-generic among kernel candidates, got {kernel_names:?}"
+        );
+    }
 
     /// Mock runner that captures the command spec for assertion and returns
     /// a pre-configured output.

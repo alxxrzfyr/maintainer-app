@@ -109,6 +109,14 @@ impl MetricCard {
         &self.container
     }
 
+    /// Append a custom child widget below the value (and sparkline, if present).
+    ///
+    /// Used to add metric-specific supplementary visualizations (capacity bars,
+    /// rate indicators) without changing the MetricCard's own layout semantics.
+    pub fn append_supplement(&self, widget: &impl IsA<gtk4::Widget>) {
+        self.container.append(widget);
+    }
+
     /// Announce title and current value together so screen readers treat the
     /// card as one grouped metric (e.g. "CPU: 42%") rather than two unrelated labels.
     fn update_accessible_description(&self) {

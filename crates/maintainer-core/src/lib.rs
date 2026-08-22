@@ -7,6 +7,7 @@ pub mod diagnostics;
 pub mod error;
 pub mod hardware;
 pub mod jobs;
+pub mod kernel;
 pub mod metrics;
 pub mod persistence;
 pub mod reports;

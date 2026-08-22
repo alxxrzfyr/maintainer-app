@@ -4,6 +4,7 @@
 //! No operation accepts arbitrary commands, paths, or shell text.
 
 pub mod journal;
+pub mod kernel;
 pub mod package_cache;
 pub mod process;
 pub mod smart;

@@ -1,0 +1,18 @@
+NOTE: This is only a simulation!
+      apt-get needs root privileges for real execution.
+      Keep also in mind that locking is deactivated,
+      so don't depend on the relevance to the real current situation!
+Inst linux-modules-7.0.0-30-generic (7.0.0-30.30~24.04.1 Ubuntu:24.04/noble-security [amd64])
+Inst linux-image-7.0.0-30-generic (7.0.0-30.30~24.04.1 Ubuntu:24.04/noble-security [amd64])
+Inst linux-generic-hwe-24.04 [7.0.0-29.29~24.04.2] (7.0.0-30.30~24.04.1 Ubuntu:24.04/noble-security [amd64]) []
+Inst linux-image-generic-hwe-24.04 [7.0.0-29.29~24.04.2] (7.0.0-30.30~24.04.1 Ubuntu:24.04/noble-security [amd64]) []
+Inst linux-headers-7.0.0-30-generic (7.0.0-30.30~24.04.1 Ubuntu:24.04/noble-security [amd64]) []
+Inst linux-headers-generic-hwe-24.04 [7.0.0-29.29~24.04.2] (7.0.0-30.30~24.04.1 Ubuntu:24.04/noble-security [amd64])
+Inst vim-tiny [2:9.1.0016-1ubuntu7.18] (2:9.1.0016-1ubuntu7.19 Ubuntu:24.04/noble-updates [amd64]) []
+Conf linux-modules-7.0.0-30-generic (7.0.0-30.30~24.04.1 Ubuntu:24.04/noble-security [amd64])
+Conf linux-image-7.0.0-30-generic (7.0.0-30.30~24.04.1 Ubuntu:24.04/noble-security [amd64])
+Conf linux-generic-hwe-24.04 (7.0.0-30.30~24.04.1 Ubuntu:24.04/noble-security [amd64])
+Conf linux-image-generic-hwe-24.04 (7.0.0-30.30~24.04.1 Ubuntu:24.04/noble-security [amd64])
+Conf linux-headers-7.0.0-30-generic (7.0.0-30.30~24.04.1 Ubuntu:24.04/noble-security [amd64])
+Conf linux-headers-generic-hwe-24.04 (7.0.0-30.30~24.04.1 Ubuntu:24.04/noble-security [amd64])
+Conf vim-tiny (2:9.1.0016-1ubuntu7.19 Ubuntu:24.04/noble-updates [amd64])

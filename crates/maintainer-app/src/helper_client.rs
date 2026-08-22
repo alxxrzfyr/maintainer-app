@@ -74,6 +74,11 @@ impl HelperClient {
         self.call_method("RefreshSmart", &(drive_id.to_string(),))
     }
 
+    /// Remove an old kernel package via the privileged helper.
+    pub fn remove_kernel(&self, package_name: &str) -> HelperResult {
+        self.call_method("RemoveKernel", &(package_name.to_string(),))
+    }
+
     /// Make a blocking D-Bus method call and classify the result.
     fn call_method<A>(&self, method: &str, args: &A) -> HelperResult
     where

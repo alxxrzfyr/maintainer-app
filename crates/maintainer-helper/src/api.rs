@@ -87,6 +87,19 @@ pub mod actions {
     pub const CLEAN_PACKAGE_CACHE: &str = "io.github.maintainerapp.clean-package-cache";
     pub const VACUUM_JOURNAL: &str = "io.github.maintainerapp.vacuum-journal";
     pub const REFRESH_SMART: &str = "io.github.maintainerapp.refresh-smart";
+    pub const REMOVE_KERNEL: &str = "io.github.maintainerapp.remove-kernel";
+}
+
+/// Request to remove an old kernel package via apt-get purge.
+///
+/// The package name is validated against the kernel naming convention and
+/// independently checked against the running kernel before execution.
+/// This prevents a compromised or stale caller from removing the active kernel.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RemoveKernelRequest {
+    /// Kernel image package name (e.g. "linux-image-6.5.0-35-generic").
+    /// Must match the versioned kernel package pattern.
+    pub package_name: String,
 }
 
 /// The fixed helper API trait. Each method maps to one D-Bus method and one Polkit action.
@@ -95,6 +108,7 @@ pub trait HelperApi {
     fn clean_package_cache(&self, request: PackageCacheRequest) -> HelperResult;
     fn vacuum_journal(&self, request: JournalVacuumRequest) -> HelperResult;
     fn refresh_smart(&self, request: SmartRefreshRequest) -> HelperResult;
+    fn remove_kernel(&self, request: RemoveKernelRequest) -> HelperResult;
 }
 
 /// Maximum number of concurrent in-flight requests.

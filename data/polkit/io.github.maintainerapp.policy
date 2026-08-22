@@ -90,4 +90,20 @@
       <allow_active>yes</allow_active>
     </defaults>
   </action>
+
+  <!--
+    Removing a kernel package permanently deletes the kernel image, headers,
+    and modules from the system. This is irreversible (the packages must be
+    re-downloaded and reinstalled), so the password is required every time.
+    The helper independently verifies the running kernel cannot be removed.
+  -->
+  <action id="io.github.maintainerapp.remove-kernel">
+    <description>Remove an old kernel package</description>
+    <message>Authentication is required to remove a kernel package.</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+  </action>
 </policyconfig>

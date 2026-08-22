@@ -12,7 +12,7 @@ use zbus::interface;
 
 use crate::api::{
     HelperError, JournalVacuumRequest, MAX_CONCURRENT_REQUESTS, PackageCacheRequest,
-    SmartRefreshRequest, TerminateProcessRequest, actions,
+    RemoveKernelRequest, SmartRefreshRequest, TerminateProcessRequest, actions,
 };
 use crate::authorize::{AuthorizePolicy, CallerCredentials};
 use crate::validate;
@@ -154,6 +154,25 @@ impl HelperInterface {
         self.release();
         result
     }
+
+    /// Remove an old kernel package via apt-get purge.
+    async fn remove_kernel(
+        &self,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        package_name: &str,
+    ) -> Result<(bool, String), zbus::fdo::Error> {
+        let sender = header
+            .sender()
+            .ok_or_else(|| {
+                zbus::fdo::Error::Failed("missing sender in message header".to_string())
+            })?
+            .to_string();
+
+        self.try_acquire().map_err(to_dbus_error)?;
+        let result = self.do_remove_kernel(&sender, package_name);
+        self.release();
+        result
+    }
 }
 
 impl HelperInterface {
@@ -230,6 +249,24 @@ impl HelperInterface {
 
         let response =
             crate::operations::smart::execute_smart_refresh(&request).map_err(to_dbus_error)?;
+        Ok((response.success, response.message))
+    }
+
+    fn do_remove_kernel(
+        &self,
+        sender: &str,
+        package_name: &str,
+    ) -> Result<(bool, String), zbus::fdo::Error> {
+        let request = RemoveKernelRequest {
+            package_name: package_name.to_string(),
+        };
+
+        validate::validate_remove_kernel(&request).map_err(to_dbus_error)?;
+        self.authorize(sender, actions::REMOVE_KERNEL)
+            .map_err(to_dbus_error)?;
+
+        let response =
+            crate::operations::kernel::execute_remove_kernel(&request).map_err(to_dbus_error)?;
         Ok((response.success, response.message))
     }
 }
@@ -353,6 +390,17 @@ mod tests {
         let policy = Arc::new(MockPolicy::allowing(1000, 1234, ":1.10"));
         let iface = HelperInterface::new(policy);
         let result = iface.do_terminate_process(":1.10", 0, 12345);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn do_remove_kernel_validates_before_authorize() {
+        // Policy allows everything — validation should reject an empty
+        // package name before authorization is ever consulted, matching the
+        // other four operations.
+        let policy = Arc::new(MockPolicy::allowing(1000, 1234, ":1.10"));
+        let iface = HelperInterface::new(policy);
+        let result = iface.do_remove_kernel(":1.10", "");
         assert!(result.is_err());
     }
 

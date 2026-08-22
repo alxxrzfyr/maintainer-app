@@ -135,6 +135,146 @@ pub fn validate_smart_refresh(request: &SmartRefreshRequest) -> Result<(), Helpe
     Ok(())
 }
 
+/// Maximum kernel package name length.
+const MAX_KERNEL_PACKAGE_LEN: usize = 128;
+
+/// Validate a kernel removal request.
+///
+/// Defense-in-depth: independently re-derives the running kernel and rejects
+/// the request if the package matches it. This check does NOT trust the caller's
+/// assertion that a package is safe to remove.
+///
+/// Validation steps:
+/// 1. Package name is non-empty and within length bounds.
+/// 2. Package name matches the versioned kernel package naming convention.
+/// 3. Package name characters are within the dpkg-safe set.
+/// 4. The package is NOT the currently running kernel (re-derived from /proc/version).
+pub fn validate_remove_kernel(
+    request: &crate::api::RemoveKernelRequest,
+) -> Result<(), HelperError> {
+    let running_release = read_running_kernel_release()?;
+    validate_remove_kernel_against_release(request, &running_release)
+}
+
+/// Core validation logic, parameterized by the running kernel release.
+///
+/// Split out from `validate_remove_kernel` so tests exercise the exact
+/// production validation path against an injected release string, rather
+/// than a separate copy that could silently drift from the real one.
+fn validate_remove_kernel_against_release(
+    request: &crate::api::RemoveKernelRequest,
+    running_release: &str,
+) -> Result<(), HelperError> {
+    if request.package_name.is_empty() {
+        return Err(HelperError::ValidationFailed {
+            reason: "package_name must not be empty".to_string(),
+        });
+    }
+
+    if request.package_name.len() > MAX_KERNEL_PACKAGE_LEN {
+        return Err(HelperError::ValidationFailed {
+            reason: format!(
+                "package_name length {} exceeds maximum {}",
+                request.package_name.len(),
+                MAX_KERNEL_PACKAGE_LEN
+            ),
+        });
+    }
+
+    // Only allow characters valid in dpkg package names: lowercase alphanumeric,
+    // digits, plus, dash, dot.
+    if !request
+        .package_name
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '.' || c == '+')
+    {
+        return Err(HelperError::ValidationFailed {
+            reason: "package_name contains invalid characters; only [a-z0-9.+-] allowed"
+                .to_string(),
+        });
+    }
+
+    // Must match the versioned kernel package pattern
+    if !maintainer_core::kernel::is_versioned_kernel_package(&request.package_name) {
+        return Err(HelperError::ValidationFailed {
+            reason: format!(
+                "package_name '{}' does not match kernel package naming convention",
+                request.package_name
+            ),
+        });
+    }
+
+    // DEFENSE IN DEPTH: reject if this package matches the running kernel.
+    // This is the second independent check (the first is in
+    // maintainer-core's list_kernels), and running_release is re-derived
+    // from /proc/version by the caller, never trusted from the request.
+    let running_image = maintainer_core::kernel::release_to_image_package(running_release);
+
+    if request.package_name == running_image {
+        return Err(HelperError::ValidationFailed {
+            reason: format!(
+                "cannot remove '{}': it is the currently running kernel",
+                request.package_name
+            ),
+        });
+    }
+
+    // Also check headers/modules variants of the running kernel
+    let running_headers = format!("linux-headers-{running_release}");
+    let running_modules = format!("linux-modules-{running_release}");
+    let running_modules_extra = format!("linux-modules-extra-{running_release}");
+
+    if request.package_name == running_headers
+        || request.package_name == running_modules
+        || request.package_name == running_modules_extra
+    {
+        return Err(HelperError::ValidationFailed {
+            reason: format!(
+                "cannot remove '{}': it belongs to the currently running kernel",
+                request.package_name
+            ),
+        });
+    }
+
+    Ok(())
+}
+
+/// Read the running kernel release from /proc/version.
+///
+/// Format: "Linux version 6.8.0-40-generic (builder@host) ..."
+/// We extract the second field.
+fn read_running_kernel_release() -> Result<String, HelperError> {
+    let contents =
+        std::fs::read_to_string("/proc/version").map_err(|e| HelperError::OperationFailed {
+            reason: format!("failed to read /proc/version: {e}"),
+        })?;
+
+    parse_proc_version(&contents).ok_or_else(|| HelperError::OperationFailed {
+        reason: "failed to parse kernel release from /proc/version".to_string(),
+    })
+}
+
+/// Parse the kernel release from /proc/version content.
+///
+/// Expected format: "Linux version <release> ..."
+fn parse_proc_version(contents: &str) -> Option<String> {
+    let mut parts = contents.split_whitespace();
+    parts.next()?; // "Linux"
+    parts.next()?; // "version"
+    Some(parts.next()?.to_string()) // "6.8.0-40-generic"
+}
+
+/// Testable entry point: validates against an injected release string
+/// instead of reading `/proc/version`, exercising the exact same
+/// `validate_remove_kernel_against_release` logic the production path uses.
+#[cfg(test)]
+pub fn validate_remove_kernel_with_release(
+    request: &crate::api::RemoveKernelRequest,
+    running_release: &str,
+) -> Result<(), HelperError> {
+    validate_remove_kernel_against_release(request, running_release)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -304,5 +444,104 @@ mod tests {
             drive_id: "SAMSUNG_MZVL21T0HCLR_0BL2_S64FNX0T506050".to_string(),
         };
         assert!(validate_smart_refresh(&req).is_ok());
+    }
+
+    // --- validate_remove_kernel tests ---
+
+    #[test]
+    fn remove_kernel_rejects_running_kernel() {
+        let req = crate::api::RemoveKernelRequest {
+            package_name: "linux-image-6.8.0-40-generic".to_string(),
+        };
+        let result = validate_remove_kernel_with_release(&req, "6.8.0-40-generic");
+        assert!(matches!(result, Err(HelperError::ValidationFailed { .. })));
+        if let Err(HelperError::ValidationFailed { reason }) = result {
+            assert!(reason.contains("currently running kernel"));
+        }
+    }
+
+    #[test]
+    fn remove_kernel_rejects_running_kernel_headers() {
+        let req = crate::api::RemoveKernelRequest {
+            package_name: "linux-headers-6.8.0-40-generic".to_string(),
+        };
+        let result = validate_remove_kernel_with_release(&req, "6.8.0-40-generic");
+        assert!(matches!(result, Err(HelperError::ValidationFailed { .. })));
+    }
+
+    #[test]
+    fn remove_kernel_rejects_non_kernel_package() {
+        let req = crate::api::RemoveKernelRequest {
+            package_name: "curl".to_string(),
+        };
+        let result = validate_remove_kernel_with_release(&req, "6.8.0-40-generic");
+        assert!(matches!(result, Err(HelperError::ValidationFailed { .. })));
+        if let Err(HelperError::ValidationFailed { reason }) = result {
+            assert!(reason.contains("naming convention"));
+        }
+    }
+
+    #[test]
+    fn remove_kernel_rejects_meta_package() {
+        let req = crate::api::RemoveKernelRequest {
+            package_name: "linux-image-generic".to_string(),
+        };
+        let result = validate_remove_kernel_with_release(&req, "6.8.0-40-generic");
+        assert!(matches!(result, Err(HelperError::ValidationFailed { .. })));
+    }
+
+    #[test]
+    fn remove_kernel_rejects_malformed_name_uppercase() {
+        let req = crate::api::RemoveKernelRequest {
+            package_name: "Linux-Image-6.5.0-35-generic".to_string(),
+        };
+        let result = validate_remove_kernel_with_release(&req, "6.8.0-40-generic");
+        assert!(matches!(result, Err(HelperError::ValidationFailed { .. })));
+        if let Err(HelperError::ValidationFailed { reason }) = result {
+            assert!(reason.contains("invalid characters"));
+        }
+    }
+
+    #[test]
+    fn remove_kernel_rejects_path_traversal() {
+        let req = crate::api::RemoveKernelRequest {
+            package_name: "../etc/passwd".to_string(),
+        };
+        let result = validate_remove_kernel_with_release(&req, "6.8.0-40-generic");
+        assert!(matches!(result, Err(HelperError::ValidationFailed { .. })));
+    }
+
+    #[test]
+    fn remove_kernel_rejects_empty() {
+        let req = crate::api::RemoveKernelRequest {
+            package_name: String::new(),
+        };
+        let result = validate_remove_kernel_with_release(&req, "6.8.0-40-generic");
+        assert!(matches!(result, Err(HelperError::ValidationFailed { .. })));
+    }
+
+    #[test]
+    fn remove_kernel_accepts_non_running_installed_kernel() {
+        let req = crate::api::RemoveKernelRequest {
+            package_name: "linux-image-6.5.0-35-generic".to_string(),
+        };
+        let result = validate_remove_kernel_with_release(&req, "6.8.0-40-generic");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn remove_kernel_accepts_old_headers() {
+        let req = crate::api::RemoveKernelRequest {
+            package_name: "linux-headers-6.5.0-35-generic".to_string(),
+        };
+        let result = validate_remove_kernel_with_release(&req, "6.8.0-40-generic");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn parse_proc_version_extracts_release() {
+        let content = "Linux version 6.8.0-40-generic (buildd@lcy02-amd64-116) (x86_64-linux-gnu-gcc-13 (Ubuntu 13.2.0-23ubuntu4) 13.2.0, GNU ld (GNU Binutils for Ubuntu) 2.42) #40-Ubuntu SMP PREEMPT_DYNAMIC Thu Jun  6 19:43:14 UTC 2024";
+        let release = super::parse_proc_version(content);
+        assert_eq!(release, Some("6.8.0-40-generic".to_string()));
     }
 }

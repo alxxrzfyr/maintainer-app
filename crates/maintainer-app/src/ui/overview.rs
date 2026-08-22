@@ -1,9 +1,14 @@
 //! Overview page: system health summary, hardware specifications, and attention items.
 //!
 //! Shows CPU, memory, disk, and network at a glance with sparklines for the
-//! first two, detailed hardware & system specifications, and interactive attention items.
+//! first two, a capacity bar for storage, network rate indicators, detailed
+//! hardware & system specifications, and interactive attention items.
 //!
 //! Metric cards and hardware specifications use FlowBox for fluid wrapping.
+//! The four metric cards have differentiated secondary visualizations:
+//! CPU/Memory get sparklines, Storage gets a capacity bar, Network gets
+//! upload/download rate indicators — so every card has structural depth
+//! rather than two being visually thinner than the others.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -27,6 +32,13 @@ pub struct OverviewPage {
     memory_card: MetricCard,
     disk_card: MetricCard,
     network_card: MetricCard,
+    // Storage capacity bar
+    capacity_bar_fill: GtkBox,
+    capacity_bar_trough: GtkBox,
+    capacity_label: Label,
+    // Network rate indicators
+    net_rx_value: Label,
+    net_tx_value: Label,
     model_value: Label,
     os_value: Label,
     kernel_value: Label,
@@ -94,6 +106,48 @@ impl OverviewPage {
         cards_flow.insert(network_card.widget(), -1);
 
         content.append(&cards_flow);
+
+        // --- Storage capacity bar (supplement below Storage card value) ---
+        let capacity_bar_trough = GtkBox::new(Orientation::Horizontal, 0);
+        capacity_bar_trough.add_css_class("maintainer_capacity_bar_trough");
+        capacity_bar_trough.set_hexpand(true);
+
+        let capacity_bar_fill = GtkBox::new(Orientation::Horizontal, 0);
+        capacity_bar_fill.add_css_class("maintainer_capacity_bar_fill");
+        // Start with zero width; updated dynamically.
+        capacity_bar_fill.set_size_request(0, -1);
+        capacity_bar_trough.append(&capacity_bar_fill);
+        disk_card.append_supplement(&capacity_bar_trough);
+
+        let capacity_label = Label::new(None);
+        capacity_label.add_css_class("maintainer_net_rate_label");
+        capacity_label.set_halign(Align::Start);
+        capacity_label.set_margin_top(4);
+        disk_card.append_supplement(&capacity_label);
+
+        // --- Network rate indicators (supplement below Network card value) ---
+        let net_rate_box = GtkBox::new(Orientation::Horizontal, 12);
+        net_rate_box.add_css_class("maintainer_net_rate_row");
+
+        let rx_box = GtkBox::new(Orientation::Horizontal, 4);
+        let rx_icon = Label::new(Some("↓"));
+        rx_icon.add_css_class("maintainer_net_rate_label");
+        rx_box.append(&rx_icon);
+        let net_rx_value = Label::new(Some("—"));
+        net_rx_value.add_css_class("maintainer_net_rate_value");
+        rx_box.append(&net_rx_value);
+        net_rate_box.append(&rx_box);
+
+        let tx_box = GtkBox::new(Orientation::Horizontal, 4);
+        let tx_icon = Label::new(Some("↑"));
+        tx_icon.add_css_class("maintainer_net_rate_label");
+        tx_box.append(&tx_icon);
+        let net_tx_value = Label::new(Some("—"));
+        net_tx_value.add_css_class("maintainer_net_rate_value");
+        tx_box.append(&net_tx_value);
+        net_rate_box.append(&tx_box);
+
+        network_card.append_supplement(&net_rate_box);
 
         let spec_card = GtkBox::new(Orientation::Vertical, 14);
         spec_card.add_css_class("maintainer_spec_card");
@@ -218,6 +272,11 @@ impl OverviewPage {
             memory_card,
             disk_card,
             network_card,
+            capacity_bar_fill,
+            capacity_bar_trough,
+            capacity_label,
+            net_rx_value,
+            net_tx_value,
             model_value,
             os_value,
             kernel_value,
@@ -272,8 +331,11 @@ impl OverviewPage {
         }
 
         self.disk_card.set_value(&vm.disk_text);
+        self.update_capacity_bar(vm.disk_used_percent);
 
         self.network_card.set_value(&vm.network_text);
+        self.net_rx_value.set_text(&vm.net_rx_text);
+        self.net_tx_value.set_text(&vm.net_tx_text);
 
         let specs_changed = self.last_device_info.borrow().as_ref() != Some(&vm.device_info);
         if specs_changed {
@@ -291,6 +353,43 @@ impl OverviewPage {
         }
 
         self.update_attention(&vm.attention_items);
+    }
+
+    /// Update the storage capacity bar width and color based on usage percentage.
+    fn update_capacity_bar(&self, percent: f64) {
+        let clamped = percent.clamp(0.0, 100.0);
+
+        // Dynamically set fill width as a fraction of trough width.
+        // Since we cannot query allocated width reliably before layout, we use
+        // hexpand + a size-request proportion. The fill expands proportionally.
+        let trough_width = self.capacity_bar_trough.allocated_width();
+        let fill_width = if trough_width > 0 {
+            ((clamped / 100.0) * trough_width as f64) as i32
+        } else {
+            // Fallback before first allocation: use a reasonable default.
+            ((clamped / 100.0) * 200.0) as i32
+        };
+        self.capacity_bar_fill.set_size_request(fill_width, -1);
+
+        // Color thresholds: warning at 80%, critical at 90%
+        self.capacity_bar_fill
+            .remove_css_class("maintainer_capacity_bar_fill_warning");
+        self.capacity_bar_fill
+            .remove_css_class("maintainer_capacity_bar_fill_critical");
+        if clamped >= 90.0 {
+            self.capacity_bar_fill
+                .add_css_class("maintainer_capacity_bar_fill_critical");
+        } else if clamped >= 80.0 {
+            self.capacity_bar_fill
+                .add_css_class("maintainer_capacity_bar_fill_warning");
+        }
+
+        // Capacity label shows percentage
+        if clamped > 0.0 {
+            self.capacity_label.set_text(&format!("{clamped:.0}% used"));
+        } else {
+            self.capacity_label.set_text("");
+        }
     }
 
     fn update_attention(&self, items: &[AttentionItem]) {

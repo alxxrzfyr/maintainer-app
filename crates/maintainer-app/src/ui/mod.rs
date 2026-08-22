@@ -2,6 +2,7 @@ pub mod cleanup;
 pub mod diagnostics;
 pub mod dialogs;
 pub mod history;
+pub mod kernel_section;
 pub mod navigation;
 pub mod overview;
 pub mod reports;

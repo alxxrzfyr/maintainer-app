@@ -374,7 +374,16 @@ pub fn dispatch_updates_check(
         use maintainer_core::updates::{AptDiscovery, DiscoveryResult};
 
         let runner = SystemCommandRunner;
-        let result = AptDiscovery::check_updates(&runner, &token_for_worker);
+        // `check_full_upgrade` (apt-get --simulate dist-upgrade) is used rather
+        // than `check_updates` (plain upgrade). Plain upgrade mode refuses to
+        // pull in new packages or dependency changes, which silently hides any
+        // update that requires one -- including kernel updates tied to the HWE
+        // metapackage chain (linux-generic-hwe-*), which on Ubuntu 24.04
+        // depends on new headers/tools/modules packages alongside the image.
+        // Every mainstream update manager (Ubuntu's, Mint's) resolves against
+        // the dist-upgrade equivalent for this reason; using plain upgrade
+        // here made this app under-report updates relative to those tools.
+        let result = AptDiscovery::check_full_upgrade(&runner, &token_for_worker);
 
         let outcome = match result {
             Capability::Available(DiscoveryResult::Available(plan)) => {
@@ -521,7 +530,10 @@ pub fn dispatch_update_execution(
         use maintainer_core::updates::{AptDiscovery, DiscoveryResult};
 
         let runner = SystemCommandRunner;
-        let current = AptDiscovery::check_updates(&runner, &worker_token);
+        // Must use the same discovery mode as the plan being verified
+        // (check_full_upgrade), or content_hash will never match and every
+        // install would be rejected as "changed since review".
+        let current = AptDiscovery::check_full_upgrade(&runner, &worker_token);
         match current {
             Capability::Available(DiscoveryResult::Available(current_plan))
                 if current_plan.content_hash == plan.content_hash => {}
@@ -807,7 +819,9 @@ pub fn dispatch_report_generation(
                 Capability::Unavailable(reason) => Capability::Unavailable(reason),
                 Capability::PermissionRequired(request) => Capability::PermissionRequired(request),
             };
-        let pending_updates = match AptDiscovery::check_updates(&runner, &worker_token) {
+        // Same discovery mode as the Updates page, so the count shown here
+        // matches what a user would see there rather than under-reporting.
+        let pending_updates = match AptDiscovery::check_full_upgrade(&runner, &worker_token) {
             Capability::Available(DiscoveryResult::Available(plan)) => Capability::Available(
                 plan.candidates
                     .into_iter()

@@ -956,3 +956,214 @@ spinbutton button:hover {
     font-size: 11px;
     font-weight: 700;
 }
+
+/* ---- Kernel Section: installed kernel list and status badges ----
+   Embedded in the Updates page. Running badge is accent-colored pill to
+   stand out as the single most important status in the list. */
+.maintainer_kernel_section {
+    margin-top: 16px;
+}
+
+.maintainer_kernel_list {
+    background-color: @maintainer_surface;
+    border: 1px solid @maintainer_border;
+    border-radius: 12px;
+    padding: 6px;
+}
+
+.maintainer_kernel_row {
+    padding: 10px 14px;
+    border-radius: 8px;
+    transition: background-color 80ms ease;
+}
+
+.maintainer_kernel_row:hover {
+    background-color: @maintainer_surface_alt;
+}
+
+/* Running: accent pill — visually distinct, this is the most important status */
+.maintainer_kernel_badge_running {
+    color: @maintainer_accent;
+    background-color: alpha(@maintainer_accent, 0.16);
+    border: 1px solid alpha(@maintainer_accent, 0.4);
+    border-radius: 12px;
+    padding: 3px 12px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.3px;
+}
+
+/* Removable: warning-tinted to draw attention that action is possible */
+.maintainer_kernel_badge_removable {
+    color: @maintainer_warning;
+    background-color: alpha(@maintainer_warning, 0.12);
+    border: 1px solid alpha(@maintainer_warning, 0.3);
+    border-radius: 12px;
+    padding: 3px 12px;
+    font-size: 11px;
+    font-weight: 600;
+}
+
+/* Installed: neutral muted badge */
+.maintainer_kernel_badge_installed {
+    color: @maintainer_text_muted;
+    background-color: alpha(@maintainer_text_muted, 0.12);
+    border-radius: 12px;
+    padding: 3px 12px;
+    font-size: 11px;
+    font-weight: 600;
+}
+
+/* Operation result inline status */
+.maintainer_kernel_op_status {
+    font-size: 12px;
+    font-weight: 600;
+}
+
+/* ---- Overview: capacity bar for Storage card ---- */
+.maintainer_capacity_bar_trough {
+    background-color: @maintainer_surface_alt;
+    border-radius: 4px;
+    min-height: 8px;
+    margin-top: 8px;
+}
+
+.maintainer_capacity_bar_fill {
+    background-color: @maintainer_accent;
+    border-radius: 4px;
+    min-height: 8px;
+    transition: min-width 200ms ease;
+}
+
+.maintainer_capacity_bar_fill_warning {
+    background-color: @maintainer_warning;
+}
+
+.maintainer_capacity_bar_fill_critical {
+    background-color: @maintainer_danger;
+}
+
+/* ---- Overview: network rate indicators ---- */
+.maintainer_net_rate_row {
+    margin-top: 6px;
+}
+
+.maintainer_net_rate_label {
+    font-size: 11px;
+    font-weight: 600;
+    color: @maintainer_text_muted;
+    font-family: monospace;
+}
+
+.maintainer_net_rate_value {
+    font-size: 12px;
+    font-weight: 700;
+    color: @maintainer_text;
+    font-family: monospace;
+}
+
+/* ---- System page: per-core CPU and memory composition detail cards ---- */
+.maintainer_detail_card {
+    background-color: @maintainer_surface;
+    border: 1px solid @maintainer_border;
+    border-radius: 12px;
+    padding: 14px 16px;
+}
+
+.maintainer_detail_card_title {
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: @maintainer_text_muted;
+    margin-bottom: 6px;
+}
+
+.maintainer_core_row {
+    padding: 3px 0;
+}
+
+.maintainer_core_label {
+    font-size: 11px;
+    font-weight: 600;
+    color: @maintainer_text_muted;
+    min-width: 52px;
+}
+
+.maintainer_core_bar_trough {
+    background-color: @maintainer_surface_alt;
+    border-radius: 3px;
+    min-height: 6px;
+}
+
+.maintainer_core_bar_fill {
+    background-color: @maintainer_accent;
+    border-radius: 3px;
+    min-height: 6px;
+}
+
+.maintainer_core_percent {
+    font-size: 11px;
+    font-weight: 700;
+    color: @maintainer_text;
+    font-family: monospace;
+    min-width: 38px;
+}
+
+.maintainer_mem_segment_label {
+    font-size: 11px;
+    font-weight: 600;
+    color: @maintainer_text_muted;
+}
+
+.maintainer_mem_segment_value {
+    font-size: 12px;
+    font-weight: 700;
+    color: @maintainer_text;
+    font-family: monospace;
+}
+
+/* ---- System page: disk and network detail sections ---- */
+.maintainer_disk_row {
+    padding: 8px 12px;
+    border-radius: 8px;
+    transition: background-color 80ms ease;
+}
+
+.maintainer_disk_row:hover {
+    background-color: @maintainer_surface_alt;
+}
+
+.maintainer_disk_name {
+    font-size: 12px;
+    font-weight: 700;
+    color: @maintainer_text;
+}
+
+.maintainer_disk_detail {
+    font-size: 11px;
+    color: @maintainer_text_muted;
+    font-family: monospace;
+}
+
+.maintainer_iface_row {
+    padding: 8px 12px;
+    border-radius: 8px;
+    transition: background-color 80ms ease;
+}
+
+.maintainer_iface_row:hover {
+    background-color: @maintainer_surface_alt;
+}
+
+.maintainer_iface_name {
+    font-size: 12px;
+    font-weight: 700;
+    color: @maintainer_text;
+}
+
+.maintainer_iface_stat {
+    font-size: 11px;
+    color: @maintainer_text_muted;
+    font-family: monospace;
+}

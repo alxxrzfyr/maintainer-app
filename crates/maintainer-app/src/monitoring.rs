@@ -149,8 +149,14 @@ pub struct OverviewViewModel {
     pub memory_text: String,
     /// Current disk summary text.
     pub disk_text: String,
+    /// Disk usage percentage (0.0–100.0) for capacity bar rendering.
+    pub disk_used_percent: f64,
     /// Current network summary text.
     pub network_text: String,
+    /// Network receive rate formatted (e.g. "1.2 MB/s").
+    pub net_rx_text: String,
+    /// Network transmit rate formatted (e.g. "340 KB/s").
+    pub net_tx_text: String,
     /// Attention items derived from explicit evidence.
     pub attention_items: Vec<AttentionItem>,
     /// Hardware and system specifications.
@@ -173,7 +179,10 @@ impl Default for OverviewViewModel {
             cpu_text: "—".into(),
             memory_text: "—".into(),
             disk_text: "—".into(),
+            disk_used_percent: 0.0,
             network_text: "—".into(),
+            net_rx_text: "—".into(),
+            net_tx_text: "—".into(),
             attention_items: Vec::new(),
             device_info: DeviceInfo::default(),
             cpu_available: false,
@@ -377,11 +386,14 @@ impl MonitoringState {
                 let used_gib = used as f64 / (1024.0 * 1024.0 * 1024.0);
                 let total_gib = total as f64 / (1024.0 * 1024.0 * 1024.0);
                 self.overview.disk_text = format!("{used_gib:.1} / {total_gib:.1} GiB used");
+                self.overview.disk_used_percent = (used as f64 / total as f64) * 100.0;
             } else {
                 self.overview.disk_text = "No disks".into();
+                self.overview.disk_used_percent = 0.0;
             }
         } else {
             self.overview.disk_text = "Unavailable".into();
+            self.overview.disk_used_percent = 0.0;
             self.system.disks.clear();
         }
     }
@@ -396,8 +408,12 @@ impl MonitoringState {
                 format_bytes_rate(total_rx),
                 format_bytes_rate(total_tx)
             );
+            self.overview.net_rx_text = format!("{}/s", format_bytes_rate(total_rx));
+            self.overview.net_tx_text = format!("{}/s", format_bytes_rate(total_tx));
         } else {
             self.overview.network_text = "Unavailable".into();
+            self.overview.net_rx_text = "—".into();
+            self.overview.net_tx_text = "—".into();
             self.system.networks.clear();
         }
     }
