@@ -154,7 +154,7 @@ jobs:
           Package: maintainer
           Version: ${PKG_VERSION}-1
           Architecture: ${PKG_ARCH}
-          Maintainer: Maintainer Developers <maintainer@maintainerapp.io>
+          Maintainer: Alex Berin <maintainer@maintainerapp.io>
           Depends: libgtk-4-1 (>= 4.6), libglib2.0-0 (>= 2.72), libsqlite3-0, polkitd | policykit-1, systemd
           Recommends: packagekit, udisks2
           Suggests: flatpak, fwupd

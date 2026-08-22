@@ -1,14 +1,14 @@
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: maintainer
-Upstream-Contact: Maintainer Developers <maintainer@maintainerapp.io>
+Upstream-Contact: Alex Berin <maintainer@maintainerapp.io>
 Source: https://github.com/maintainerapp/maintainer
 
 Files: *
-Copyright: 2026 Maintainer Developers
+Copyright: 2026 Alex Berin
 License: MIT
 
 Files: debian/*
-Copyright: 2026 Maintainer Developers
+Copyright: 2026 Alex Berin
 License: MIT
 
 License: MIT

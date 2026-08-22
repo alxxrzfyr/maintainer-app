@@ -1,7 +1,7 @@
 Source: maintainer
 Section: admin
 Priority: optional
-Maintainer: Maintainer Developers <maintainer@maintainerapp.io>
+Maintainer: Alex Berin <maintainer@maintainerapp.io>
 Build-Depends:
  debhelper-compat (= 13),
  cargo (>= 0.70),
