@@ -64,32 +64,51 @@ sudo apt purge maintainer
 
 ## Architecture & Security
 
-Maintainer enforces a hard security boundary between graphical presentation and privileged system management:
+Maintainer separates presentation from privileged system management. The
+boundary is structural: the interface has no code path to root, so a defect in
+it cannot escalate.
 
 ```text
-┌─────────────────────────────────────────────────────────────┐
-│                 maintainer-app (GTK4 View)                  │
-│  Runs as unprivileged user. Never touches root interfaces. │
-└──────────────────────────────┬──────────────────────────────┘
-                               │
-                               ▼
-┌─────────────────────────────────────────────────────────────┐
-│                 maintainer-core (Engine)                    │
-│  Collectors, persistence, job scheduler, data models.       │
-└──────────────────────────────┬──────────────────────────────┘
-                               │
-                               ▼
-┌─────────────────────────────────────────────────────────────┐
-│             maintainer-helper (Privileged Daemon)           │
-│  D-Bus activated via Polkit. Executes fixed, allowlisted   │
-│  operations only. Arbitrary command execution is forbidden. │
-└─────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────┐
+│                           maintainer-app                           │
+├────────────────────────────────────────────────────────────────────┤
+│  GTK4 windows, widgets and presentation state.                     │
+│  Runs as the logged-in user. Holds no privilege, reads no          │
+│  system interface directly, executes no commands.                  │
+└────────────────────────────────────────────────────────────────────┘
+                                  │                                   
+                         typed service calls                          
+                                  ▼                                   
+┌────────────────────────────────────────────────────────────────────┐
+│                          maintainer-core                           │
+├────────────────────────────────────────────────────────────────────┤
+│  Collectors for /proc, /sys and D-Bus. Capability adapters,        │
+│  cancellable jobs, SQLite settings and operation history.          │
+│  Reports each capability as available, unavailable with a          │
+│  reason, or permission required.                                   │
+└────────────────────────────────────────────────────────────────────┘
+                                  │                                   
+                     D-Bus, authorized by Polkit                      
+                                  ▼                                   
+┌────────────────────────────────────────────────────────────────────┐
+│                         maintainer-helper                          │
+├────────────────────────────────────────────────────────────────────┤
+│  The only component that runs as root. D-Bus activated.            │
+│  Fixed operation types with allowlisted, validated                 │
+│  parameters. Arbitrary command execution is impossible by          │
+│  construction, not by policy.                                      │
+└────────────────────────────────────────────────────────────────────┘
 ```
 
-- **Unprivileged GUI:** The interface process cannot execute root operations, run arbitrary shell strings, or modify system files directly.
-- **Audited Polkit Helper:** Privileged tasks (such as package management or service restarts) are handled by `maintainer-helper`, an audited D-Bus service gated by PolicyKit authentication.
-- **Direct Invocation:** External binaries are invoked with explicit argument arrays rather than shell string expansion, preventing command injection vulnerabilities.
+| Boundary | Guarantee |
+|---|---|
+| Unprivileged interface | The GUI process never runs as root, never stores administrator credentials, and cannot modify system files |
+| Audited helper | Privileged work is delegated to `maintainer-helper`, which accepts fixed operation types with validated parameters and is gated by PolicyKit authentication |
+| No shell interpretation | External programs are invoked with explicit argument arrays, never assembled into shell strings, so command injection has no surface |
+| Honest capabilities | A missing service or unsupported device yields an explicit unavailable state with a reason, never a fabricated value |
 
+Threat analysis and the full helper API surface are documented in
+[`docs/threat-model.md`](docs/threat-model.md).
 ---
 
 ## Platform Requirements
