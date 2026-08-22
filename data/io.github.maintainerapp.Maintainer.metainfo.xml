@@ -55,6 +55,18 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="1.1.2" date="2026-08-22" type="stable">
+      <description>
+        <p>
+          Privileged actions now prompt for a password as intended, since the
+          required D-Bus and systemd files were missing from the previous
+          release. Fixes update classification for Linux Mint and Debian
+          security origins, discloses kernel updates and reboot-required
+          state, and adds security-only and per-package update selection
+          that re-plans through apt's dependency resolver.
+        </p>
+      </description>
+    </release>
     <release version="1.1.0" date="2026-08-22" type="stable">
       <description>
         <p>

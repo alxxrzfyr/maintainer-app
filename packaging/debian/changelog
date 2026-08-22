@@ -1,3 +1,24 @@
+maintainer (1.1.2-1) jammy; urgency=medium
+
+  * Privileged actions now actually prompt for a password. No D-Bus bus
+    policy or systemd unit was shipped for the helper, so calls were
+    rejected before Polkit could be consulted. Both are now installed, and
+    a bus-level rejection is reported as the configuration fault it is.
+  * Irreversible actions (terminate process, vacuum journal) require the
+    password on every attempt; reversible or read-only actions (clean
+    package cache, refresh SMART) no longer prompt for an active session.
+  * Fix update classification for Linux Mint and case-sensitive security
+    origins, so Mint-native packages and Debian-Security updates are no
+    longer misclassified.
+  * Disclose kernel updates and reboot-required state on the Updates page.
+  * Add a Security Only / Everything selection mode with a top action bar,
+    status icons per package, and per-package selection that re-plans
+    through apt's own dependency resolver rather than a client-side filter.
+  * Style the new Updates controls in both themes; clarify the Custom
+    selection state with a visible indicator.
+
+ -- Maintainer Developers <maintainer@maintainerapp.io>  Sat, 22 Aug 2026 15:00:00 +0000
+
 maintainer (1.1.0-1) jammy; urgency=medium
 
   * Ship the full interface: eight pages, device specifications, hardware

@@ -5,7 +5,57 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.1.2] - 2026-08-22
+
+### Added
+
+- Updates page redesign:
+  - **Selection modes** — a Security Only / Everything toggle above the
+    package list, backed by a top action bar showing the summary and the
+    Install button. The toggle is not cosmetic: it changes which candidates
+    are actually submitted to PackageKit, not just which are displayed.
+  - **Per-package selection** — checking or unchecking an individual
+    package switches to a Custom selection mode. Custom selections never
+    feed the installer directly; a Review Selection action re-invokes
+    apt's own dependency resolver (`apt-get --simulate install
+    name=version`, pinned to the reviewed version) and shows whatever apt
+    itself discloses, including dependencies the user did not select,
+    before Install becomes available again.
+  - **Status icons per package** — security, kernel, held/phased (with
+    distinguishable tooltips), and a backend badge for Flatpak and fwupd
+    entries. Security and kernel are shown independently, since a kernel
+    update can also be a security update.
+  - **Reboot notice** — a page-level notice appears when the plan requires
+    a restart and includes a kernel update, read from the same
+    `/var/run/reboot-required` file apt itself uses.
+  - **Custom selection indicator** — a visible label next to the mode
+    toggle whenever a per-package checkbox has overridden it, so the mode
+    change is not communicated only by the toggle buttons going blank.
+
+### Fixed
+
+- Update classification:
+  - `classify_origin` was case-sensitive, so a literal `Debian-Security`
+    origin fell through to Standard instead of Security. The check is now
+    case-insensitive.
+  - Linux Mint's `linuxmint` origin had no explicit rule, so every
+    Mint-native package (Cinnamon, xapps, mintupdate) classified as
+    Unknown rather than Standard. Now classified explicitly.
+- Test suite safety:
+  - Running the test suite was executing a live `apt-get clean` against
+    the development machine, because the bus and Polkit policies installed
+    for the 1.1.1 fix made the helper genuinely reachable, and
+    clean-package-cache is deliberately passwordless for an active
+    session. The affected tests no longer assert unconditional refusal for
+    the two actions designed to succeed without a password.
+- Visual styling:
+  - Five new CSS classes from the Updates redesign (`action-bar-top`,
+    `security-icon`, `kernel-icon`, `held-icon`, `backend-icon`) had no
+    rules in either theme and rendered with no visual distinction. Added
+    styling for both dark and light themes using the existing semantic
+    color tokens.
+
+## [1.1.1] - 2026-08-22
 
 ### Fixed
 
