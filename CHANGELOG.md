@@ -28,9 +28,11 @@ First release.
   unavailable state for drives and enclosures that do not expose them.
 - Local system reports that redact usernames, hostnames, IP addresses, serial
   numbers, sensitive paths, and process arguments by default.
-- Native `.deb` packaging with desktop entry, icons, GSettings schema, D-Bus
-  service, and Polkit policy, plus a Polkit-gated helper binary separate from
-  the unprivileged GUI.
+- Native `.deb` packaging for `amd64` and `arm64`, with desktop entry, icons,
+  GSettings schema, D-Bus service, and Polkit policy, plus a Polkit-gated
+  helper binary separate from the unprivileged GUI. Each architecture is built
+  natively, because linking requires the GTK4, GLib, SQLite, and Polkit
+  development libraries for the target architecture.
 
 ### Security
 

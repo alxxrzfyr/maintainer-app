@@ -48,10 +48,14 @@ Optional, enabling extra integrations when present: `flatpak`, `fwupd`.
 
 ## Installation
 
-Download the latest `.deb` from the [releases page](https://github.com/alxxrzfyr/maintainer-app/releases):
+Packages are published for `amd64` and `arm64`. Download the `.deb` matching
+your architecture from the [releases page](https://github.com/alxxrzfyr/maintainer-app/releases):
 
 ```bash
-sudo apt install ./maintainer_1.0.0-1_amd64.deb
+# Check which one you need
+dpkg --print-architecture
+
+sudo apt install ./maintainer_1.0.0-1_amd64.deb   # or ..._arm64.deb
 ```
 
 This installs the unprivileged GUI at `/usr/bin/maintainer`, the Polkit-gated helper at `/usr/libexec/maintainer-helper`, and the desktop entry, icons, GSettings schema, D-Bus service, and Polkit policy.

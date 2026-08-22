@@ -59,7 +59,18 @@ jobs:
 
   package:
     needs: check
-    runs-on: ubuntu-22.04
+    # Built natively per architecture rather than cross-compiled, because the
+    # GTK4, GLib, SQLite and Polkit development libraries have to be present
+    # for the target architecture at link time.
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            deb_arch: amd64
+          - runner: ubuntu-22.04-arm
+            deb_arch: arm64
     # Required by the "Upload to release" step below: softprops/action-gh-release
     # creates a release and attaches artifacts, which needs write access to
     # repository contents. GITHUB_TOKEN defaults to read-only when the
@@ -95,7 +106,13 @@ jobs:
           set -e
           PKG_NAME="maintainer"
           PKG_VERSION="1.0.0"
-          PKG_ARCH="amd64"
+          # Read from dpkg rather than hardcoding, so the package metadata can
+          # never disagree with the architecture the binaries were built for.
+          PKG_ARCH="$(dpkg --print-architecture)"
+          if [ "$PKG_ARCH" != "${{ matrix.deb_arch }}" ]; then
+            echo "Runner architecture $PKG_ARCH does not match expected ${{ matrix.deb_arch }}" >&2
+            exit 1
+          fi
           PKG_DIR="${PKG_NAME}_${PKG_VERSION}-1_${PKG_ARCH}"
 
           mkdir -p "${PKG_DIR}/DEBIAN"
@@ -166,16 +183,19 @@ jobs:
 
       - name: Generate checksums
         run: |
-          sha256sum maintainer_*.deb > SHA256SUMS
-          cat SHA256SUMS
+          # Named per architecture: both matrix jobs attach files to the same
+          # release, and a shared SHA256SUMS would have one arch overwrite the
+          # other.
+          sha256sum maintainer_*.deb > "SHA256SUMS-${{ matrix.deb_arch }}"
+          cat "SHA256SUMS-${{ matrix.deb_arch }}"
 
       - name: Upload .deb artifact
         uses: actions/upload-artifact@v4
         with:
-          name: maintainer-deb-amd64
+          name: maintainer-deb-${{ matrix.deb_arch }}
           path: |
             maintainer_*.deb
-            SHA256SUMS
+            SHA256SUMS-${{ matrix.deb_arch }}
 
       - name: Upload to release
         if: startsWith(github.ref, 'refs/tags/v')
@@ -183,7 +203,7 @@ jobs:
         with:
           files: |
             maintainer_*.deb
-            SHA256SUMS
+            SHA256SUMS-${{ matrix.deb_arch }}
 
   smoke-test:
     needs: check

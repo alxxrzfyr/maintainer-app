@@ -17,7 +17,7 @@ Vcs-Browser: https://github.com/maintainerapp/maintainer
 Rules-Requires-Root: binary-targets
 
 Package: maintainer
-Architecture: amd64
+Architecture: any
 Depends:
  ${shlibs:Depends},
  ${misc:Depends},
