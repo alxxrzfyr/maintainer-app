@@ -1,26 +1,22 @@
+<div align="center">
+
+<img src="data/icons/hicolor/scalable/apps/io.github.maintainerapp.Maintainer.svg" alt="Maintainer Logo" width="96" height="96">
+
 # Maintainer
 
-<div align="center">
+**Fast, lightweight, native system monitor and maintenance center for Linux.**
 
 [![CI](https://github.com/alxxrzfyr/maintainer-app/actions/workflows/ci.yml/badge.svg)](https://github.com/alxxrzfyr/maintainer-app/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/alxxrzfyr/maintainer-app)](https://github.com/alxxrzfyr/maintainer-app/releases)
-[![License](https://img.shields.io/github/license/alxxrzfyr/maintainer-app)](LICENSE)
+[![Ubuntu](https://img.shields.io/badge/Ubuntu-22.04%2B-E95420?logo=ubuntu&logoColor=white)](https://ubuntu.com)
+[![Rust](https://img.shields.io/badge/Rust-1.85%2B-000000?logo=rust&logoColor=white)](https://www.rust-lang.org)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 </div>
 
-Maintainer is a lightweight native desktop application for monitoring, maintaining, diagnosing, and understanding Ubuntu-based Linux systems. Built with Rust and GTK4, it provides system observability, storage analysis, safe previewed cleanup, update management, and diagnostics without background daemons, telemetry, or opaque optimizations.
+Maintainer is a native GTK4 application for monitoring, maintaining, diagnosing, and understanding Ubuntu-based Linux systems. Built in Rust, Maintainer pairs low resource usage with strict privilege separation to provide deep system visibility and safe maintenance workflows.
 
-## Contents
-
-- [Installation](#installation)
-  - [Debian Package (.deb)](#debian-package-deb)
-  - [Building from Source](#building-from-source)
-- [Key Features](#key-features)
-- [Architecture and Security](#architecture-and-security)
-- [Platform Requirements](#platform-requirements)
-- [Performance Specifications](#performance-specifications)
-- [Project Documentation](#project-documentation)
-- [License](#license)
+Maintainer contains no background daemons, collects no telemetry, and executes zero opaque optimizations.
 
 ---
 
@@ -28,133 +24,187 @@ Maintainer is a lightweight native desktop application for monitoring, maintaini
 
 ### Debian Package (.deb)
 
-Pre-built packages are available on the [Releases](https://github.com/alxxrzfyr/maintainer-app/releases) page for `amd64` and `arm64` architectures.
+Maintainer provides official `.deb` packages for `amd64` and `arm64` architectures on the [Releases](https://github.com/alxxrzfyr/maintainer-app/releases) page.
 
 ```bash
-# Install the package and its runtime dependencies
+# Install the package and all required dependencies
 sudo apt install ./maintainer_1.0.0-1_amd64.deb
 ```
 
-Installed components:
-- `/usr/bin/maintainer`: Unprivileged GTK4 graphical interface
-- `/usr/libexec/maintainer-helper`: PolicyKit-authenticated system helper
-- Desktop launcher, icons, GSettings schemas, D-Bus service, and PolicyKit policy definitions
-
-To remove:
+Once installed, launch Maintainer from your application launcher or run:
 
 ```bash
-# Remove binaries while preserving user configuration
+maintainer
+```
+
+To remove the package:
+
+```bash
+# Remove package binaries and preserve user configuration
 sudo apt remove maintainer
 
-# Remove all files and configurations
+# Remove package and purge all associated configuration
 sudo apt purge maintainer
 ```
 
-### Building from Source
+---
 
-#### Prerequisites
+## Highlights
 
-Install required development headers:
+| Capability | Description |
+|---|---|
+| **System Telemetry** | Real-time tracking of CPU, memory, storage, sensors, network I/O, and processes with historical sparklines. Adaptive 2s active and 10s idle refresh rates. |
+| **Storage Inspection** | Asynchronous scanning for large files and content-hash verified duplicate groups with zero unsolicited scans. |
+| **Safe Cleanup** | Mandatory operation preview, structured SQLite audit history, and FreeDesktop Trash integration before any permanent deletion. |
+| **Update Management** | Unified inspection and execution of APT upgrades, with optional review for Flatpak packages and fwupd device firmware. |
+| **Diagnostics & Health** | Analysis of failed systemd units, aggregated journal logs, and SMART disk telemetry via UDisks2. |
+| **Privacy-First Reports** | One-click diagnostic reports with automatic redaction of usernames, hostnames, IP addresses, serial numbers, and process arguments. |
+
+---
+
+## Architecture & Security
+
+Maintainer enforces a hard security boundary between graphical presentation and privileged system management:
+
+```text
+┌─────────────────────────────────────────────────────────────┐
+│                 maintainer-app (GTK4 View)                  │
+│  Runs as unprivileged user. Never touches root interfaces. │
+└──────────────────────────────┬──────────────────────────────┘
+                               │
+                               ▼
+┌─────────────────────────────────────────────────────────────┐
+│                 maintainer-core (Engine)                    │
+│  Collectors, persistence, job scheduler, data models.       │
+└──────────────────────────────┬──────────────────────────────┘
+                               │
+                               ▼
+┌─────────────────────────────────────────────────────────────┐
+│             maintainer-helper (Privileged Daemon)           │
+│  D-Bus activated via Polkit. Executes fixed, allowlisted   │
+│  operations only. Arbitrary command execution is forbidden. │
+└─────────────────────────────────────────────────────────────┘
+```
+
+- **Unprivileged GUI:** The interface process cannot execute root operations, run arbitrary shell strings, or modify system files directly.
+- **Audited Polkit Helper:** Privileged tasks (such as package management or service restarts) are handled by `maintainer-helper`, an audited D-Bus service gated by PolicyKit authentication.
+- **Direct Invocation:** External binaries are invoked with explicit argument arrays rather than shell string expansion, preventing command injection vulnerabilities.
+
+---
+
+## Platform Requirements
+
+- **Target Operating System:** Ubuntu 22.04 LTS (Jammy Jellyfish) or newer, and compatible Ubuntu-based distributions (Linux Mint, Pop!_OS).
+- **Display Server:** Native Wayland and X11 support via GTK4.
+- **System Libraries:** GTK4 (>= 4.6), GLib (>= 2.72), SQLite3, PolicyKit, PackageKit, UDisks2, systemd.
+- **Optional Integrations:** `flatpak` (Flatpak application updates), `fwupd` (firmware updates).
+
+---
+
+## Performance Budgets
+
+Engineered for resource-constrained hardware and responsive desktop performance:
+
+| Metric | Target | Hard Ceiling | Notes |
+|---|---|---|---|
+| **Idle Memory (PSS)** | <= 150 MB | 220 MB | Baseline dominated by GTK4 runtime |
+| **Private Dirty Memory** | <= 130 MB | 150 MB | Under 4% of total RAM on a 4 GB system |
+| **Idle CPU Utilization** | <= 0.5% | 1.0% | Measured on hardware-accelerated sessions |
+| **Cold Start Time** | <= 2.0s | 2.5s | Measured from process exec to initial window map |
+| **UI Responsiveness** | 60 FPS | Non-blocking | Heavy scans execute in background workers |
+
+---
+
+## Building from Source
+
+### Prerequisites
+
+Install the required build dependencies and development headers:
 
 ```bash
 sudo apt update
 sudo apt install -y libgtk-4-dev libsqlite3-dev libpolkit-gobject-1-dev pkg-config
 ```
 
-The Rust toolchain (1.85.0) is pinned in `rust-toolchain.toml` and will be installed automatically by `rustup`.
+Maintainer requires Rust 1.85.0 or newer. When using `rustup`, the pinned toolchain from `rust-toolchain.toml` is used automatically.
 
-#### Build and Run
+### Compilation
 
 ```bash
-# Compile release binaries
+# Build optimized release binaries for the workspace
 cargo build --workspace --release
 
-# Run the GTK4 application (development mode)
+# Run the GUI application in development mode
 cargo run -p maintainer-app
 
-# Run the privileged helper standalone (development testing)
+# Run the privileged helper in development mode
 cargo run -p maintainer-helper
 ```
 
-#### Verification
+### Verification & Quality Assurance
+
+All commits must satisfy formatting, linting, and test suites:
 
 ```bash
 # Run unit and integration tests
 cargo test --workspace --all-features
 
-# Check formatting and lints
+# Verify formatting
 cargo fmt --all -- --check
+
+# Static analysis and lints
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 
-# Execute performance benchmark
+# Validate against performance budgets
 scripts/measure-performance.sh target/release/maintainer-app
 ```
 
 ---
 
-## Key Features
+## Troubleshooting
 
-- **System Monitoring:** Real-time tracking of CPU, memory, storage, temperatures, network, and processes with historical sparklines. Adaptive polling (2s active, 10s when hidden).
-- **Storage Analysis and Cleanup:** Asynchronous scanning for large files and content-hash verified duplicate groups. Mandatory preview, local audit history, and Trash integration.
-- **Update Management:** Review and apply APT package updates, with optional inspection of Flatpak runtimes and fwupd device firmware.
-- **Diagnostics and Health:** Inspect failed systemd services, recurring journal logs, and SMART disk telemetry via UDisks2.
-- **Redacted Reports:** Generate local diagnostic reports with automatic redaction of hostnames, usernames, IP addresses, serial numbers, and process arguments.
+### PolicyKit Authentication and D-Bus Activation
 
----
+Privileged actions (such as package updates and process termination) require an active PolicyKit authentication agent in your desktop session.
 
-## Architecture and Security
+If privileged actions fail with authorization errors:
+1. Verify that a Polkit agent is running in your session (standard in GNOME, KDE, and XFCE; standalone window managers may require launching `lxqt-policykit` or `polkit-gnome-authentication-agent-1`).
+2. Verify that the D-Bus system bus is active:
+   ```bash
+   systemctl is-active dbus
+   ```
 
-Maintainer enforces strict privilege separation between the UI and system interactions:
+### Graphics and Rendering Fallbacks
 
-```text
-GTK4 User Interface (maintainer-app)
-        │
-Application Services and State Management
-        │
-Capability Adapters and Cancellable Jobs (maintainer-core)
-        │
-System Interfaces: /proc, /sys, D-Bus, Polkit Helper
-        │
-Privileged Operations Daemon (maintainer-helper)
+Maintainer leverages GTK4 GPU acceleration by default. If running inside a virtual machine or on systems with proprietary driver rendering issues:
+
+- Force the Cairo software renderer:
+  ```bash
+  GSK_RENDERER=cairo maintainer
+  ```
+- Force the X11 backend on Wayland composite sessions:
+  ```bash
+  GDK_BACKEND=x11 maintainer
+  ```
+
+### Storage SMART Telemetry or Hardware Sensors Unavailable
+
+Maintainer presents explicit capability states rather than default or zero values when system metrics cannot be retrieved:
+
+- **SMART Health:** Requires `udisks2` to be running (`systemctl status udisks2`). Virtual disks, RAID controllers, and certain USB-to-SATA bridge enclosures do not expose standard SMART passthrough attributes.
+- **Thermal Sensors:** Hardware temperature monitoring reads from the Linux `hwmon` subsystem (`/sys/class/hwmon`). Virtualized environments lacking virtual temperature sensors will report sensors as unavailable.
+
+### GSettings Schema Missing During Local Development
+
+When executing `cargo run -p maintainer-app` from source without installing the system package, GLib may require access to the local GSettings schema:
+
+```bash
+glib-compile-schemas data/
+GSETTINGS_SCHEMA_DIR=data cargo run -p maintainer-app
 ```
-
-- **`maintainer-app`:** Unprivileged GTK4 presentation layer. Contains no direct system or root access.
-- **`maintainer-core`:** Typed domain models, persistence (SQLite), collectors, and system adapters.
-- **`maintainer-helper`:** PolicyKit-activated D-Bus helper executing only fixed operations with allowlisted parameters. Arbitrary shell or command execution is prohibited.
-
----
-
-## Platform Requirements
-
-- **Supported Distributions:** Ubuntu 22.04 LTS (Jammy Jellyfish) and newer (including Ubuntu derivatives).
-- **Display Servers:** Wayland and X11 native support via GTK4.
-- **Runtime Dependencies:** GTK4 (>= 4.6), GLib (>= 2.72), SQLite3, PolicyKit, PackageKit, UDisks2, systemd.
-- **Optional Packages:** `flatpak` (Flatpak package review), `fwupd` (firmware update review).
-
----
-
-## Performance Specifications
-
-| Metric | Target | Hard Ceiling |
-|---|---|---|
-| Idle Memory (PSS) | <= 150 MB | 220 MB |
-| Private / Dirty Idle Memory | <= 130 MB | 150 MB |
-| Idle CPU (hardware accelerated) | <= 0.5% | 1.0% |
-| Cold Start Time | <= 2.0s | 2.5s |
-| UI Responsiveness | Sub-frame event handling | Zero main-thread blocking operations |
-
----
-
-## Project Documentation
-
-- [CHANGELOG.md](CHANGELOG.md): Release history and security fixes.
-- [AGENTS.md](AGENTS.md): Architecture rules and development guidelines.
-- [docs/threat-model.md](docs/threat-model.md): Threat analysis and helper security model.
-- [tests/system/](tests/system/): Manual accessibility, compatibility, and security test plans.
 
 ---
 
 ## License
 
-Maintainer is distributed under the terms of the [MIT License](LICENSE).
-
+Maintainer is open-source software licensed under the [MIT License](LICENSE).
