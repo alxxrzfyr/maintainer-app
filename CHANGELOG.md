@@ -5,7 +5,59 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.1.2] - 2026-08-22
+## [1.1.3] - 2026-08-23
+
+### Added
+
+- Kernel management:
+  - **Status enumeration** — installed kernels are listed as Running,
+    Installed, or Removable. Removable is determined solely by what
+    `apt-get --simulate autoremove` reports; no end-of-life or
+    "unsupported" status is fabricated, since no reliable local source
+    for per-build kernel EOL exists on Ubuntu or Mint.
+  - **Triple-layered protection against removing the running kernel** —
+    the core enumeration makes it structurally impossible for the running
+    kernel to be marked removable, the helper independently re-reads
+    `/proc/version` before executing a removal and rejects any match, and
+    the UI disables the delete button for the running kernel even inside
+    the already-removable code path.
+  - **Safe removal** — a new privileged helper operation purges the
+    kernel image, headers, modules, and modules-extra packages via
+    `apt-get purge` with an explicit argument array, gated by a new
+    Polkit action requiring a password on every attempt (not retained,
+    since removal is irreversible). A strong confirmation dialog
+    ("Remove Permanently") is required before the helper is called.
+- Overview and System page redesign:
+  - **Storage** — a real capacity bar with color thresholds at 80% and
+    90% usage, replacing a bare percentage value.
+  - **Network** — separate download/upload rate indicators.
+  - **System page detail** — per-core CPU utilization, memory
+    composition breakdown, per-disk capacity, and per-interface network
+    rates, so the System page is a genuine drill-down rather than a
+    near-duplicate of the Overview summary.
+  - Existing icon set and typography classes are unchanged; this is a
+    structural change to layout and information density, not a new
+    visual language.
+
+### Fixed
+
+- Update discovery under-reported updates relative to the system's own
+  update manager:
+  - The cause was `apt-get --simulate upgrade`, apt's deliberately
+    conservative mode, which refuses any update requiring a new package
+    or a dependency change. On a real Ubuntu 24.04 / Mint machine this
+    silently hid a kernel update entirely, because it is tied to an HWE
+    metapackage chain that pulls in new headers, tools, and modules
+    packages.
+  - Switched to `apt-get --simulate dist-upgrade`, the same class of
+    resolver mainstream update managers use, at all three call sites
+    that previously used the conservative mode: the Updates page
+    discovery, the pre-install consistency recheck, and the Diagnostics
+    page's pending-updates count.
+  - Verified directly against `apt list --upgradable` on a real machine:
+    the package set now reported is an exact match, plus the underlying
+    versioned kernel packages the metapackage view collapses.
+
 
 ### Added
 

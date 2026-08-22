@@ -1,3 +1,23 @@
+maintainer (1.1.3-1) jammy; urgency=medium
+
+  * Add kernel management: list installed kernels with running/installed/
+    removable status (no fabricated end-of-life data), and a safe,
+    helper-mediated delete action for removable kernels. The running
+    kernel is protected by three independent layers: structural
+    non-removability in core, an independent /proc/version re-check in
+    the helper, and a disabled delete button in the UI.
+  * Restructure the Overview and System pages: Storage gets a real
+    capacity bar, Network gets rx/tx rate indicators, and System now
+    shows per-core CPU, memory composition, per-disk, and per-interface
+    detail distinct from Overview's summary view.
+  * Fix update discovery to use apt-get dist-upgrade instead of plain
+    upgrade. Plain upgrade mode hides any update that requires a new
+    package or dependency change, which was silently hiding kernel
+    updates tied to HWE metapackage chains. The app was under-reporting
+    updates relative to the system's own update manager.
+
+ -- Maintainer Developers <maintainer@maintainerapp.io>  Sat, 22 Aug 2026 17:00:00 +0000
+
 maintainer (1.1.2-1) jammy; urgency=medium
 
   * Privileged actions now actually prompt for a password. No D-Bus bus
