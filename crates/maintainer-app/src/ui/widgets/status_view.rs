@@ -61,21 +61,18 @@ impl StatusView {
         container.set_valign(Align::Center);
         container.add_css_class("maintainer_status_view");
 
-        // Icon
         let icon = Image::from_icon_name(Self::icon_for_status(&model.status));
         icon.set_pixel_size(48);
         icon.add_css_class("maintainer_status_icon");
         icon.add_css_class(Self::css_class_for_status(&model.status));
         container.append(&icon);
 
-        // Title
         let title_label = Label::new(Some(&model.title));
         title_label.add_css_class("maintainer_status_title");
         title_label.set_wrap(true);
         title_label.set_halign(Align::Center);
         container.append(&title_label);
 
-        // Description
         if let Some(ref desc) = model.description {
             let desc_label = Label::new(Some(desc));
             desc_label.add_css_class("maintainer_status_description");
@@ -91,7 +88,6 @@ impl StatusView {
             retry_btn.add_css_class("maintainer_status_retry");
             retry_btn.set_halign(Align::Center);
 
-            // Accessible description
             retry_btn.update_property(&[gtk4::accessible::Property::Description(&format!(
                 "Retry {}",
                 model.capability_id

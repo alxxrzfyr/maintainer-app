@@ -57,13 +57,11 @@ impl SystemPage {
         content.set_margin_end(24);
         content.add_css_class("maintainer_system_page");
 
-        // Title
         let title = Label::new(Some("System Monitor"));
         title.add_css_class("maintainer_page_title");
         title.set_halign(Align::Start);
         content.append(&title);
 
-        // Top metrics row
         let metrics_row = GtkBox::new(Orientation::Horizontal, 12);
         metrics_row.set_homogeneous(true);
 
@@ -75,7 +73,6 @@ impl SystemPage {
 
         content.append(&metrics_row);
 
-        // Temperature section
         let temp_label = Label::new(Some("Temperatures"));
         temp_label.add_css_class("maintainer_section_title");
         temp_label.set_halign(Align::Start);
@@ -87,7 +84,6 @@ impl SystemPage {
         temperature_box.set_halign(Align::Start);
         content.append(&temperature_box);
 
-        // Process section header
         let process_header = GtkBox::new(Orientation::Horizontal, 8);
         process_header.set_margin_top(16);
         process_header.set_valign(Align::Center);
@@ -98,7 +94,6 @@ impl SystemPage {
         process_label.set_hexpand(true);
         process_header.append(&process_label);
 
-        // Sort buttons
         let on_sort_changed: SortCallback = Rc::new(RefCell::new(None));
 
         let sort_label = Label::new(Some("Sort:"));
@@ -149,7 +144,6 @@ impl SystemPage {
 
         content.append(&process_header);
 
-        // Process list container (styled as a card)
         let process_list_box = GtkBox::new(Orientation::Vertical, 0);
         process_list_box.add_css_class("maintainer_process_list");
         content.append(&process_list_box);
@@ -191,7 +185,6 @@ impl SystemPage {
 
     /// Update the page from the view model.
     pub fn update(&self, vm: &SystemViewModel) {
-        // CPU
         if let Some(ref cpu) = vm.cpu {
             self.cpu_card.set_available();
             self.cpu_card
@@ -202,7 +195,6 @@ impl SystemPage {
             );
         }
 
-        // Memory
         if let Some(ref mem) = vm.memory {
             self.memory_card.set_available();
             let used_gib = mem.used_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
@@ -213,18 +205,14 @@ impl SystemPage {
                 .update_sparkline(vm.memory_ring.samples(), &format!("Memory: {text}"));
         }
 
-        // Temperatures
         self.update_temperatures(vm);
 
-        // Process list
         self.update_processes(vm);
 
-        // Sort button active state
         self.update_sort_buttons(vm.process_sort);
     }
 
     fn update_temperatures(&self, vm: &SystemViewModel) {
-        // Clear and rebuild temperature chips
         while let Some(child) = self.temperature_box.first_child() {
             self.temperature_box.remove(&child);
         }
@@ -240,7 +228,6 @@ impl SystemPage {
             if let maintainer_core::capability::Capability::Available(celsius) = &reading.celsius {
                 let name = reading.label.as_deref().unwrap_or(&reading.hwmon_name);
 
-                // Build a chip: vertical box with name on top, value below
                 let chip = GtkBox::new(Orientation::Vertical, 2);
                 chip.add_css_class("maintainer_temperature_chip");
 
@@ -255,7 +242,7 @@ impl SystemPage {
                 value_label.add_css_class("maintainer_temperature_value");
                 value_label.set_halign(Align::Start);
 
-                // Color coding for temperature thresholds
+                // Policy: 85°C+ = critical, 70°C+ = warning
                 if *celsius >= 85.0 {
                     value_label.add_css_class("maintainer_temperature_critical");
                 } else if *celsius >= 70.0 {
@@ -269,7 +256,6 @@ impl SystemPage {
     }
 
     fn update_processes(&self, vm: &SystemViewModel) {
-        // Clear existing rows
         while let Some(child) = self.process_list_box.first_child() {
             self.process_list_box.remove(&child);
         }
@@ -292,7 +278,6 @@ impl SystemPage {
             return;
         }
 
-        // Header row
         let header = GtkBox::new(Orientation::Horizontal, 8);
         header.add_css_class("maintainer_process_header");
 
@@ -322,7 +307,6 @@ impl SystemPage {
 
         self.process_list_box.append(&header);
 
-        // Show top 50 processes with alternating row backgrounds
         let display_count = vm.processes.len().min(50);
         for (i, proc) in vm.processes[..display_count].iter().enumerate() {
             let row = self.build_process_row(proc, i % 2 == 1);
@@ -367,7 +351,6 @@ impl SystemPage {
         state_label.add_css_class("maintainer_text_muted");
         row.append(&state_label);
 
-        // Terminate button
         let terminate_btn = Button::with_label("End");
         terminate_btn.add_css_class("maintainer_terminate_button");
         terminate_btn.set_tooltip_text(Some(&format!("Terminate {}", proc.name)));

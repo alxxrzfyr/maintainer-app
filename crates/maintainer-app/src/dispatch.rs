@@ -21,10 +21,6 @@ use maintainer_core::storage::{DuplicateCandidate, DuplicateScanner, ScanPolicy,
 use crate::progress::SharedProgress;
 use crate::state::ScanJobId;
 
-// ---------------------------------------------------------------------------
-// Storage scan
-// ---------------------------------------------------------------------------
-
 /// Result of a storage scan job.
 pub enum StorageScanResult {
     Completed {
@@ -89,10 +85,6 @@ pub fn dispatch_storage_scan(
     (token, progress)
 }
 
-// ---------------------------------------------------------------------------
-// Duplicate scan
-// ---------------------------------------------------------------------------
-
 /// Result of a duplicate scan job.
 pub enum DuplicateScanJobResult {
     Completed {
@@ -143,7 +135,6 @@ pub fn dispatch_duplicate_scan(
             }
         };
 
-        // Build duplicate candidates from scanned files.
         let candidates: Vec<DuplicateCandidate> = scan_result
             .large_files
             .iter()
@@ -196,10 +187,6 @@ pub fn dispatch_duplicate_scan(
     (token, progress)
 }
 
-// ---------------------------------------------------------------------------
-// Cleanup scan
-// ---------------------------------------------------------------------------
-
 /// Result of a cleanup scan.
 pub enum CleanupScanOutcome {
     Completed { item_count: usize, total_bytes: u64 },
@@ -251,10 +238,6 @@ pub fn dispatch_cleanup_scan(
     (token, progress)
 }
 
-// ---------------------------------------------------------------------------
-// Diagnostics scan
-// ---------------------------------------------------------------------------
-
 /// Diagnostics scan result.
 pub enum DiagnosticsScanOutcome {
     Completed {
@@ -302,10 +285,6 @@ pub fn dispatch_diagnostics_scan(
 
     (token, progress)
 }
-
-// ---------------------------------------------------------------------------
-// Updates check
-// ---------------------------------------------------------------------------
 
 /// Updates check result.
 pub enum UpdatesCheckOutcome {
@@ -382,10 +361,6 @@ pub fn dispatch_updates_check(
 
     (token, progress)
 }
-
-// ---------------------------------------------------------------------------
-// Reports
-// ---------------------------------------------------------------------------
 
 /// Reports generation result.
 pub enum ReportOutcome {
@@ -488,10 +463,6 @@ pub fn dispatch_report_generation(
 
     token
 }
-
-// ---------------------------------------------------------------------------
-// Internal: GTK result poller
-// ---------------------------------------------------------------------------
 
 /// Installs a short-interval timer that polls the receiver for a single result
 /// and delivers it to the on_done callback on the main thread.

@@ -146,10 +146,6 @@ pub const NAVIGATION_GROUPS: &[NavigationGroup] = &[
 /// Footer pages (displayed separately at bottom of sidebar).
 pub const FOOTER_PAGES: &[Page] = &[Page::Settings];
 
-// ---------------------------------------------------------------------------
-// Storage state
-// ---------------------------------------------------------------------------
-
 /// Unique identifier for a scan job. Prevents stale messages from overwriting
 /// current state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -606,10 +602,6 @@ impl StorageState {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Cleanup state
-// ---------------------------------------------------------------------------
-
 use crate::ui::cleanup::CleanupPhase;
 
 /// State of the cleanup workflow page.
@@ -718,10 +710,6 @@ impl CleanupState {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Settings state
-// ---------------------------------------------------------------------------
 
 /// Theme selection for the application.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -902,10 +890,6 @@ impl SettingsState {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// History view state
-// ---------------------------------------------------------------------------
 
 /// Intents for the history view.
 #[derive(Debug, Clone, PartialEq, Eq)]

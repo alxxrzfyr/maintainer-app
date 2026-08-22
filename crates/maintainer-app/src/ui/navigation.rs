@@ -63,7 +63,6 @@ pub fn build_sidebar(
     content.set_margin_start(8);
     content.set_margin_end(8);
 
-    // Navigation groups
     for group in NAVIGATION_GROUPS {
         // Group label (only in persistent mode)
         if mode == NavigationMode::Persistent {
@@ -89,7 +88,6 @@ pub fn build_sidebar(
     sep.set_margin_bottom(8);
     content.append(&sep);
 
-    // Footer pages
     for &page in FOOTER_PAGES {
         let btn = build_nav_button(page, active_page, mode, on_navigate.clone());
         content.append(&btn);
@@ -127,7 +125,6 @@ fn build_nav_button(
 
     btn.set_child(Some(&btn_content));
 
-    // Active state
     if page == active_page {
         btn.add_css_class("maintainer_nav_active");
     }
@@ -135,7 +132,6 @@ fn build_nav_button(
     // Tooltip always set (required when compact or drawer)
     btn.set_tooltip_text(Some(page.label()));
 
-    // Accessible name
     btn.update_property(&[gtk4::accessible::Property::Label(page.label())]);
 
     btn.connect_clicked(move |_| {

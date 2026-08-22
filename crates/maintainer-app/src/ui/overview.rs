@@ -42,13 +42,11 @@ impl OverviewPage {
         content.set_margin_end(24);
         content.add_css_class("maintainer_overview_page");
 
-        // Title
         let title = Label::new(Some("Overview"));
         title.add_css_class("maintainer_page_title");
         title.set_halign(Align::Start);
         content.append(&title);
 
-        // Metric cards row — use homogeneous to distribute evenly
         let cards_row = GtkBox::new(Orientation::Horizontal, 12);
         cards_row.set_homogeneous(true);
         cards_row.set_hexpand(true);
@@ -67,7 +65,6 @@ impl OverviewPage {
 
         content.append(&cards_row);
 
-        // Attention section
         let attention_label = Label::new(Some("Attention"));
         attention_label.add_css_class("maintainer_section_title");
         attention_label.set_halign(Align::Start);
@@ -78,7 +75,6 @@ impl OverviewPage {
         attention_box.add_css_class("maintainer_attention_list");
         content.append(&attention_box);
 
-        // Empty state for attention
         let empty_label = Label::new(Some("No issues detected"));
         empty_label.add_css_class("maintainer_text_muted");
         empty_label.set_halign(Align::Start);
@@ -104,7 +100,6 @@ impl OverviewPage {
 
     /// Update the page from the view model. Only touches widgets with changed data.
     pub fn update(&self, vm: &OverviewViewModel) {
-        // CPU card
         if vm.cpu_available {
             self.cpu_card.set_available();
             self.cpu_card.set_value(&vm.cpu_text);
@@ -120,7 +115,6 @@ impl OverviewPage {
             self.cpu_card.set_unavailable(reason);
         }
 
-        // Memory card
         if vm.memory_available {
             self.memory_card.set_available();
             self.memory_card.set_value(&vm.memory_text);
@@ -136,13 +130,10 @@ impl OverviewPage {
             self.memory_card.set_unavailable(reason);
         }
 
-        // Disk card
         self.disk_card.set_value(&vm.disk_text);
 
-        // Network card
         self.network_card.set_value(&vm.network_text);
 
-        // Attention items
         self.update_attention(&vm.attention_items);
     }
 
@@ -156,7 +147,6 @@ impl OverviewPage {
             last.extend_from_slice(items);
         }
 
-        // Clear existing children
         while let Some(child) = self.attention_box.first_child() {
             self.attention_box.remove(&child);
         }

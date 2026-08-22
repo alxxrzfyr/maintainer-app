@@ -2,17 +2,13 @@
 
 Maintainer is a lightweight native GTK4 application for monitoring, maintaining, diagnosing, and understanding Ubuntu-based Linux computers.
 
-## Project status
-
-The workspace is scaffolded and fully functional. All three crates (`maintainer-app`, `maintainer-core`, `maintainer-helper`) build, pass tests, and produce release binaries. CI, packaging, and system tests are in place. Phase 6 (v1 hardening) is in progress.
-
 ## Stack
 
 | Layer | Choice |
 |---|---|
-| Language | Rust, stable toolchain pinned when the project is scaffolded |
+| Language | Rust, stable toolchain pinned in `rust-toolchain.toml` |
 | UI | GTK4 only; no libadwaita, WebView, Electron, or embedded browser |
-| Styling | GTK CSS with semantic tokens defined in `DESIGN.md` until code becomes the source of truth |
+| Styling | GTK CSS with semantic tokens defined in `data/styles/` |
 | Persistent data | SQLite for settings and application history only |
 | Build and dependencies | Cargo |
 | Packaging | Native `.deb` package and APT repository |
@@ -137,11 +133,15 @@ After scaffolding, Cargo is the only Rust package manager. Never install a depen
 
 | File | Read when |
 |---|---|
-| `PRD.md` | Deciding scope, behavior, acceptance, priorities, or delivery phase |
-| `DESIGN.md` | Changing any UI, interaction, copy, responsive behavior, theme, or accessibility behavior |
-| `README.md` | Understanding product positioning, platform contract, and project status |
+| `README.md` | Understanding product positioning, platform contract, and performance budgets |
+| `CHANGELOG.md` | Recording a user-visible change |
+| `docs/threat-model.md` | Changing the privilege boundary, helper API, or Polkit policy |
+| `tests/system/*.md` | Running the manual accessibility, compatibility, or security passes before a release |
 
-If implementation changes a product, design, security, performance, or platform contract, update the corresponding document in the same change.
+Code is the source of truth for UI structure and styling; the CSS in
+`data/styles/` defines the semantic tokens. If a change alters a product,
+security, performance, or platform contract, update `README.md` and
+`CHANGELOG.md` in the same change.
 
 ## Definition of done
 

@@ -74,7 +74,6 @@ impl Shell {
             }
         });
 
-        // Page stack
         let page_stack = Stack::new();
         page_stack.set_transition_type(StackTransitionType::None);
         page_stack.set_hexpand(true);
@@ -91,7 +90,6 @@ impl Shell {
 
         page_stack.set_visible_child_name("Overview");
 
-        // Header bar with hamburger menu for narrow widths
         let header = HeaderBar::new();
         header.add_css_class("maintainer_header");
 
@@ -101,7 +99,6 @@ impl Shell {
         menu_button.set_visible(false);
         header.pack_start(&menu_button);
 
-        // Main layout
         let outer_box = GtkBox::new(Orientation::Vertical, 0);
         outer_box.append(&header);
 
@@ -118,7 +115,6 @@ impl Shell {
 
         window.set_child(Some(&outer_box));
 
-        // Build initial sidebar
         let page_stack_for_nav = page_stack.clone();
         let state_for_nav = state.clone();
         Self::rebuild_sidebar_widget(
@@ -128,7 +124,6 @@ impl Shell {
             NavigationMode::Persistent,
         );
 
-        // Adapt layout when window width changes
         let state_for_notify = state.clone();
         let sidebar_for_notify = sidebar_container.clone();
         let stack_for_notify = page_stack.clone();
@@ -154,25 +149,18 @@ impl Shell {
             }
         });
 
-        // Monitoring timer: sample metrics and update pages
         let overview_ref = Rc::new(overview_page);
         let system_ref = Rc::new(system_page);
 
-        // --- Job dispatch wiring ---
-        // Storage: wire scan and duplicate-scan buttons.
         Self::wire_storage_dispatch(&storage_page, &runtime);
-        // Cleanup: wire scan button.
         Self::wire_cleanup_dispatch(&cleanup_page, &runtime);
-        // Updates: wire check button.
         Self::wire_updates_dispatch(&updates_page, &runtime);
-        // Diagnostics: wire scan button.
         Self::wire_diagnostics_dispatch(&diagnostics_page, &runtime);
 
         let runtime_for_timer = runtime.clone();
         let overview_for_timer = overview_ref.clone();
         let system_for_timer = system_ref.clone();
 
-        // Visibility tracking for interval switching
         let runtime_for_vis = runtime.clone();
         window.connect_is_active_notify(move |win| {
             let visible = win.is_active();
@@ -181,7 +169,6 @@ impl Shell {
                 .reduce(MonitoringMessage::VisibilityChanged(visible));
         });
 
-        // Start the sampling timer
         Self::start_monitoring_timer(
             runtime_for_timer,
             overview_for_timer,
@@ -567,7 +554,6 @@ impl Shell {
         let dup_active_token: Rc<RefCell<Option<maintainer_core::jobs::CancellationToken>>> =
             Rc::new(RefCell::new(None));
 
-        // Storage scan button.
         let runtime_for_scan = runtime.clone();
         let token_ref = active_token.clone();
         storage_page.overview.connect_scan(move || {
@@ -598,7 +584,6 @@ impl Shell {
             *token_ref.borrow_mut() = Some(token);
         });
 
-        // Cancel.
         let cancel_token_ref = active_token.clone();
         storage_page.overview.connect_cancel(move || {
             if let Some(token) = cancel_token_ref.borrow().as_ref() {
@@ -606,7 +591,6 @@ impl Shell {
             }
         });
 
-        // Duplicate scan button.
         let runtime_for_dup = runtime.clone();
         let dup_token_ref = dup_active_token.clone();
         storage_page.overview.connect_duplicate_scan(move || {

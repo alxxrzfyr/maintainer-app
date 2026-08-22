@@ -36,28 +36,23 @@ pub fn build_settings_page(
 
     let on_intent = std::rc::Rc::new(on_intent);
 
-    // General group
     container.append(&build_group_header("General"));
     container.append(&build_theme_row(snapshot, on_intent.clone()));
     container.append(&Separator::new(Orientation::Horizontal));
 
-    // Monitoring group
     container.append(&build_group_header("Monitoring"));
     container.append(&build_refresh_interval_row(snapshot, on_intent.clone()));
     container.append(&build_hidden_interval_row(snapshot, on_intent.clone()));
     container.append(&Separator::new(Orientation::Horizontal));
 
-    // Storage group
     container.append(&build_group_header("Storage"));
     container.append(&build_large_file_threshold_row(snapshot, on_intent.clone()));
     container.append(&Separator::new(Orientation::Horizontal));
 
-    // Maintenance group
     container.append(&build_group_header("Maintenance"));
     container.append(&build_maintenance_info_row());
     container.append(&Separator::new(Orientation::Horizontal));
 
-    // Privacy group
     container.append(&build_group_header("Privacy"));
     container.append(&build_privacy_rows(on_intent.clone()));
 

@@ -1,2 +1,22 @@
-.superpowers/
+# Rust build output
 /target/
+**/target/
+
+# Packaging output
+*.deb
+/maintainer_*/
+SHA256SUMS
+
+# Compiled GSettings schemas
+*.gschemas.compiled
+gschemas.compiled
+
+# Editor and tooling state
+.superpowers/
+.kiro/
+.vscode/
+.idea/
+*.swp
+
+# OS noise
+.DS_Store

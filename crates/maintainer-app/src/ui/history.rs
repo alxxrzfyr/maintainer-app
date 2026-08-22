@@ -138,7 +138,6 @@ fn build_entry_row(entry: &HistoryRow, on_intent: std::rc::Rc<dyn Fn(HistoryInte
 
     row.append(&info_box);
 
-    // Delete button
     let id = entry.id.clone();
     let delete_btn = Button::with_label("Delete");
     delete_btn.set_valign(Align::Center);
