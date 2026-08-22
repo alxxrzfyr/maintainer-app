@@ -61,8 +61,6 @@ impl Runtime {
 
         let settings = load_settings_from_db(db.as_deref());
 
-        // 4 workers: enough concurrency for independent scans without
-        // saturating a low-end system.
         let executor =
             Arc::new(JobExecutor::new(4).expect("max_workers > 0 is guaranteed at compile time"));
 

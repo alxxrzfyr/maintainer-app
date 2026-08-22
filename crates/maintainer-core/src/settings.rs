@@ -20,7 +20,6 @@ const MIN_HIDDEN_INTERVAL_SECS: u32 = 10;
 /// Default large-file threshold in bytes (100 MiB).
 const DEFAULT_LARGE_FILE_THRESHOLD_BYTES: u64 = 100 * 1024 * 1024;
 
-// Setting keys.
 const KEY_REFRESH_INTERVAL: &str = "refresh_interval_secs";
 const KEY_HIDDEN_INTERVAL: &str = "hidden_interval_secs";
 const KEY_SCAN_EXCLUSIONS: &str = "scan_exclusions";
@@ -148,7 +147,6 @@ impl SettingsRepository for SqliteSettingsRepository<'_> {
     fn load(&self) -> Result<Settings, MaintainerError> {
         let mut settings = Settings::default();
 
-        // Theme.
         if let Some(raw) = self.get_raw(KEY_THEME)? {
             match ThemePreference::parse(&raw) {
                 Some(t) => settings.theme = t,
@@ -158,7 +156,6 @@ impl SettingsRepository for SqliteSettingsRepository<'_> {
             }
         }
 
-        // Refresh interval.
         if let Some(raw) = self.get_raw(KEY_REFRESH_INTERVAL)? {
             match raw.parse::<u32>() {
                 Ok(v) if (MIN_REFRESH_INTERVAL_SECS..=MAX_REFRESH_INTERVAL_SECS).contains(&v) => {
@@ -175,7 +172,6 @@ impl SettingsRepository for SqliteSettingsRepository<'_> {
             }
         }
 
-        // Hidden interval.
         if let Some(raw) = self.get_raw(KEY_HIDDEN_INTERVAL)? {
             match raw.parse::<u32>() {
                 Ok(v) if (MIN_HIDDEN_INTERVAL_SECS..=MAX_REFRESH_INTERVAL_SECS).contains(&v) => {
@@ -192,7 +188,6 @@ impl SettingsRepository for SqliteSettingsRepository<'_> {
             }
         }
 
-        // Scan exclusions.
         if let Some(raw) = self.get_raw(KEY_SCAN_EXCLUSIONS)? {
             settings.scan_exclusions = raw
                 .lines()
@@ -201,7 +196,6 @@ impl SettingsRepository for SqliteSettingsRepository<'_> {
                 .collect();
         }
 
-        // Large file threshold.
         if let Some(raw) = self.get_raw(KEY_LARGE_FILE_THRESHOLD)? {
             match raw.parse::<u64>() {
                 Ok(v) if v > 0 => {
@@ -222,16 +216,13 @@ impl SettingsRepository for SqliteSettingsRepository<'_> {
     }
 
     fn save(&self, settings: &Settings) -> Result<(), MaintainerError> {
-        // Theme.
         self.set_raw(KEY_THEME, settings.theme.as_str())?;
 
-        // Clamp refresh interval to valid range before saving.
         let interval = settings
             .refresh_interval_secs
             .clamp(MIN_REFRESH_INTERVAL_SECS, MAX_REFRESH_INTERVAL_SECS);
         self.set_raw(KEY_REFRESH_INTERVAL, &interval.to_string())?;
 
-        // Clamp hidden interval.
         let hidden = settings
             .hidden_interval_secs
             .clamp(MIN_HIDDEN_INTERVAL_SECS, MAX_REFRESH_INTERVAL_SECS);
@@ -256,7 +247,6 @@ pub fn clamp_refresh_interval(secs: u32) -> u32 {
     secs.clamp(MIN_REFRESH_INTERVAL_SECS, MAX_REFRESH_INTERVAL_SECS)
 }
 
-// Re-export the `optional` extension for rusqlite.
 trait OptionalExt<T> {
     fn optional(self) -> std::result::Result<Option<T>, rusqlite::Error>;
 }
@@ -319,7 +309,6 @@ mod tests {
         let db = test_db();
         let repo = SqliteSettingsRepository::new(&db);
 
-        // Too low.
         let settings = Settings {
             refresh_interval_secs: 0,
             ..Settings::default()
@@ -328,7 +317,6 @@ mod tests {
         let loaded = repo.load().unwrap();
         assert_eq!(loaded.refresh_interval_secs, 1);
 
-        // Too high.
         let settings = Settings {
             refresh_interval_secs: 120,
             ..Settings::default()
@@ -343,7 +331,6 @@ mod tests {
         let db = test_db();
         let repo = SqliteSettingsRepository::new(&db);
 
-        // Too low — clamped to 10.
         let settings = Settings {
             hidden_interval_secs: 5,
             ..Settings::default()
@@ -352,7 +339,6 @@ mod tests {
         let loaded = repo.load().unwrap();
         assert_eq!(loaded.hidden_interval_secs, 10);
 
-        // Too high — clamped to 60.
         let settings = Settings {
             hidden_interval_secs: 120,
             ..Settings::default()
@@ -385,7 +371,6 @@ mod tests {
     #[test]
     fn malformed_stored_value_falls_back_to_default() {
         let db = test_db();
-        // Manually insert a garbage value.
         db.with_connection(|conn| {
             conn.execute(
                 "INSERT INTO settings (key, value) VALUES ('refresh_interval_secs', 'not_a_number')",
@@ -400,7 +385,6 @@ mod tests {
 
         let repo = SqliteSettingsRepository::new(&db);
         let settings = repo.load().unwrap();
-        // Should fall back to default without panic.
         assert_eq!(settings.refresh_interval_secs, 2);
     }
 
@@ -482,7 +466,6 @@ mod tests {
         };
         repo.save(&settings).unwrap();
 
-        // Simulate restart by creating a new repository on the same DB.
         let repo2 = SqliteSettingsRepository::new(&db);
         let loaded = repo2.load().unwrap();
         assert_eq!(loaded, settings);

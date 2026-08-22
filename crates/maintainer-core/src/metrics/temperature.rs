@@ -53,7 +53,6 @@ pub fn read_temperatures(sys_path: &Path) -> Result<Vec<TemperatureReading>, Mai
         readings.extend(sensor_readings);
     }
 
-    // Sort for deterministic output
     readings.sort_by(|a, b| {
         a.hwmon_name
             .cmp(&b.hwmon_name)
@@ -78,7 +77,6 @@ fn read_hwmon_temps(
 ) -> Result<Vec<TemperatureReading>, MaintainerError> {
     let mut readings = Vec::new();
 
-    // Look for temp*_input files
     let entries = match fs::read_dir(hwmon_path) {
         Ok(e) => e,
         Err(_) => return Ok(readings),
@@ -339,7 +337,6 @@ mod tests {
         let readings = read_temperatures(&fixtures_path()).unwrap();
         assert!(!readings.is_empty());
 
-        // Should find coretemp sensors
         let coretemp: Vec<_> = readings
             .iter()
             .filter(|r| r.hwmon_name == "coretemp")
@@ -354,7 +351,6 @@ mod tests {
             .iter()
             .find(|r| r.label.as_deref() == Some("Package id 0"))
             .unwrap();
-        // 45000 millidegrees = 45.0 C
         match &pkg.celsius {
             Capability::Available(c) => assert_eq!(*c, 45.0),
             other => panic!("expected Available, got {other:?}"),
@@ -396,11 +392,9 @@ mod tests {
 
     #[test]
     fn unreadable_sensor_becomes_unavailable() {
-        // Create a test scenario with invalid content
         let content = "not_a_number";
         let millidegrees_str = content.trim();
         let result = millidegrees_str.parse::<i64>();
         assert!(result.is_err());
-        // This proves our parse path would create Unavailable
     }
 }

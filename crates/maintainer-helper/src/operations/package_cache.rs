@@ -48,12 +48,6 @@ mod tests {
 
     #[test]
     fn clean_operation_uses_no_caller_args() {
-        // Structural test: verify the command construction does not
-        // interpolate any caller input. The function signature takes
-        // no parameters that could be injected.
-        // This test documents the fixed nature of the operation.
         let _output = Command::new(APT_GET_PATH).arg("clean").env_clear();
-        // If this compiles and the function signature takes no &str args,
-        // no injection vector exists.
     }
 }

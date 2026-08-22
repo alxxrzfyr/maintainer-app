@@ -69,7 +69,6 @@ pub(crate) fn parse_net_dev(
     let mut interfaces = HashMap::new();
 
     for line in content.lines().skip(2) {
-        // Skip the two header lines
         let line = line.trim();
         if line.is_empty() {
             continue;
@@ -131,7 +130,6 @@ pub fn build_network_snapshots(
         })
         .collect();
 
-    // Sort by interface name for deterministic output
     snapshots.sort_by(|a, b| a.interface.cmp(&b.interface));
     snapshots
 }
@@ -199,7 +197,6 @@ mod tests {
         let counters = read_net_dev(&fixtures_path()).unwrap();
         let snapshots = build_network_snapshots(&counters, None, Duration::ZERO);
         let (rx, tx) = summary_totals(&snapshots);
-        // Summary should exclude loopback
         assert_eq!(rx, 9_876_543_210 + 3_456_789_012);
         assert_eq!(tx, 5_432_109_876 + 1_234_567_890);
     }
@@ -245,9 +242,7 @@ mod tests {
 
         let snapshots = build_network_snapshots(&curr, Some(&baseline), elapsed);
         let eth0 = snapshots.iter().find(|s| s.interface == "eth0").unwrap();
-        // (5000 - 1000) / 2 = 2000 bytes/sec
         assert_eq!(eth0.rx_bytes_per_sec, Some(2000.0));
-        // (6000 - 2000) / 2 = 2000 bytes/sec
         assert_eq!(eth0.tx_bytes_per_sec, Some(2000.0));
     }
 
@@ -283,7 +278,6 @@ mod tests {
 
         let snapshots = build_network_snapshots(&curr, Some(&baseline), elapsed);
         let eth0 = snapshots.iter().find(|s| s.interface == "eth0").unwrap();
-        // saturating_sub: 5000 - 10000 = 0
         assert_eq!(eth0.rx_bytes_per_sec, Some(0.0));
         assert_eq!(eth0.tx_bytes_per_sec, Some(0.0));
     }

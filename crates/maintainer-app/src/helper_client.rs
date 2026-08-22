@@ -126,7 +126,6 @@ impl HelperClient {
     where
         A: serde::Serialize + zbus::zvariant::DynamicType,
     {
-        // Create a blocking connection to the system bus.
         let connection = zbus::blocking::Connection::system().map_err(|e| {
             HelperCallError::Unavailable(format!("cannot connect to system bus: {e}"))
         })?;
@@ -148,7 +147,6 @@ impl HelperClient {
 fn classify_dbus_error(err: zbus::Error, method: &str) -> HelperCallError {
     let msg = err.to_string();
 
-    // Connection failures indicate the helper is not available.
     if msg.contains("ServiceUnknown")
         || msg.contains("org.freedesktop.DBus.Error.ServiceUnknown")
         || msg.contains("NameHasNoOwner")
@@ -170,12 +168,10 @@ fn classify_dbus_error(err: zbus::Error, method: &str) -> HelperCallError {
         return HelperCallError::PermissionDenied(method.to_string());
     }
 
-    // InvalidArgs indicates validation failure.
     if msg.contains("InvalidArgs") || msg.contains("org.freedesktop.DBus.Error.InvalidArgs") {
         return HelperCallError::ValidationFailed(msg);
     }
 
-    // LimitsExceeded indicates busy.
     if msg.contains("LimitsExceeded") || msg.contains("org.freedesktop.DBus.Error.LimitsExceeded") {
         return HelperCallError::Busy;
     }
@@ -198,8 +194,6 @@ mod tests {
     #[test]
     fn client_unavailable_when_no_system_bus() {
         let client = HelperClient::new();
-        // In a test environment without a system bus, all methods should
-        // return Unavailable.
         let result = client.terminate_process(1234, 99999);
         assert!(
             matches!(result, Capability::Unavailable(_)),
@@ -236,8 +230,6 @@ mod tests {
             )),
             "TestMethod",
         );
-        // Even if the error type doesn't match exactly, we can test known strings.
-        // The real classification uses string matching.
         assert!(matches!(
             err,
             HelperCallError::Unavailable(_) | HelperCallError::OperationFailed(_)

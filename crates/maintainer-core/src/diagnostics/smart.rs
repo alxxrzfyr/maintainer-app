@@ -130,7 +130,6 @@ pub fn classify_assessment(
         return SmartAssessment::Unavailable;
     }
 
-    // Check staleness.
     if let Some(sample) = sample_time {
         if let Ok(age) = SystemTime::now().duration_since(sample) {
             if age > STALE_THRESHOLD {
@@ -139,19 +138,16 @@ pub fn classify_assessment(
         }
     }
 
-    // Check if overall assessment reports failure.
     if let Some(passed) = overall_passed {
         if !passed {
             return SmartAssessment::FailureReportedByDrive;
         }
     }
 
-    // Check critical attributes for threshold breach.
     if attributes.iter().any(|a| a.is_failing()) {
         return SmartAssessment::WarningReportedByDrive;
     }
 
-    // If we have no overall assessment, we cannot claim healthy.
     match overall_passed {
         Some(true) => SmartAssessment::Passed,
         None => SmartAssessment::Unavailable,

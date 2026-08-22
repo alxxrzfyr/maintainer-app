@@ -52,7 +52,6 @@ pub fn build_sidebar(
         NavigationMode::Drawer => sidebar.add_css_class("maintainer_sidebar_drawer"),
     }
 
-    // Scrollable content area
     let scroll = ScrolledWindow::new();
     scroll.set_vexpand(true);
     scroll.set_hscrollbar_policy(gtk4::PolicyType::Never);
@@ -64,7 +63,6 @@ pub fn build_sidebar(
     content.set_margin_end(8);
 
     for group in NAVIGATION_GROUPS {
-        // Group label (only in persistent mode)
         if mode == NavigationMode::Persistent {
             let group_label = Label::new(Some(group.label));
             group_label.add_css_class("maintainer_nav_group_label");
@@ -82,7 +80,6 @@ pub fn build_sidebar(
         }
     }
 
-    // Separator before footer
     let sep = Separator::new(Orientation::Horizontal);
     sep.set_margin_top(8);
     sep.set_margin_bottom(8);
@@ -117,7 +114,6 @@ fn build_nav_button(
     icon.set_pixel_size(20);
     btn_content.append(&icon);
 
-    // Show label in persistent and drawer modes
     if mode != NavigationMode::Compact {
         let label = Label::new(Some(page.label()));
         btn_content.append(&label);
@@ -129,7 +125,6 @@ fn build_nav_button(
         btn.add_css_class("maintainer_nav_active");
     }
 
-    // Tooltip always set (required when compact or drawer)
     btn.set_tooltip_text(Some(page.label()));
 
     btn.update_property(&[gtk4::accessible::Property::Label(page.label())]);
@@ -157,10 +152,8 @@ mod tests {
 
     #[test]
     fn drawer_mode_triggers_below_640() {
-        // Boundary values for drawer mode
         assert_eq!(NavigationMode::from_width(639), NavigationMode::Drawer);
         assert_eq!(NavigationMode::from_width(1), NavigationMode::Drawer);
-        // 640 is compact, not drawer
         assert_ne!(NavigationMode::from_width(640), NavigationMode::Drawer);
     }
 }

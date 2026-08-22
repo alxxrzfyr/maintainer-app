@@ -59,7 +59,6 @@ mod tests {
 
         let di1 = DeviceInode::for_path(&f1).unwrap();
         let di2 = DeviceInode::for_path(&f2).unwrap();
-        // Same device but different inodes
         assert_eq!(di1.device, di2.device);
         assert_ne!(di1.inode, di2.inode);
     }

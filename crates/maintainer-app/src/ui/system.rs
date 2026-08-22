@@ -242,7 +242,6 @@ impl SystemPage {
                 value_label.add_css_class("maintainer_temperature_value");
                 value_label.set_halign(Align::Start);
 
-                // Policy: 85°C+ = critical, 70°C+ = warning
                 if *celsius >= 85.0 {
                     value_label.add_css_class("maintainer_temperature_critical");
                 } else if *celsius >= 70.0 {

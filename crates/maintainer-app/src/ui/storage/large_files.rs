@@ -92,7 +92,6 @@ impl LargeFilesView {
         column_view.set_hexpand(true);
         column_view.add_css_class("large-files-column-view");
 
-        // Filename column.
         let filename_factory = SignalListItemFactory::new();
         filename_factory.connect_setup(|_, item| {
             let item = item.downcast_ref::<ListItem>().unwrap();
@@ -112,7 +111,6 @@ impl LargeFilesView {
         filename_col.set_expand(true);
         column_view.append_column(&filename_col);
 
-        // Size column.
         let size_factory = SignalListItemFactory::new();
         size_factory.connect_setup(|_, item| {
             let item = item.downcast_ref::<ListItem>().unwrap();
@@ -130,7 +128,6 @@ impl LargeFilesView {
         size_col.set_fixed_width(120);
         column_view.append_column(&size_col);
 
-        // Full path column.
         let path_factory = SignalListItemFactory::new();
         path_factory.connect_setup(|_, item| {
             let item = item.downcast_ref::<ListItem>().unwrap();
@@ -149,7 +146,6 @@ impl LargeFilesView {
         path_col.set_expand(true);
         column_view.append_column(&path_col);
 
-        // Scrolled window for virtualization.
         let scrolled = ScrolledWindow::new();
         scrolled.set_vexpand(true);
         scrolled.set_hexpand(true);
@@ -157,7 +153,6 @@ impl LargeFilesView {
         scrolled.set_child(Some(&column_view));
         container.append(&scrolled);
 
-        // Empty state label.
         let empty_label = Label::new(Some("No large files found. Run a storage scan first."));
         empty_label.set_halign(Align::Center);
         empty_label.set_valign(Align::Center);

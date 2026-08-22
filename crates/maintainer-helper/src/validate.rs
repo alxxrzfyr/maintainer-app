@@ -64,7 +64,6 @@ pub fn validate_package_cache(request: &PackageCacheRequest) -> Result<(), Helpe
         });
     }
 
-    // Request ID must be printable ASCII only (no control chars or binary).
     if !request
         .request_id
         .chars()
@@ -123,8 +122,6 @@ pub fn validate_smart_refresh(request: &SmartRefreshRequest) -> Result<(), Helpe
         });
     }
 
-    // UDisks2 drive identifiers are strictly alphanumeric + underscore.
-    // No slashes, dots, or other characters that could enable path traversal.
     if !request
         .drive_id
         .chars()

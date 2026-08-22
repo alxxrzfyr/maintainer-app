@@ -47,7 +47,6 @@ pub fn build_history_page(
 
     let on_intent = std::rc::Rc::new(on_intent);
 
-    // Header with title and delete-all button
     let header = GtkBox::new(Orientation::Horizontal, 12);
     header.set_halign(Align::Fill);
     header.set_hexpand(true);
@@ -99,7 +98,6 @@ fn build_entry_row(entry: &HistoryRow, on_intent: std::rc::Rc<dyn Fn(HistoryInte
     let info_box = GtkBox::new(Orientation::Vertical, 2);
     info_box.set_hexpand(true);
 
-    // First line: operation + result
     let primary = GtkBox::new(Orientation::Horizontal, 8);
     let op_label = Label::new(Some(&entry.operation));
     op_label.set_halign(Align::Start);
@@ -120,13 +118,11 @@ fn build_entry_row(entry: &HistoryRow, on_intent: std::rc::Rc<dyn Fn(HistoryInte
 
     info_box.append(&primary);
 
-    // Second line: time
     let time_label = Label::new(Some(&entry.time));
     time_label.set_halign(Align::Start);
     time_label.add_css_class("maintainer_text_muted");
     info_box.append(&time_label);
 
-    // Optional error summary
     if let Some(ref errors) = entry.error_summary {
         let err_label = Label::new(Some(errors));
         err_label.set_halign(Align::Start);
@@ -175,8 +171,6 @@ pub fn format_bytes(bytes: u64) -> String {
 
 /// Format a UTC Unix timestamp into a local display string.
 pub fn format_timestamp(unix_secs: i64) -> String {
-    // Simple UTC formatting without pulling in chrono.
-    // Format: YYYY-MM-DD HH:MM UTC
     let secs_per_min: i64 = 60;
     let secs_per_hour: i64 = 3600;
     let secs_per_day: i64 = 86400;
@@ -186,14 +180,12 @@ pub fn format_timestamp(unix_secs: i64) -> String {
     let hours = remaining / secs_per_hour;
     let minutes = (remaining % secs_per_hour) / secs_per_min;
 
-    // Simple days-since-epoch to date conversion (good enough for display).
     let (year, month, day) = days_to_date(days);
     format!("{year:04}-{month:02}-{day:02} {hours:02}:{minutes:02} UTC")
 }
 
 /// Convert days since Unix epoch to (year, month, day).
 fn days_to_date(days: i64) -> (i64, u32, u32) {
-    // Algorithm from http://howardhinnant.github.io/date_algorithms.html
     let z = days + 719468;
     let era = if z >= 0 { z } else { z - 146096 } / 146097;
     let doe = (z - era * 146097) as u32;
@@ -213,7 +205,6 @@ pub fn summarize_errors(json_errors: Option<&str>, max_chars: usize) -> Option<S
     if raw.is_empty() {
         return None;
     }
-    // Simple parsing: strip brackets and quotes for display.
     let trimmed = raw.trim_start_matches('[').trim_end_matches(']');
     let parts: Vec<&str> = trimmed.split("\",\"").collect();
     let cleaned: Vec<String> = parts

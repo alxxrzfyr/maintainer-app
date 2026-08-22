@@ -50,12 +50,10 @@ impl AptDiscovery {
             }
         };
 
-        // Check for dpkg lock errors in stderr.
         if output.stderr.contains("Could not get lock") {
             return Capability::Available(DiscoveryResult::Failed(DiscoveryError::DpkgLocked));
         }
 
-        // Check for repository offline errors.
         if output.stderr.contains("Could not resolve") || output.stderr.contains("Failed to fetch")
         {
             return Capability::Available(DiscoveryResult::Failed(
@@ -65,7 +63,6 @@ impl AptDiscovery {
             ));
         }
 
-        // Non-zero exit without known lock/network issue.
         if !output.success() && output.exit_code != Some(0) {
             return Capability::Available(DiscoveryResult::Failed(DiscoveryError::CommandFailed {
                 message: first_error_line(&output.stderr),
@@ -142,24 +139,19 @@ pub fn parse_apt_simulate(output: &CommandOutput) -> DiscoveryResult {
     let new_packages: Vec<String> = Vec::new();
 
     for line in output.stdout.lines() {
-        // "The following packages have been kept back:" section.
         if line.starts_with("The following packages have been kept back:") {
-            // Next lines until an empty line or other section are held packages.
             continue;
         }
 
-        // Parse "Need to get X of archives." line.
         if line.starts_with("Need to get ") {
             download_bytes = parse_download_size(line);
             continue;
         }
 
-        // Track new package names from "The following NEW packages will be installed:" section.
         if line.starts_with("The following NEW packages will be installed:") {
             continue;
         }
 
-        // Inst lines: "Inst <name> [<installed>] (<available> <origin> [<arch>])"
         if line.starts_with("Inst ") {
             if let Some(candidate) = parse_inst_line(line, &new_packages) {
                 candidates.push(candidate);
@@ -167,7 +159,6 @@ pub fn parse_apt_simulate(output: &CommandOutput) -> DiscoveryResult {
             continue;
         }
 
-        // Remv lines: "Remv <name> [<version>]"
         if line.starts_with("Remv ") {
             if let Some(removal) = parse_remv_line(line) {
                 removals.push(removal);
@@ -175,7 +166,6 @@ pub fn parse_apt_simulate(output: &CommandOutput) -> DiscoveryResult {
             continue;
         }
 
-        // Lines that look like indented package lists (after "kept back" or "NEW").
         let trimmed = line.trim();
         if !trimmed.is_empty()
             && !trimmed.starts_with("Reading")
@@ -185,13 +175,8 @@ pub fn parse_apt_simulate(output: &CommandOutput) -> DiscoveryResult {
             && !trimmed.starts_with("Conf ")
             && !trimmed.starts_with("Need to get")
         {
-            // Could be continuation of "kept back" or "NEW" list.
-            // Check if previous significant line was "kept back".
-            // We use a heuristic: if these look like package names (no special chars).
             let parts: Vec<&str> = trimmed.split_whitespace().collect();
             if parts.iter().all(|p| is_package_name(p)) {
-                // We'll collect these as potential held/new names.
-                // The actual classification happens when we see Inst/Remv lines.
                 for part in &parts {
                     held_names.push((*part).to_string());
                 }
@@ -199,7 +184,6 @@ pub fn parse_apt_simulate(output: &CommandOutput) -> DiscoveryResult {
         }
     }
 
-    // Parse held packages from the summary line "X not upgraded".
     let held: Vec<UpdateCandidate> = held_names
         .iter()
         .filter(|name| !candidates.iter().any(|c| &c.name == *name))
@@ -215,7 +199,6 @@ pub fn parse_apt_simulate(output: &CommandOutput) -> DiscoveryResult {
         })
         .collect();
 
-    // Mark new packages.
     for candidate in &mut candidates {
         if new_packages.contains(&candidate.name) {
             candidate.is_new = true;
@@ -245,10 +228,8 @@ pub fn parse_apt_simulate(output: &CommandOutput) -> DiscoveryResult {
 /// Format: `Inst <name> [<installed>] (<available> <origin> [<arch>])`
 /// Or new: `Inst <name> (<available> <origin> [<arch>])`
 fn parse_inst_line(line: &str, _new_packages: &[String]) -> Option<UpdateCandidate> {
-    // Skip "Inst "
     let rest = line.strip_prefix("Inst ")?;
 
-    // Split at the first space to get package name.
     let (name, remainder) = rest.split_once(' ')?;
     let name = name.trim();
 
@@ -256,20 +237,17 @@ fn parse_inst_line(line: &str, _new_packages: &[String]) -> Option<UpdateCandida
         return None;
     }
 
-    // Parse installed version (in square brackets).
     let (installed_version, after_installed) = if remainder.starts_with('[') {
         if let Some(end) = remainder.find(']') {
             let ver = remainder[1..end].to_string();
             (Some(ver), remainder[end + 1..].trim())
         } else {
-            // Malformed: opening bracket without close.
             return None;
         }
     } else {
         (None, remainder)
     };
 
-    // Parse available version and origin (in parentheses).
     let paren_content = if after_installed.starts_with('(') {
         if let Some(end) = after_installed.rfind(')') {
             &after_installed[1..end]
@@ -280,7 +258,6 @@ fn parse_inst_line(line: &str, _new_packages: &[String]) -> Option<UpdateCandida
         return None;
     };
 
-    // Paren content: "<version> <origin> [<arch>]"
     let mut parts = paren_content.split_whitespace();
     let available_version = parts.next()?.to_string();
     let origin = parts.next().unwrap_or("");
@@ -345,15 +322,12 @@ fn classify_origin(origin: &str) -> UpdateClassification {
 ///
 /// Handles: "85.3 MB", "2,456 kB", "1.2 GB", etc.
 fn parse_download_size(line: &str) -> Option<u64> {
-    // Extract the size portion after "Need to get ".
     let after = line.strip_prefix("Need to get ")?;
     let before_of = after.split(" of ").next()?;
 
-    // Split into number and unit.
     let trimmed = before_of.trim();
     let (number_str, unit) = trimmed.rsplit_once(' ')?;
 
-    // Remove thousands separators.
     let clean_number: String = number_str.chars().filter(|c| *c != ',').collect();
     let number: f64 = clean_number.parse().ok()?;
 
@@ -444,7 +418,6 @@ mod tests {
         );
         assert_eq!(curl.available_version, "7.81.0-1ubuntu1.16");
 
-        // linux-image-generic is from jammy-updates (standard).
         let kernel = plan
             .candidates
             .iter()
@@ -464,9 +437,7 @@ mod tests {
             other => panic!("Expected Available, got {other:?}"),
         };
 
-        // 2 upgradable packages.
         assert_eq!(plan.candidates.len(), 2);
-        // firefox and snapd are held.
         assert_eq!(plan.held.len(), 2);
         assert!(plan.held.iter().any(|h| h.name == "firefox"));
         assert!(plan.held.iter().any(|h| h.name == "snapd"));
@@ -488,7 +459,6 @@ mod tests {
         assert!(plan.removals.iter().any(|r| r.name == "old-kernel-headers"));
         assert!(plan.removals.iter().any(|r| r.name == "old-kernel-image"));
 
-        // new-dep-lib is newly installed.
         let new_dep = plan
             .candidates
             .iter()
@@ -503,7 +473,6 @@ mod tests {
         let stderr = include_str!("../../../../fixtures/apt/dpkg_lock.txt");
         let output = make_output("", stderr, 100);
 
-        // Simulate full check path.
         struct MockRunner {
             output: CommandOutput,
         }
@@ -563,7 +532,6 @@ mod tests {
         let output = make_output(stdout, "", 0);
         let result = parse_apt_simulate(&output);
 
-        // Should still parse the valid line without crashing.
         match result {
             DiscoveryResult::Available(plan) => {
                 assert_eq!(plan.candidates.len(), 1);
@@ -652,9 +620,7 @@ mod tests {
             _ => panic!("Expected Available"),
         };
 
-        // Content hash should be identical for the same input.
         assert_eq!(plan1.content_hash, plan2.content_hash);
-        // Plan IDs should differ (UUID).
         assert_ne!(plan1.plan_id, plan2.plan_id);
     }
 }

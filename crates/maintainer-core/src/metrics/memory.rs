@@ -53,7 +53,6 @@ pub(crate) fn parse_meminfo(content: &str) -> Result<MemorySnapshot, MaintainerE
             Some(v) => v.trim(),
             None => continue,
         };
-        // Strip " kB" suffix and parse the number
         let numeric_str = value_str.strip_suffix(" kB").unwrap_or(value_str).trim();
         if let Ok(val) = numeric_str.parse::<u64>() {
             fields.insert(key, val);
@@ -77,7 +76,6 @@ pub(crate) fn parse_meminfo(content: &str) -> Result<MemorySnapshot, MaintainerE
 
     let total_bytes = total_kb * 1024;
     let available_bytes = available_kb * 1024;
-    // Linux semantics: used = total - available
     let used_bytes = total_bytes.saturating_sub(available_bytes);
 
     let swap_total_bytes = swap_total_kb * 1024;
@@ -109,21 +107,13 @@ mod tests {
     fn parse_memory_from_fixture() {
         let snapshot = read_memory(&fixtures_path()).unwrap();
 
-        // MemTotal: 16384000 kB = 16384000 * 1024 bytes
         assert_eq!(snapshot.total_bytes, 16_384_000 * 1024);
-        // MemAvailable: 8192000 kB
         assert_eq!(snapshot.available_bytes, 8_192_000 * 1024);
-        // used = total - available
         assert_eq!(snapshot.used_bytes, (16_384_000 - 8_192_000) * 1024);
-        // Buffers: 512000 kB
         assert_eq!(snapshot.buffers_bytes, 512_000 * 1024);
-        // Cached: 4096000 kB
         assert_eq!(snapshot.cached_bytes, 4_096_000 * 1024);
-        // SwapTotal: 4096000 kB
         assert_eq!(snapshot.swap_total_bytes, 4_096_000 * 1024);
-        // SwapFree: 3072000 kB
         assert_eq!(snapshot.swap_free_bytes, 3_072_000 * 1024);
-        // Swap used = total - free
         assert_eq!(snapshot.swap_used_bytes, (4_096_000 - 3_072_000) * 1024);
     }
 
@@ -132,7 +122,6 @@ mod tests {
         let content =
             "MemTotal:       8000000 kB\nMemFree:        1000000 kB\nMemAvailable:   5000000 kB\n";
         let snapshot = parse_meminfo(content).unwrap();
-        // used = total - available, NOT total - free
         assert_eq!(snapshot.used_bytes, (8_000_000 - 5_000_000) * 1024);
         assert_ne!(snapshot.used_bytes, (8_000_000 - 1_000_000) * 1024);
     }

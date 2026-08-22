@@ -115,7 +115,6 @@ pub fn dispatch_duplicate_scan(
     let progress_for_worker = progress.clone();
 
     let job = move || -> maintainer_core::error::Result<DuplicateScanJobResult> {
-        // Phase 1: traverse to gather candidates.
         let scanner = StorageScanner::new(&policy, &token_for_worker, &progress_for_worker);
         let scan_result = match scanner.run() {
             Ok(summary) => {
@@ -157,7 +156,6 @@ pub fn dispatch_duplicate_scan(
             });
         }
 
-        // Phase 2: hash and group.
         let dup_scanner = DuplicateScanner::new(&token_for_worker, &progress_for_worker);
         match dup_scanner.scan(candidates) {
             Ok(dup_result) => {
@@ -471,7 +469,6 @@ fn install_result_poller<T: 'static>(
     on_done: impl FnOnce(T) + 'static,
 ) {
     let mut on_done = Some(on_done);
-    // Poll every 50ms — fast enough for responsiveness, cheap enough for idle.
     glib::timeout_add_local(Duration::from_millis(50), move || match rx.try_recv() {
         Ok(JobMessage::Completed(value)) => {
             if let Some(cb) = on_done.take() {
@@ -510,7 +507,6 @@ fn install_progress_poller<T: 'static>(
 
         match rx.try_recv() {
             Ok(JobMessage::Completed(value)) => {
-                // Final progress flush.
                 if let Some(p) = progress.take_latest() {
                     on_progress(&p);
                 }
@@ -532,10 +528,6 @@ fn install_progress_poller<T: 'static>(
         }
     });
 }
-
-// ---------------------------------------------------------------------------
-// Report helpers
-// ---------------------------------------------------------------------------
 
 fn chrono_like_now() -> String {
     use std::time::SystemTime;

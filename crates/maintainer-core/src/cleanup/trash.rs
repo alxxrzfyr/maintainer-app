@@ -34,7 +34,6 @@ pub enum TrashOutcome {
 /// On success returns the path within trash. If Trash cannot be used, returns
 /// `TrashUnavailable` — the caller must then ask for permanent deletion confirmation.
 pub fn trash_file(path: &Path, home_dir: &Path) -> Result<TrashOutcome, MaintainerError> {
-    // Resolve the source metadata to check filesystem.
     let source_meta = fs::symlink_metadata(path)
         .map_err(|e| MaintainerError::io(format!("stat {}", path.display()), e))?;
 
@@ -55,7 +54,6 @@ pub fn trash_file(path: &Path, home_dir: &Path) -> Result<TrashOutcome, Maintain
     fs::create_dir_all(&files_dir).map_err(|e| MaintainerError::io("creating Trash/files", e))?;
     fs::create_dir_all(&info_dir).map_err(|e| MaintainerError::io("creating Trash/info", e))?;
 
-    // Generate a unique trash name (filename + optional counter).
     let file_name = path
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
@@ -63,7 +61,6 @@ pub fn trash_file(path: &Path, home_dir: &Path) -> Result<TrashOutcome, Maintain
 
     let (trash_name, trash_file_path) = unique_trash_name(&files_dir, &file_name)?;
 
-    // Write .trashinfo BEFORE moving (atomic: if info write fails, we don't move).
     let info_content = format_trashinfo(path)?;
     let info_path = info_dir.join(format!("{trash_name}.trashinfo"));
 
@@ -73,15 +70,12 @@ pub fn trash_file(path: &Path, home_dir: &Path) -> Result<TrashOutcome, Maintain
         .write_all(info_content.as_bytes())
         .map_err(|e| MaintainerError::io("writing .trashinfo", e))?;
 
-    // Move file to trash.
     match fs::rename(path, &trash_file_path) {
         Ok(()) => Ok(TrashOutcome::Trashed {
             trash_path: trash_file_path,
         }),
         Err(e) => {
-            // Clean up the info file on move failure.
             let _ = fs::remove_file(&info_path);
-            // Cross-device link means different filesystem.
             if e.raw_os_error() == Some(libc::EXDEV) {
                 Ok(TrashOutcome::TrashUnavailable {
                     reason: "source and Trash are on different filesystems".into(),
@@ -107,7 +101,6 @@ fn resolve_trash_dir(
 ) -> Result<Option<PathBuf>, MaintainerError> {
     let source_dev = source_meta.dev();
 
-    // Primary: $HOME/.local/share/Trash
     let home_trash = home_dir.join(".local/share/Trash");
     let home_dev = fs::metadata(home_dir).map(|m| m.dev()).unwrap_or(0);
 
@@ -115,13 +108,10 @@ fn resolve_trash_dir(
         return Ok(Some(home_trash));
     }
 
-    // Secondary: .Trash-$uid on the mount point of the source.
-    // We approximate the mount root by walking up until device changes.
     let uid = unsafe { libc::getuid() };
     let mount_root = find_mount_root(path, source_dev)?;
     let alt_trash = mount_root.join(format!(".Trash-{uid}"));
 
-    // Check if we can use this directory.
     if alt_trash.exists() || fs::create_dir_all(&alt_trash).is_ok() {
         return Ok(Some(alt_trash));
     }
@@ -158,7 +148,6 @@ fn unique_trash_name(
         return Ok((base_name.to_string(), candidate));
     }
 
-    // Split into stem and extension for counter insertion.
     let path_ref = Path::new(base_name);
     let stem = path_ref
         .file_stem()
@@ -194,11 +183,9 @@ fn format_trashinfo(original_path: &Path) -> Result<String, MaintainerError> {
             message: e.to_string(),
         })?;
 
-    // Format as ISO 8601 basic.
     let secs = now.as_secs();
     let datetime = format_timestamp(secs);
 
-    // URL-encode the path (percent-encode non-ASCII and special chars).
     let encoded_path = percent_encode_path(original_path);
 
     Ok(format!(
@@ -208,14 +195,12 @@ fn format_trashinfo(original_path: &Path) -> Result<String, MaintainerError> {
 
 /// Format a Unix timestamp as ISO 8601 (YYYY-MM-DDTHH:MM:SS).
 fn format_timestamp(secs: u64) -> String {
-    // Simple UTC timestamp formatting without external dependencies.
     let days = secs / 86400;
     let time_secs = secs % 86400;
     let hours = time_secs / 3600;
     let minutes = (time_secs % 3600) / 60;
     let seconds = time_secs % 60;
 
-    // Compute date from days since epoch (1970-01-01).
     let (year, month, day) = days_to_date(days);
 
     format!("{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}")
@@ -223,7 +208,6 @@ fn format_timestamp(secs: u64) -> String {
 
 /// Convert days since Unix epoch to (year, month, day).
 fn days_to_date(days: u64) -> (u64, u64, u64) {
-    // Algorithm from https://howardhinnant.github.io/date_algorithms.html
     let z = days + 719468;
     let era = z / 146097;
     let doe = z - era * 146097;
@@ -243,7 +227,6 @@ fn percent_encode_path(path: &Path) -> String {
     let mut out = String::with_capacity(s.len());
     for byte in s.as_bytes() {
         match byte {
-            // Unreserved characters (RFC 3986) plus `/`.
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => {
                 out.push(*byte as char);
             }
@@ -273,7 +256,6 @@ mod tests {
             TrashOutcome::Trashed { trash_path } => {
                 assert!(trash_path.exists());
                 assert!(!file_path.exists());
-                // Check .trashinfo was created.
                 let info_dir = home.path().join(".local/share/Trash/info");
                 let entries: Vec<_> = fs::read_dir(&info_dir)
                     .unwrap()
@@ -299,7 +281,6 @@ mod tests {
         fs::create_dir_all(&trash_files).unwrap();
         fs::create_dir_all(&trash_info).unwrap();
 
-        // Pre-occupy the trash name.
         File::create(trash_files.join("collide.txt")).unwrap();
 
         let file_path = home.path().join("collide.txt");
@@ -310,7 +291,6 @@ mod tests {
         match result {
             TrashOutcome::Trashed { trash_path } => {
                 assert!(trash_path.exists());
-                // Should have a counter suffix.
                 let name = trash_path.file_name().unwrap().to_string_lossy();
                 assert!(name.contains("2"), "expected counter in name: {name}");
             }
@@ -389,7 +369,6 @@ mod tests {
 
     #[test]
     fn days_to_date_known_date() {
-        // 2024-01-01 is day 19723
         let (y, m, d) = days_to_date(19723);
         assert_eq!((y, m, d), (2024, 1, 1));
     }

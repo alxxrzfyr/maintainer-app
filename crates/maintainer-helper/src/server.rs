@@ -43,8 +43,6 @@ impl HelperInterface {
     fn try_acquire(&self) -> Result<(), HelperError> {
         match self.concurrency.try_acquire() {
             Ok(permit) => {
-                // Leak the permit — we release it manually via inflight counter.
-                // Actually, hold the permit by incrementing and forgetting.
                 permit.forget();
                 self.inflight.fetch_add(1, Ordering::SeqCst);
                 Ok(())
@@ -274,14 +272,12 @@ pub async fn run_server(
         .await
         .map_err(|e| format!("failed to connect to system bus: {e}"))?;
 
-    // Idle timeout: exit after IDLE_TIMEOUT_SECS of no activity.
     let idle_timeout = std::time::Duration::from_secs(crate::api::IDLE_TIMEOUT_SECS);
 
     let mut sigterm =
         signal(SignalKind::terminate()).map_err(|e| format!("signal handler: {e}"))?;
     let mut sigint = signal(SignalKind::interrupt()).map_err(|e| format!("signal handler: {e}"))?;
 
-    // The connection keeps the server alive. We wait for signal or idle timeout.
     loop {
         tokio::select! {
             _ = sigterm.recv() => {
@@ -291,7 +287,6 @@ pub async fn run_server(
                 break;
             }
             _ = tokio::time::sleep(idle_timeout) => {
-                // Check if there are in-flight requests. If so, wait more.
                 let iface_ref = connection
                     .object_server()
                     .interface::<_, HelperInterface>(config.object_path)
@@ -322,16 +317,13 @@ mod tests {
         let policy = Arc::new(MockPolicy::allowing(1000, 1234, ":1.10"));
         let iface = HelperInterface::new(policy);
 
-        // Fill all slots.
         for _ in 0..MAX_CONCURRENT_REQUESTS {
             assert!(iface.try_acquire().is_ok());
         }
 
-        // Next one should be rejected.
         let result = iface.try_acquire();
         assert!(matches!(result, Err(HelperError::Busy)));
 
-        // Release one and try again.
         iface.release();
         assert!(iface.try_acquire().is_ok());
     }
@@ -361,7 +353,6 @@ mod tests {
         let policy = Arc::new(MockPolicy::allowing(1000, 1234, ":1.10"));
         let iface = HelperInterface::new(policy);
         let result = iface.do_terminate_process(":1.10", 0, 12345);
-        // Validation failure becomes InvalidArgs.
         assert!(result.is_err());
     }
 
@@ -369,7 +360,6 @@ mod tests {
     fn do_package_cache_validates_before_authorize() {
         let policy = Arc::new(MockPolicy::allowing(1000, 1234, ":1.10"));
         let iface = HelperInterface::new(policy);
-        // Empty request_id should fail validation.
         let result = iface.do_clean_package_cache(":1.10", "");
         assert!(result.is_err());
     }
@@ -378,7 +368,6 @@ mod tests {
     fn do_vacuum_journal_validates_before_authorize() {
         let policy = Arc::new(MockPolicy::allowing(1000, 1234, ":1.10"));
         let iface = HelperInterface::new(policy);
-        // Size below minimum should fail.
         let result = iface.do_vacuum_journal(":1.10", 10, 30);
         assert!(result.is_err());
     }
@@ -387,7 +376,6 @@ mod tests {
     fn do_refresh_smart_validates_before_authorize() {
         let policy = Arc::new(MockPolicy::allowing(1000, 1234, ":1.10"));
         let iface = HelperInterface::new(policy);
-        // Path traversal in drive_id should fail.
         let result = iface.do_refresh_smart(":1.10", "../etc/shadow");
         assert!(result.is_err());
     }

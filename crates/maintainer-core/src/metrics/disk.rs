@@ -122,14 +122,11 @@ pub fn query_mount_capacity(mount_point: &str) -> Option<MountCapacity> {
 
     // Safety: `c_path` is a valid NUL-terminated C string pointing to an
     // existing mount path; `stat` is a zeroed statvfs struct with adequate
-    // lifetime for the syscall to write into.
     let ret = unsafe { libc::statvfs(c_path.as_ptr(), &mut stat) };
     if ret != 0 {
         return None;
     }
 
-    // f_frsize is c_ulong — u64 on LP64, u32 on ILP32. Cast via intermediate
-    // to satisfy clippy on 64-bit without breaking 32-bit portability.
     #[allow(clippy::unnecessary_cast)]
     let block_size: u64 = stat.f_frsize as u64;
     let total_bytes = stat.f_blocks * block_size;
@@ -194,7 +191,6 @@ pub(crate) fn parse_mounts(content: &str) -> Result<Vec<MountEntry>, MaintainerE
             continue;
         }
 
-        // Decode octal escapes in mount points (e.g., \040 for space)
         let mount_point = decode_mount_octal(fields[1]);
 
         mounts.push(MountEntry {
@@ -214,7 +210,6 @@ fn decode_mount_octal(s: &str) -> String {
 
     while let Some(c) = chars.next() {
         if c == '\\' {
-            // Try to read 3 octal digits
             let mut octal = String::with_capacity(3);
             for _ in 0..3 {
                 if let Some(&next) = chars.as_str().as_bytes().first() {
@@ -297,7 +292,6 @@ pub fn compute_disk_rates(
         return (None, None);
     }
 
-    // Extract device short name from full path (e.g., "/dev/sda1" -> "sda1")
     let short_name = device_name.strip_prefix("/dev/").unwrap_or(device_name);
 
     let prev = baseline.counters.get(short_name);
@@ -329,7 +323,6 @@ mod tests {
     #[test]
     fn parse_mounts_excludes_pseudo_filesystems() {
         let mounts = read_mounts(&fixtures_path()).unwrap();
-        // Should include /dev/sda1, /dev/sda2, /dev/nvme0n1p1 but not tmpfs, proc, etc.
         let fs_types: Vec<&str> = mounts.iter().map(|m| m.fs_type.as_str()).collect();
         assert!(!fs_types.contains(&"tmpfs"));
         assert!(!fs_types.contains(&"proc"));
@@ -385,7 +378,6 @@ mod tests {
         let elapsed = Duration::from_secs(2);
 
         let (read_rate, write_rate) = compute_disk_rates("/dev/sda1", &baseline, &curr, elapsed);
-        // 2000 sectors * 512 bytes / 2 seconds = 512000 bytes/sec
         assert_eq!(read_rate, Some(512_000.0));
         assert_eq!(write_rate, Some(512_000.0));
     }
@@ -413,7 +405,6 @@ mod tests {
 
     #[test]
     fn counter_reset_uses_saturating_sub() {
-        // When counters wrap or reset, saturating_sub yields 0
         let prev = HashMap::from([(
             "sda1".to_string(),
             DiskIoCounters {
@@ -435,8 +426,6 @@ mod tests {
         let elapsed = Duration::from_secs(1);
 
         let (read_rate, write_rate) = compute_disk_rates("/dev/sda1", &baseline, &curr, elapsed);
-        // saturating_sub(5000 - 1000 is wrong direction, 1000.saturating_sub(5000) = 0)
-        // Wait - it's curr.saturating_sub(prev), so 1000.saturating_sub(5000) = 0
         assert_eq!(read_rate, Some(0.0));
         assert_eq!(write_rate, Some(0.0));
     }

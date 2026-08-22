@@ -116,19 +116,15 @@ impl<'a> StorageScanner<'a> {
             LargeFileRanking::new(MAX_LARGE_FILES, self.policy.large_file_threshold_bytes);
         let mut was_cancelled = false;
 
-        // Track hard links: inode -> list of paths
         let mut seen_inodes: HashSet<DeviceInode> = HashSet::new();
         let mut hard_link_map: std::collections::HashMap<DeviceInode, Vec<PathBuf>> =
             std::collections::HashMap::new();
 
-        // Track device IDs for each root to detect filesystem boundaries.
         let mut root_devices: std::collections::HashMap<PathBuf, u64> =
             std::collections::HashMap::new();
 
-        // Explicit stack for iterative DFS.
         let mut stack: Vec<PathBuf> = Vec::new();
 
-        // Initialize stack with roots (reverse so first root is processed first).
         for root in self.policy.roots.iter().rev() {
             if self.policy.is_excluded(root) {
                 continue;
@@ -151,7 +147,6 @@ impl<'a> StorageScanner<'a> {
         let mut entries_since_cancel_check: usize;
 
         while let Some(dir_path) = stack.pop() {
-            // Check cancellation at each directory.
             if self.cancel.is_cancelled() {
                 was_cancelled = true;
                 break;
@@ -159,7 +154,6 @@ impl<'a> StorageScanner<'a> {
 
             total_dirs += 1;
 
-            // Determine root device for this path.
             let root_device = self.find_root_device(&dir_path, &root_devices);
 
             let read_dir = match fs::read_dir(&dir_path) {
@@ -178,7 +172,6 @@ impl<'a> StorageScanner<'a> {
             for entry_result in read_dir {
                 entries_since_cancel_check += 1;
 
-                // Periodic cancellation check within a directory.
                 if entries_since_cancel_check >= CANCEL_CHECK_INTERVAL {
                     entries_since_cancel_check = 0;
                     if self.cancel.is_cancelled() {
@@ -200,12 +193,10 @@ impl<'a> StorageScanner<'a> {
 
                 let entry_path = entry.path();
 
-                // Check exclusions.
                 if self.policy.is_excluded(&entry_path) {
                     continue;
                 }
 
-                // Get metadata without following symlinks.
                 let meta = if self.policy.follow_symlinks {
                     match fs::metadata(&entry_path) {
                         Ok(m) => m,
@@ -232,14 +223,11 @@ impl<'a> StorageScanner<'a> {
 
                 let file_type = meta.file_type();
 
-                // Symlink handling when not following.
                 if file_type.is_symlink() {
-                    // Record but don't follow.
                     continue;
                 }
 
                 if file_type.is_dir() {
-                    // Check filesystem boundary.
                     if !self.policy.cross_filesystems {
                         if let Some(root_dev) = root_device {
                             if crosses_filesystem(root_dev, meta.dev()) {
@@ -254,15 +242,12 @@ impl<'a> StorageScanner<'a> {
                     let apparent = meta.len();
                     let allocated = meta.blocks() * 512;
 
-                    // Hard link handling: count content once.
                     if nlink > 1 {
                         if seen_inodes.contains(&di) {
-                            // Already counted; just record the additional path.
                             hard_link_map
                                 .entry(di)
                                 .or_default()
                                 .push(entry_path.clone());
-                            // Still offer to large-file ranking (each path listed).
                             ranking.offer(entry_path, apparent);
                             total_files += 1;
                             continue;
@@ -281,7 +266,6 @@ impl<'a> StorageScanner<'a> {
                     ranking.offer(entry_path, apparent);
                 }
 
-                // Throttled progress reporting.
                 let now = Instant::now();
                 if now.duration_since(last_progress).as_millis() >= PROGRESS_THROTTLE_MS {
                     last_progress = now;
@@ -298,7 +282,6 @@ impl<'a> StorageScanner<'a> {
             }
         }
 
-        // Final progress.
         self.progress.report(&JobProgress {
             completed: total_files,
             total: Some(total_files),
@@ -309,7 +292,6 @@ impl<'a> StorageScanner<'a> {
             },
         });
 
-        // Collect hard links with multiple paths only.
         let hard_link_paths: Vec<(DeviceInode, Vec<PathBuf>)> = hard_link_map
             .into_iter()
             .filter(|(_, paths)| paths.len() > 1)
@@ -435,7 +417,6 @@ mod tests {
         let scanner = StorageScanner::new(&policy, &cancel, &progress);
         let summary = scanner.run().unwrap();
 
-        // Only the real file, not the symlink target counted again.
         assert_eq!(summary.total_files, 1);
     }
 
@@ -453,11 +434,8 @@ mod tests {
         let scanner = StorageScanner::new(&policy, &cancel, &progress);
         let summary = scanner.run().unwrap();
 
-        // Content counted once.
         assert_eq!(summary.total_apparent_bytes, 14); // "shared content" = 14 bytes
-        // Both paths counted as files.
         assert_eq!(summary.total_files, 2);
-        // Hard link recorded.
         assert_eq!(summary.hard_link_paths.len(), 1);
         assert_eq!(summary.hard_link_paths[0].1.len(), 2);
     }
@@ -470,7 +448,6 @@ mod tests {
         let unreadable = tmp.path().join("noperm");
         fs::create_dir(&unreadable).unwrap();
         fs::write(unreadable.join("hidden.txt"), b"secret").unwrap();
-        // Remove read permission on directory.
         fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o000)).unwrap();
 
         let policy = ScanPolicy::with_roots(vec![tmp.path().to_path_buf()]);
@@ -479,17 +456,14 @@ mod tests {
         let scanner = StorageScanner::new(&policy, &cancel, &progress);
         let summary = scanner.run().unwrap();
 
-        // Should have at least one issue.
         assert!(!summary.issues.is_empty());
 
-        // Clean up permissions so tempfile can remove it.
         fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o755)).unwrap();
     }
 
     #[test]
     fn scan_large_files_detected() {
         let tmp = TempDir::new().unwrap();
-        // Use a small threshold for testing.
         let policy = ScanPolicy {
             roots: vec![tmp.path().to_path_buf()],
             large_file_threshold_bytes: 10,
@@ -517,14 +491,12 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let dir_a = tmp.path().join("a");
         fs::create_dir(&dir_a).unwrap();
-        // Create a symlink cycle: a/link -> parent
         unix_fs::symlink(tmp.path(), dir_a.join("cycle")).unwrap();
 
         let policy = ScanPolicy::with_roots(vec![tmp.path().to_path_buf()]);
         let cancel = null_cancel();
         let progress = NullProgress;
         let scanner = StorageScanner::new(&policy, &cancel, &progress);
-        // Should complete without hanging (symlinks not followed).
         let summary = scanner.run().unwrap();
         assert!(!summary.was_cancelled);
     }
@@ -536,7 +508,6 @@ mod tests {
         use std::os::unix::ffi::OsStrExt;
 
         let tmp = TempDir::new().unwrap();
-        // Create a file with non-UTF-8 name.
         let bad_name = OsStr::from_bytes(b"bad\xff\xfename.txt");
         let bad_path = tmp.path().join(bad_name);
         fs::write(&bad_path, b"content").unwrap();

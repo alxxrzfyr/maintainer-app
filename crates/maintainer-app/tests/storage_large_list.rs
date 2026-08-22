@@ -23,7 +23,6 @@ fn ten_thousand_large_files_populate_model_without_widget_explosion() {
     state.reduce(StorageIntent::StartStorageScan);
     let job_id = state.storage_scan.as_ref().unwrap().job_id;
 
-    // Generate 10,000 synthetic large files.
     let large_files: Vec<LargeFile> = (0..10_000)
         .map(|i| LargeFile {
             path: PathBuf::from(format!("/home/user/data/file_{i:05}.dat")),
@@ -37,14 +36,11 @@ fn ten_thousand_large_files_populate_model_without_widget_explosion() {
         issues: Vec::new(),
     }));
 
-    // Verify all 10,000 files are in state (sorted by size descending by default).
     assert_eq!(state.large_files.len(), 10_000);
-    // First should be the largest.
     assert_eq!(
         state.large_files[0].size_bytes,
         1_000_000_000 + 9_999 * 1000
     );
-    // Last should be the smallest.
     assert_eq!(state.large_files[9_999].size_bytes, 1_000_000_000);
 }
 
@@ -71,9 +67,7 @@ fn sort_ten_thousand_entries() {
         issues: Vec::new(),
     });
 
-    // Switch to path sort.
     state.reduce(StorageIntent::SetLargeFileSort(LargeFileSort::PathAsc));
-    // First alphabetically.
     assert_eq!(
         state.large_files[0].path,
         PathBuf::from("/home/user/data/file_00000.dat")
@@ -91,12 +85,9 @@ fn list_store_population_is_data_only() {
     use gio::prelude::*;
 
     let model = gio::ListStore::new::<glib::Object>();
-    // 10,000 items in a ListStore: this is pure data, no widget realization.
     for _ in 0..10_000 {
         let obj = glib::Object::new::<glib::Object>();
         model.append(&obj);
     }
     assert_eq!(model.n_items(), 10_000);
-    // This proves the ListStore pattern handles large datasets without
-    // requiring a display server or realized widgets.
 }

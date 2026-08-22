@@ -85,7 +85,6 @@ impl<'a> CleanupExecutor<'a> {
         progress: &dyn ProgressSink,
         history: &dyn HistoryRepository,
     ) -> Result<CleanupResult, MaintainerError> {
-        // Validate request matches plan.
         if plan.id != request.plan_id {
             return Err(MaintainerError::Internal {
                 context: "cleanup execution".into(),
@@ -104,7 +103,6 @@ impl<'a> CleanupExecutor<'a> {
         let mut errors: Vec<String> = Vec::new();
 
         for (idx, item_id) in request.selected_item_ids.iter().enumerate() {
-            // Check cancellation between items.
             if cancel.is_cancelled() {
                 cancelled = true;
                 break;
@@ -184,7 +182,6 @@ impl<'a> CleanupExecutor<'a> {
             ))
         };
 
-        // Record to history.
         let entry = HistoryEntry::new(
             "cleanup",
             started_at,
@@ -209,7 +206,6 @@ impl<'a> CleanupExecutor<'a> {
         item: &CleanupItem,
         confirm_permanent: bool,
     ) -> Result<CleanupItemOutcome, MaintainerError> {
-        // Revalidate: check path still exists and inode matches.
         let metadata = fs::symlink_metadata(&item.path)
             .map_err(|e| MaintainerError::io(format!("revalidating {}", item.display_path), e))?;
 
@@ -227,7 +223,6 @@ impl<'a> CleanupExecutor<'a> {
             });
         }
 
-        // Reject symlinks at execution time too.
         if metadata.is_symlink() {
             return Err(MaintainerError::Internal {
                 context: "revalidation".into(),
@@ -235,14 +230,12 @@ impl<'a> CleanupExecutor<'a> {
             });
         }
 
-        // Determine actual size for recovery accounting.
         let actual_size = if metadata.is_dir() {
             dir_size_recursive(&item.path).unwrap_or(item.size_bytes)
         } else {
             metadata.len()
         };
 
-        // Attempt removal based on reversibility.
         match item.reversibility {
             crate::cleanup::analyze::Reversibility::TrashRecoverable => {
                 match trash::trash_file(&item.path, self.home_dir)? {
@@ -397,7 +390,6 @@ mod tests {
         assert_eq!(result.actual_recovered_bytes, 512);
         assert!(!file_path.exists());
 
-        // Check history was recorded.
         let history = repo.recent(1).unwrap();
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].operation, "cleanup");
@@ -430,7 +422,6 @@ mod tests {
 
         assert_eq!(result.outcome.succeeded, 0);
         assert_eq!(result.outcome.failed, 1);
-        // File should still exist.
         assert!(home.path().join(".cache/thumbnails/thumb.png").exists());
     }
 
@@ -447,8 +438,6 @@ mod tests {
 
         // Simulate a race by recording a stale inode in the plan.
         // On tmpfs, re-creating a file often reuses the same inode, so we
-        // directly set the plan's stored inode to a value that cannot match
-        // the current file on disk.
         let current_inode = fs::symlink_metadata(&file_path).unwrap().ino();
         plan.items[0].inode = current_inode.wrapping_add(999);
 
@@ -467,10 +456,8 @@ mod tests {
             .execute(&plan, &request, &token, &NullProgress, &repo)
             .unwrap();
 
-        // Should fail due to inode mismatch.
         assert_eq!(result.outcome.failed, 1);
         assert_eq!(result.outcome.succeeded, 0);
-        // File should still exist (not deleted).
         assert!(file_path.exists());
     }
 
@@ -494,7 +481,6 @@ mod tests {
         let repo = SqliteHistoryRepository::new(&db);
         let executor = CleanupExecutor::new(home.path());
 
-        // Cancel immediately.
         let token = CancellationToken::new();
         token.cancel();
 
@@ -505,7 +491,6 @@ mod tests {
         assert!(result.outcome.cancelled);
         assert_eq!(result.outcome.succeeded, 0);
 
-        // History should record cancelled status.
         let history = repo.recent(1).unwrap();
         assert_eq!(history[0].status, OperationStatus::Cancelled);
     }
@@ -547,7 +532,6 @@ mod tests {
 
         let plan = CleanupPlan::from_targets(vec![t1, t2], home.path()).unwrap();
 
-        // Remove second file to cause revalidation failure.
         fs::remove_file(&vanish_path).unwrap();
 
         let request = ExecutionRequest {
@@ -613,7 +597,6 @@ mod tests {
 
         assert_eq!(result.outcome.succeeded, 1);
         assert!(!file_path.exists());
-        // Should be in trash.
         let trash_files = home.path().join(".local/share/Trash/files");
         assert!(trash_files.exists());
     }

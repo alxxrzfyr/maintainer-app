@@ -71,7 +71,6 @@ impl ProgressSink for SharedProgress {
         let mut state = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let now = Instant::now();
 
-        // Throttle: skip update if less than THROTTLE_INTERVAL since last accepted.
         if now.duration_since(state.last_update) < THROTTLE_INTERVAL {
             return;
         }
@@ -117,27 +116,23 @@ mod tests {
             message: "indexing".to_string(),
         });
         assert!(sp.take_latest().is_some());
-        // Second call should return None (no new update).
         assert!(sp.take_latest().is_none());
     }
 
     #[test]
     fn throttle_drops_rapid_updates() {
         let sp = SharedProgress::new();
-        // First report goes through.
         sp.report(&JobProgress {
             completed: 1,
             total: Some(1000),
             message: "first".to_string(),
         });
-        // Immediate second report should be throttled.
         sp.report(&JobProgress {
             completed: 2,
             total: Some(1000),
             message: "second".to_string(),
         });
         let latest = sp.take_latest().unwrap();
-        // Should still show first report since second was throttled.
         assert_eq!(latest.completed, 1);
     }
 
@@ -147,7 +142,6 @@ mod tests {
         let sp_clone = sp.clone();
 
         let handle = thread::spawn(move || {
-            // Sleep past throttle interval.
             thread::sleep(Duration::from_millis(60));
             sp_clone.report(&JobProgress {
                 completed: 42,
@@ -171,7 +165,6 @@ mod tests {
             message: "peeking".to_string(),
         });
         assert!(sp.peek().is_some());
-        // take_latest should still return it.
         assert!(sp.take_latest().is_some());
     }
 }

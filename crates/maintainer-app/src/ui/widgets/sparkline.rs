@@ -45,7 +45,6 @@ impl Sparkline {
             Self::draw(cr, width as f64, height as f64, &d);
         });
 
-        // Set accessible role
         drawing_area.update_property(&[gtk4::accessible::Property::Label("Sparkline chart")]);
 
         Self { drawing_area, data }
@@ -84,13 +83,11 @@ impl Sparkline {
         let n = samples.len();
         let step = if n > 1 { width / (n - 1) as f64 } else { width };
 
-        // Normalize a value to [0, height] (inverted Y axis)
         let normalize = |v: f64| -> f64 {
             let clamped = v.clamp(data.min_value, data.max_value);
             height - ((clamped - data.min_value) / range) * height
         };
 
-        // Draw filled area with gradient effect (darker at bottom)
         cr.move_to(0.0, height);
         for (i, &val) in samples.iter().enumerate() {
             let x = i as f64 * step;
@@ -100,14 +97,10 @@ impl Sparkline {
         cr.line_to((n - 1) as f64 * step, height);
         cr.close_path();
 
-        // Fill with accent color, semi-transparent
-        // Using blue accent: #245FD6 (light) / #8BB4FF (dark)
-        // We use a middle-ground that works in both themes
         cr.set_source_rgba(0.14, 0.37, 0.84, 0.15);
         let _ = cr.fill_preserve();
         cr.new_path();
 
-        // Stroke the top line with solid accent
         for (i, &val) in samples.iter().enumerate() {
             let x = i as f64 * step;
             let y = normalize(val);

@@ -98,7 +98,6 @@ impl DuplicatesView {
         container.set_margin_bottom(12);
         container.add_css_class("duplicates-view");
 
-        // Header with selection info and review button.
         let header = GtkBox::new(Orientation::Horizontal, 12);
         header.set_margin_start(12);
         header.set_margin_end(12);
@@ -117,7 +116,6 @@ impl DuplicatesView {
         header.append(&review_button);
         container.append(&header);
 
-        // Virtualized list.
         let model = gio::ListStore::new::<DuplicateRowObject>();
         let selection = SingleSelection::new(Some(model.clone()));
         selection.set_autoselect(false);
@@ -187,7 +185,6 @@ impl DuplicatesView {
         scrolled.set_child(Some(&list_view));
         container.append(&scrolled);
 
-        // Empty state.
         let empty_label = Label::new(Some("No duplicates found. Run a duplicate scan first."));
         empty_label.set_halign(Align::Center);
         empty_label.set_valign(Align::Center);
@@ -222,7 +219,6 @@ impl DuplicatesView {
             self.list_view.set_visible(true);
         }
 
-        // Rebuild model.
         self.model.remove_all();
         for (group_idx, group) in groups.iter().enumerate() {
             let digest_short = group.digest.to_hex();
@@ -233,7 +229,6 @@ impl DuplicatesView {
             };
             let size_display = format_bytes(group.size_bytes);
 
-            // Group header row.
             let header = DuplicateRowObject::new(
                 "",
                 group_idx as u32,
@@ -245,7 +240,6 @@ impl DuplicatesView {
             );
             self.model.append(&header);
 
-            // File rows.
             for (file_idx, file) in group.files.iter().enumerate() {
                 let is_selected = state.duplicate_selections.contains(&(group_idx, file_idx));
                 let path_str = file.path.to_string_lossy();
@@ -262,7 +256,6 @@ impl DuplicatesView {
             }
         }
 
-        // Selection count.
         let count = state.duplicate_selections.len();
         if count == 0 {
             self.selection_count_label

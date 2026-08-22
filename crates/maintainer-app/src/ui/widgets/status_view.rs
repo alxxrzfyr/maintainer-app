@@ -82,7 +82,6 @@ impl StatusView {
             container.append(&desc_label);
         }
 
-        // Retry button (only if retry is meaningful)
         if model.can_retry {
             let retry_btn = Button::with_label("Retry");
             retry_btn.add_css_class("maintainer_status_retry");
@@ -100,7 +99,6 @@ impl StatusView {
             container.append(&retry_btn);
         }
 
-        // Accessible name for the whole container
         let accessible_desc = match &model.description {
             Some(desc) => format!(
                 "{}: {}. {}",

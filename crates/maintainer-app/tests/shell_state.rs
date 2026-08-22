@@ -27,7 +27,6 @@ fn navigation_to_all_pages() {
 
 #[test]
 fn no_activity_page_variant_exists() {
-    // Verify the Page enum has exactly the v1 pages and no Activity.
     let expected = [
         Page::Overview,
         Page::System,
@@ -94,8 +93,6 @@ fn settings_is_in_footer() {
 
 #[test]
 fn drawer_mode_navigation_covers_all_pages() {
-    // Verify that navigation groups + footer pages provide access to every page,
-    // ensuring the drawer menu (which uses the same source) does not miss any page.
     let drawer_pages: Vec<Page> = NAVIGATION_GROUPS
         .iter()
         .flat_map(|g| g.pages.iter().copied())
@@ -113,7 +110,6 @@ fn drawer_mode_navigation_covers_all_pages() {
 
 #[test]
 fn drawer_mode_navigation_allows_page_switching() {
-    // Simulate drawer navigation: user can navigate to any page from any page.
     let mut state = AppState::default();
     let drawer_pages: Vec<Page> = NAVIGATION_GROUPS
         .iter()

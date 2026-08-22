@@ -122,7 +122,6 @@ impl CleanupPlan {
 pub fn validate_path(path: &Path, home_dir: &Path) -> Result<(), MaintainerError> {
     let path_str = path.to_string_lossy();
 
-    // Reject `..` anywhere in the path.
     for component in path.components() {
         if matches!(component, std::path::Component::ParentDir) {
             return Err(MaintainerError::Internal {
@@ -132,7 +131,6 @@ pub fn validate_path(path: &Path, home_dir: &Path) -> Result<(), MaintainerError
         }
     }
 
-    // Reject home directory itself.
     if path == home_dir {
         return Err(MaintainerError::Internal {
             context: "path validation".into(),
@@ -140,7 +138,6 @@ pub fn validate_path(path: &Path, home_dir: &Path) -> Result<(), MaintainerError
         });
     }
 
-    // Reject root filesystem targets.
     let root_paths: &[&str] = &[
         "/", "/bin", "/boot", "/dev", "/etc", "/lib", "/lib64", "/opt", "/proc", "/root", "/run",
         "/sbin", "/srv", "/sys", "/usr", "/var",
@@ -154,7 +151,6 @@ pub fn validate_path(path: &Path, home_dir: &Path) -> Result<(), MaintainerError
         }
     }
 
-    // Reject if the path is a symlink at this point.
     if path.exists() {
         let metadata = std::fs::symlink_metadata(path).map_err(|e| {
             MaintainerError::io(format!("checking symlink status of {}", path_str), e)
@@ -342,7 +338,6 @@ mod tests {
         }
 
         let plan = CleanupPlan::from_targets(targets, home.path()).unwrap();
-        // Each target has size_bytes = 1024 (from make_target, not actual file size).
         assert_eq!(plan.estimated_reclaimable_bytes, 3 * 1024);
     }
 }

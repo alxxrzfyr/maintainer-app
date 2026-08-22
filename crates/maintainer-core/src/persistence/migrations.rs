@@ -16,7 +16,6 @@ static MIGRATIONS: &[(i32, &str)] = &[(1, include_str!("../../../../migrations/0
 /// each migration whose version exceeds the current maximum.
 pub fn apply_all(db: &Database) -> Result<(), MaintainerError> {
     db.with_connection_mut(|conn| {
-        // Bootstrap: ensure schema_migrations exists so we can query it.
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS schema_migrations (
                 version INTEGER PRIMARY KEY NOT NULL,
@@ -108,7 +107,6 @@ mod tests {
     #[test]
     fn migrations_are_idempotent() {
         let db = Database::open_in_memory().unwrap();
-        // apply_all was already called in open_in_memory; call again.
         apply_all(&db).unwrap();
         let version = current_version(&db).unwrap();
         assert_eq!(version, 1);

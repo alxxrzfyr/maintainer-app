@@ -102,10 +102,7 @@ impl AppState {
             AppIntent::WindowVisibilityChanged(visible) => {
                 self.window_visible = visible;
             }
-            AppIntent::RetryCapability(_id) => {
-                // Retry intents are handled by the service layer;
-                // state remains unchanged here.
-            }
+            AppIntent::RetryCapability(_id) => {}
         }
     }
 }
@@ -346,7 +343,6 @@ impl StorageState {
                     Some(r) => r.clone(),
                     None => return false, // Denied: no root selected.
                 };
-                // If a scan is already running, deny.
                 if let Some(ref scan) = self.storage_scan {
                     if matches!(scan.phase, ScanPhase::Running { .. }) {
                         return false;
@@ -384,7 +380,6 @@ impl StorageState {
                         total: None,
                     },
                 });
-                // Clear previous duplicate results.
                 self.duplicate_groups.clear();
                 self.duplicate_issues.clear();
                 self.duplicate_selections.clear();
@@ -456,7 +451,6 @@ impl StorageState {
                     scan.phase = ScanPhase::Completed;
                     self.duplicate_groups = groups;
                     self.duplicate_issues = issues;
-                    // Selections default empty.
                     self.duplicate_selections.clear();
                     true
                 } else {
@@ -507,7 +501,6 @@ impl StorageState {
                 if self.drill_down_path.is_none() {
                     return false;
                 }
-                // Go up one level or clear.
                 let current = self.drill_down_path.take().unwrap();
                 self.drill_down_path = current.parent().map(|p| p.to_path_buf());
                 true
@@ -516,7 +509,6 @@ impl StorageState {
                 group_idx,
                 file_idx,
             } => {
-                // Validate indices.
                 if group_idx >= self.duplicate_groups.len() {
                     return false;
                 }
@@ -597,7 +589,6 @@ impl StorageState {
 
     /// Heuristic: files under common home directories are Trash-eligible.
     fn is_trash_eligible(path: &std::path::Path) -> bool {
-        // Files under /home are generally Trash-eligible via freedesktop Trash spec.
         path.starts_with("/home")
     }
 }
@@ -849,7 +840,6 @@ impl SettingsState {
                 true
             }
             SettingsIntent::SetLargeFileThreshold(bytes) => {
-                // Minimum 1 MiB.
                 let min_bytes = 1024 * 1024;
                 let validated = if bytes < min_bytes { min_bytes } else { bytes };
                 if self.snapshot.large_file_threshold_bytes == validated {
@@ -932,15 +922,7 @@ impl HistoryState {
                 self.pending_deletion = Some(PendingHistoryDeletion::All);
                 true
             }
-            HistoryIntent::ConfirmDelete => {
-                if self.pending_deletion.is_some() {
-                    // Confirmed; the service layer handles the actual deletion.
-                    // pending_deletion is consumed by the caller.
-                    true
-                } else {
-                    false
-                }
-            }
+            HistoryIntent::ConfirmDelete => self.pending_deletion.is_some(),
             HistoryIntent::CancelDelete => {
                 if self.pending_deletion.is_some() {
                     self.pending_deletion = None;
@@ -1023,7 +1005,6 @@ mod settings_tests {
         state.reduce(SettingsIntent::AddExclusion("/tmp".into()));
         assert_eq!(state.snapshot.scan_exclusions, vec!["/tmp"]);
 
-        // Duplicate is rejected.
         let changed = state.reduce(SettingsIntent::AddExclusion("/tmp".into()));
         assert!(!changed);
 

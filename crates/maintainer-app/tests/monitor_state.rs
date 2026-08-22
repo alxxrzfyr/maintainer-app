@@ -142,11 +142,9 @@ fn process_sorting_stable_by_cpu() {
 
     state.reduce(MonitoringMessage::SnapshotReady(Box::new(snapshot)));
 
-    // Default sort is CPU (highest first)
     assert_eq!(state.system.processes[0].name, "high-cpu");
     assert_eq!(state.system.processes[1].name, "low-cpu");
 
-    // Switch to memory sort
     state.reduce(MonitoringMessage::SetProcessSort(ProcessSort::Memory));
     assert_eq!(state.system.processes[0].name, "low-cpu"); // higher RSS
 }
@@ -187,7 +185,6 @@ fn disk_threshold_attention_not_cpu() {
 
     state.reduce(MonitoringMessage::SnapshotReady(Box::new(snapshot)));
 
-    // Should have disk attention but NOT cpu attention
     assert_eq!(state.overview.attention_items.len(), 1);
     assert_eq!(
         state.overview.attention_items[0].severity,
@@ -226,7 +223,6 @@ fn unavailable_metric_shows_reason_text() {
 
     assert!(!state.overview.cpu_available);
     assert_eq!(state.overview.cpu_text, "Unavailable");
-    // Sparkline should have no data (not zero)
     assert!(state.overview.cpu_ring.is_empty());
 }
 
@@ -240,6 +236,5 @@ fn ring_buffer_evicts_oldest_at_capacity() {
 
     assert_eq!(ring.len(), 60);
     assert_eq!(ring.latest(), Some(69.0));
-    // Oldest should be 10 (70 - 60)
     assert_eq!(*ring.samples().front().unwrap(), 10.0);
 }

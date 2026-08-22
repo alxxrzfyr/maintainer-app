@@ -19,7 +19,6 @@ fn no_stale_old_app_id_in_workspace() {
         .and_then(|p| p.parent())
         .expect("workspace root");
 
-    // Build search pattern from parts to avoid self-matching.
     let stale_id = ["com", "maintainer", "app"].join(".");
 
     let output = Command::new("grep")
@@ -40,7 +39,6 @@ fn no_stale_old_app_id_in_workspace() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
 
-    // Filter out lines from this test file itself
     let matches: Vec<&str> = stdout
         .lines()
         .filter(|line| !line.contains("app_id.rs"))

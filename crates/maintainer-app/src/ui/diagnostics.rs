@@ -182,7 +182,6 @@ impl DiagnosticsPage {
         container.set_margin_start(24);
         container.set_margin_end(24);
 
-        // Header.
         let header = Label::new(Some("System Diagnostics"));
         header.add_css_class("title-1");
         header.set_halign(gtk4::Align::Start);
@@ -197,13 +196,11 @@ impl DiagnosticsPage {
         description.add_css_class("dim-label");
         container.append(&description);
 
-        // Scan button.
         let scan_button = Button::with_label("Run Diagnostics");
         scan_button.add_css_class("suggested-action");
         scan_button.set_halign(gtk4::Align::Start);
         container.append(&scan_button);
 
-        // Status label.
         let status_label = Label::new(None);
         status_label.set_halign(gtk4::Align::Start);
         status_label.set_visible(false);
@@ -211,7 +208,6 @@ impl DiagnosticsPage {
 
         container.append(&Separator::new(Orientation::Horizontal));
 
-        // Scrolled findings list.
         let scrolled = ScrolledWindow::new();
         scrolled.set_vexpand(true);
         scrolled.set_hscrollbar_policy(gtk4::PolicyType::Never);
@@ -222,7 +218,6 @@ impl DiagnosticsPage {
         scrolled.set_child(Some(&findings_list));
         container.append(&scrolled);
 
-        // SMART Storage Health section.
         container.append(&Separator::new(Orientation::Horizontal));
 
         let smart_section = GtkBox::new(Orientation::Vertical, 8);
@@ -286,7 +281,6 @@ impl DiagnosticsPage {
 
     /// Update the view from the current state.
     pub fn update(&self, state: &DiagnosticsState) {
-        // Update scanning state.
         self.scan_button.set_sensitive(!state.scanning);
         if state.scanning {
             self.status_label.set_text("Scanning…");
@@ -304,7 +298,6 @@ impl DiagnosticsPage {
             self.status_label.set_visible(false);
         }
 
-        // Rebuild findings list.
         while let Some(child) = self.findings_list.first_child() {
             self.findings_list.remove(&child);
         }
@@ -314,7 +307,6 @@ impl DiagnosticsPage {
             self.findings_list.append(&row);
         }
 
-        // Update SMART section.
         self.update_smart(&state.smart);
     }
 
@@ -344,7 +336,6 @@ impl DiagnosticsPage {
             self.smart_status_label.set_visible(false);
         }
 
-        // Rebuild drives list.
         while let Some(child) = self.smart_drives_list.first_child() {
             self.smart_drives_list.remove(&child);
         }
@@ -363,20 +354,17 @@ fn build_finding_row(finding: &DiagnosticFinding, expanded: bool) -> GtkBox {
     row.set_margin_start(12);
     row.set_margin_end(12);
 
-    // Detected.
     let detected_label = Label::new(Some(&format!("Detected: {}", finding.detected)));
     detected_label.add_css_class("heading");
     detected_label.set_halign(gtk4::Align::Start);
     detected_label.set_wrap(true);
     row.append(&detected_label);
 
-    // Evidence.
     for evidence in &finding.evidence {
         let ev_box = build_evidence_widget(evidence, expanded);
         row.append(&ev_box);
     }
 
-    // Possible causes.
     if !finding.possible_causes.is_empty() {
         let causes_header = Label::new(Some("Possible cause:"));
         causes_header.add_css_class("dim-label");
@@ -392,7 +380,6 @@ fn build_finding_row(finding: &DiagnosticFinding, expanded: bool) -> GtkBox {
         }
     }
 
-    // Recommendation.
     if let Some(ref rec) = finding.recommendation {
         let rec_header = Label::new(Some("Recommendation:"));
         rec_header.add_css_class("dim-label");
@@ -451,7 +438,6 @@ fn build_smart_drive_row(drive: &SmartDriveView) -> GtkBox {
     row.set_margin_start(12);
     row.set_margin_end(12);
 
-    // Drive model and assessment on one line.
     let header_box = GtkBox::new(Orientation::Horizontal, 12);
 
     let model_label = Label::new(Some(&drive.model));
@@ -467,7 +453,6 @@ fn build_smart_drive_row(drive: &SmartDriveView) -> GtkBox {
 
     row.append(&header_box);
 
-    // Details line: temperature and power-on hours.
     let mut details_parts = Vec::new();
     if let Some(temp) = drive.temperature_celsius {
         details_parts.push(format!("{temp:.0} °C"));
@@ -574,7 +559,6 @@ mod tests {
     fn toggle_out_of_bounds_is_safe() {
         let mut state = DiagnosticsState::default();
         state.reduce(DiagnosticsIntent::ScanCompleted(vec![]));
-        // Should not panic.
         state.reduce(DiagnosticsIntent::ToggleExpanded(99));
         assert!(state.expanded.is_empty());
     }

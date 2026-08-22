@@ -6,10 +6,6 @@ use std::time::{Duration, Instant};
 use crate::error::{CommandSpecError, MaintainerError};
 use crate::jobs::Cancellation;
 
-// ---------------------------------------------------------------------------
-// Forbidden shells
-// ---------------------------------------------------------------------------
-
 /// Shell programs that must never be invoked.
 static FORBIDDEN_SHELLS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
     [
@@ -68,10 +64,6 @@ static ALLOWED_RELATIVE: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
     .collect()
 });
 
-// ---------------------------------------------------------------------------
-// CommandSpec
-// ---------------------------------------------------------------------------
-
 /// Maximum bytes captured from stdout or stderr.
 const DEFAULT_OUTPUT_CAP_BYTES: usize = 10 * 1024 * 1024; // 10 MiB
 
@@ -108,7 +100,6 @@ impl CommandSpec {
             return Err(CommandSpecError::EmptyProgram);
         }
 
-        // Extract the basename for shell checks.
         let basename = program.rsplit('/').next().unwrap_or(&program);
 
         if FORBIDDEN_SHELLS.contains(basename) {
@@ -161,10 +152,6 @@ impl CommandSpec {
     }
 }
 
-// ---------------------------------------------------------------------------
-// CommandOutput
-// ---------------------------------------------------------------------------
-
 /// Result of running a command.
 #[derive(Debug, Clone)]
 pub struct CommandOutput {
@@ -187,10 +174,6 @@ impl CommandOutput {
     }
 }
 
-// ---------------------------------------------------------------------------
-// CommandRunner trait
-// ---------------------------------------------------------------------------
-
 /// Trait for executing validated commands without a shell.
 pub trait CommandRunner: Send + Sync {
     /// Run the command, checking for cancellation. Returns structured output.
@@ -201,10 +184,6 @@ pub trait CommandRunner: Send + Sync {
     ) -> crate::error::Result<CommandOutput>;
 }
 
-// ---------------------------------------------------------------------------
-// Default implementation
-// ---------------------------------------------------------------------------
-
 /// Standard implementation that uses `std::process::Command`.
 pub struct SystemCommandRunner;
 
@@ -214,7 +193,6 @@ impl CommandRunner for SystemCommandRunner {
         spec: &CommandSpec,
         cancel: &dyn Cancellation,
     ) -> crate::error::Result<CommandOutput> {
-        // Check cancellation before starting.
         if cancel.is_cancelled() {
             return Err(MaintainerError::Cancelled);
         }
@@ -230,7 +208,6 @@ impl CommandRunner for SystemCommandRunner {
 
         let deadline = Instant::now() + spec.timeout();
 
-        // Poll for completion, checking cancellation and timeout.
         loop {
             if cancel.is_cancelled() {
                 let _ = child.kill();
@@ -289,8 +266,6 @@ fn truncate_output(bytes: &[u8], cap: usize) -> (String, bool) {
 mod tests {
     use super::*;
     use crate::jobs::CancellationToken;
-
-    // --- CommandSpec validation tests ---
 
     #[test]
     fn command_spec_rejects_shell_execution() {
@@ -393,8 +368,6 @@ mod tests {
         assert_eq!(spec.output_cap_bytes(), 1024);
     }
 
-    // --- SystemCommandRunner integration tests ---
-
     #[test]
     fn command_runner_executes_true() {
         let runner = SystemCommandRunner;
@@ -430,7 +403,6 @@ mod tests {
     #[test]
     fn command_runner_sets_lc_all_c() {
         let runner = SystemCommandRunner;
-        // /usr/bin/env prints environment; grep for LC_ALL
         let spec = CommandSpec::new("/usr/bin/env", Vec::<String>::new()).unwrap();
         let token = CancellationToken::new();
         let result = runner.run(&spec, &token).unwrap();
@@ -461,23 +433,17 @@ mod tests {
     #[test]
     fn command_runner_output_cap_truncates() {
         let runner = SystemCommandRunner;
-        // Generate output larger than cap by printing a long string.
         let spec = CommandSpec::new("/usr/bin/yes", Vec::<String>::new())
             .unwrap()
             .with_output_cap(100)
             .with_timeout(Duration::from_millis(200));
         let token = CancellationToken::new();
         let result = runner.run(&spec, &token);
-        // yes will be killed by timeout, that's fine for this test.
-        // We either get a timeout error or output; check whichever we get.
         match result {
             Ok(output) => {
-                // If we got output, it should be truncated.
                 assert!(output.stdout.len() <= 100 || output.stdout_truncated);
             }
-            Err(MaintainerError::CommandFailed { .. }) => {
-                // Timeout is acceptable; the point is we don't OOM.
-            }
+            Err(MaintainerError::CommandFailed { .. }) => {}
             Err(e) => panic!("unexpected error: {e}"),
         }
     }

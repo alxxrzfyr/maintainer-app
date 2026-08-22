@@ -19,7 +19,6 @@ fn host_cpu_produces_plausible_values() {
     let now = Instant::now();
     let sample1 = read_cpu_sample(proc_path, now).unwrap();
 
-    // Small sleep to get a delta
     std::thread::sleep(std::time::Duration::from_millis(100));
 
     let sample2 = read_cpu_sample(proc_path, Instant::now()).unwrap();
@@ -53,7 +52,6 @@ fn host_memory_produces_plausible_values() {
         snapshot.used_bytes,
         snapshot.total_bytes - snapshot.available_bytes
     );
-    // Swap can be 0 on some systems
     assert!(snapshot.swap_used_bytes <= snapshot.swap_total_bytes);
 }
 
@@ -97,7 +95,6 @@ fn host_processes_finds_self() {
 #[test]
 #[ignore]
 fn host_temperatures_no_panic() {
-    // Temperatures may be empty on VMs/containers, but should not panic
     let readings = read_temperatures(Path::new("/sys")).unwrap();
     for reading in &readings {
         if let maintainer_core::capability::Capability::Available(c) = &reading.celsius {

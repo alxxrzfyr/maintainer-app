@@ -75,8 +75,6 @@ impl ServiceDiagnostics {
             }
         };
 
-        // systemctl may exit non-zero when there are failed units
-        // but still produce valid output.
         let services = parse_systemctl_output(&output);
         Capability::Available(services)
     }

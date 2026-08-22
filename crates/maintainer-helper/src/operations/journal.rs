@@ -57,7 +57,6 @@ mod tests {
 
     #[test]
     fn vacuum_args_are_numeric_only() {
-        // Verify that format strings produce only digit+suffix patterns.
         let request = JournalVacuumRequest {
             max_size_mib: 500,
             max_age_days: 30,
@@ -68,7 +67,6 @@ mod tests {
         assert_eq!(size_arg, "500M");
         assert_eq!(time_arg, "30d");
 
-        // Verify no shell metacharacters possible with u32 input.
         assert!(size_arg.chars().all(|c| c.is_ascii_digit() || c == 'M'));
         assert!(time_arg.chars().all(|c| c.is_ascii_digit() || c == 'd'));
     }

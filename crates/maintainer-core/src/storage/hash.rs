@@ -82,13 +82,11 @@ pub fn partial_hash(
     let mut hasher = blake3::Hasher::new();
 
     if file_size_bytes <= PARTIAL_CHUNK_BYTES * 2 {
-        // Small file: read entirely for the partial hash.
         let mut buf = vec![0u8; file_size_bytes as usize];
         file.read_exact(&mut buf)
             .map_err(|e| MaintainerError::io(context(), e))?;
         hasher.update(&buf);
     } else {
-        // Read prefix chunk.
         let mut prefix = vec![0u8; PARTIAL_CHUNK_BYTES as usize];
         file.read_exact(&mut prefix)
             .map_err(|e| MaintainerError::io(context(), e))?;
@@ -98,7 +96,6 @@ pub fn partial_hash(
             return Err(MaintainerError::Cancelled);
         }
 
-        // Read suffix chunk.
         let mut suffix = vec![0u8; PARTIAL_CHUNK_BYTES as usize];
         file.seek(SeekFrom::End(-(PARTIAL_CHUNK_BYTES as i64)))
             .map_err(|e| MaintainerError::io(context(), e))?;
@@ -187,7 +184,6 @@ mod tests {
         let cancel = no_cancel();
         let digest = partial_hash(&path, 11, &cancel).unwrap();
 
-        // Same content produces same digest.
         let path2 = tmp.path().join("small2.bin");
         std::fs::write(&path2, b"hello world").unwrap();
         let digest2 = partial_hash(&path2, 11, &cancel).unwrap();
@@ -213,10 +209,8 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("large.bin");
 
-        // Create a file larger than 2 * PARTIAL_CHUNK_BYTES.
         let size = (PARTIAL_CHUNK_BYTES * 3) as usize;
         let mut content = vec![0u8; size];
-        // Put distinctive data at start and end.
         content[0] = 0xAA;
         content[size - 1] = 0xBB;
         std::fs::write(&path, &content).unwrap();
@@ -224,7 +218,6 @@ mod tests {
         let cancel = no_cancel();
         let digest = partial_hash(&path, size as u64, &cancel).unwrap();
 
-        // Different suffix → different partial hash.
         let mut content2 = content.clone();
         content2[size - 1] = 0xCC;
         let path2 = tmp.path().join("large2.bin");
@@ -280,7 +273,6 @@ mod tests {
     fn full_hash_cancellation() {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("file.bin");
-        // Write enough data to require multiple buffer reads.
         let data = vec![0u8; HASH_BUFFER_BYTES * 3];
         std::fs::write(&path, &data).unwrap();
 

@@ -282,7 +282,6 @@ impl MonitoringState {
                 self.overview.cpu_text = format!("{:.0}%", snap.total_percent);
                 self.system.cpu_ring.push(snap.total_percent);
 
-                // Per-core rings
                 while self.system.per_core_rings.len() < snap.per_core_percent.len() {
                     self.system.per_core_rings.push(SampleRing::new());
                 }
@@ -340,7 +339,6 @@ impl MonitoringState {
     fn apply_disks(&mut self, disks: &Capability<Vec<DiskSnapshot>>) {
         if let Capability::Available(snaps) = disks {
             self.system.disks = snaps.clone();
-            // Summary for overview: total used / total available
             let total: u64 = snaps.iter().map(|d| d.total_bytes).sum();
             let used: u64 = snaps.iter().map(|d| d.used_bytes).sum();
             if total > 0 {
@@ -426,7 +424,6 @@ impl MonitoringState {
     fn derive_attention(&mut self, snapshot: &SystemSnapshot) {
         let mut items = Vec::new();
 
-        // Disk space thresholds
         if let Capability::Available(disks) = &snapshot.disks {
             for disk in disks {
                 if disk.total_bytes == 0 {
@@ -449,7 +446,6 @@ impl MonitoringState {
             }
         }
 
-        // Temperature critical readings (above 90°C is a hardware concern)
         if let Capability::Available(temps) = &snapshot.temperatures {
             for reading in temps {
                 if let Capability::Available(celsius) = &reading.celsius {
@@ -468,7 +464,6 @@ impl MonitoringState {
             }
         }
 
-        // Sort by severity (critical first)
         items.sort_by(|a, b| b.severity.cmp(&a.severity));
         self.overview.attention_items = items;
     }
@@ -682,7 +677,6 @@ mod tests {
             ring.push(i as f64);
         }
         assert_eq!(ring.len(), MAX_SAMPLES);
-        // Oldest should be 40 (100 - 60)
         assert_eq!(*ring.samples().front().unwrap(), 40.0);
         assert_eq!(ring.latest(), Some(99.0));
     }
@@ -758,7 +752,6 @@ mod tests {
     fn cpu_load_does_not_trigger_attention() {
         let mut state = MonitoringState::default();
 
-        // Even at 99% CPU, no attention item should be created
         let snapshot = SystemSnapshot {
             cpu: Capability::Available(make_cpu_snapshot(99.0, &[99.0, 99.0])),
             memory: Capability::Available(make_memory_snapshot(1024, 4096)),

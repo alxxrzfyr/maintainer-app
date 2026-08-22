@@ -5,10 +5,6 @@ use std::thread;
 
 use crate::error::MaintainerError;
 
-// ---------------------------------------------------------------------------
-// Cancellation
-// ---------------------------------------------------------------------------
-
 /// Cooperative cancellation signal backed by an atomic boolean.
 pub trait Cancellation: Send + Sync {
     /// Returns `true` if cancellation has been requested.
@@ -47,10 +43,6 @@ impl Cancellation for CancellationToken {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Progress
-// ---------------------------------------------------------------------------
-
 /// Current progress state for a running job.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JobProgress {
@@ -75,10 +67,6 @@ pub struct NullProgress;
 impl ProgressSink for NullProgress {
     fn report(&self, _progress: &JobProgress) {}
 }
-
-// ---------------------------------------------------------------------------
-// Item-level results
-// ---------------------------------------------------------------------------
 
 /// Outcome for a single item within a batch job.
 #[derive(Debug, Clone)]
@@ -110,10 +98,6 @@ impl OperationOutcome {
         self.failed == 0 && self.skipped == 0 && !self.cancelled
     }
 }
-
-// ---------------------------------------------------------------------------
-// Job Executor
-// ---------------------------------------------------------------------------
 
 /// Message sent from a worker to the executor owner.
 #[derive(Debug)]
@@ -164,14 +148,12 @@ impl JobExecutor {
         let max_workers = self.max_workers;
 
         thread::spawn(move || {
-            // Token-based bounded concurrency: pre-fill with max_workers tokens.
             let (token_tx, token_rx) = mpsc::sync_channel::<()>(max_workers);
             for _ in 0..max_workers {
                 let _ = token_tx.send(());
             }
 
             for job in jobs {
-                // Wait for a free worker slot.
                 if token_rx.recv().is_err() {
                     break;
                 }
@@ -192,9 +174,7 @@ impl JobExecutor {
                             JobMessage::Panicked(message)
                         }
                     };
-                    // Ignore send error (receiver dropped).
                     let _ = tx.send(msg);
-                    // Return the token to allow another job to start.
                     let _ = token_tx.send(());
                 });
             }
@@ -214,7 +194,6 @@ impl JobExecutor {
         let job_count = jobs.len();
         let (tx, rx) = mpsc::sync_channel::<JobMessage<T>>(self.max_workers);
 
-        // Token-based bounded concurrency: pre-fill with max_workers tokens.
         let (token_tx, token_rx) = mpsc::sync_channel::<()>(self.max_workers);
         for _ in 0..self.max_workers {
             let _ = token_tx.send(());
@@ -222,7 +201,6 @@ impl JobExecutor {
 
         let dispatch = thread::spawn(move || {
             for job in jobs {
-                // Wait for a free worker slot.
                 if token_rx.recv().is_err() {
                     break;
                 }
@@ -244,7 +222,6 @@ impl JobExecutor {
                         }
                     };
                     let _ = tx.send(msg);
-                    // Return the token to allow another job to start.
                     let _ = token_tx.send(());
                 });
             }
@@ -295,7 +272,6 @@ mod tests {
         let token = CancellationToken::new();
         token.cancel();
 
-        // Simulate a job that checks cancellation before doing work.
         let result: crate::error::Result<()> = if token.is_cancelled() {
             Err(MaintainerError::Cancelled)
         } else {
@@ -320,7 +296,6 @@ mod tests {
             }
         }
 
-        // Should have processed items 0..=5, then cancelled at 6.
         assert_eq!(processed, 6);
     }
 
@@ -353,7 +328,6 @@ mod tests {
             total: Some(10),
             message: "test".into(),
         };
-        // Should not panic or error.
         sink.report(&progress);
     }
 
@@ -449,7 +423,6 @@ mod tests {
                 let max_obs = Arc::clone(&max_observed);
                 let f: Box<dyn FnOnce() -> crate::error::Result<()> + Send> = Box::new(move || {
                     let current = active.fetch_add(1, Ordering::SeqCst) + 1;
-                    // Update max observed concurrency.
                     max_obs.fetch_max(current, Ordering::SeqCst);
                     thread::sleep(Duration::from_millis(20));
                     active.fetch_sub(1, Ordering::SeqCst);

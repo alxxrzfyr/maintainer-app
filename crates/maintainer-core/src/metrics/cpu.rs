@@ -103,7 +103,6 @@ pub fn read_cpu_sample(proc_path: &Path, now: Instant) -> Result<CpuSample, Main
         if line.starts_with("cpu ") {
             total = Some(parse_cpu_line(line)?);
         } else if line.starts_with("cpu") {
-            // Per-core lines like cpu0, cpu1, ...
             let first_field = line.split_whitespace().next().unwrap_or("");
             if first_field.len() > 3 && first_field[3..].chars().all(|c| c.is_ascii_digit()) {
                 cores.push(parse_cpu_line(line)?);
@@ -194,7 +193,6 @@ mod tests {
         let path = fixtures_path();
         let sample = read_cpu_sample(&path, Instant::now()).unwrap();
 
-        // Aggregate line values from fixture
         assert_eq!(sample.total.user, 10132153);
         assert_eq!(sample.total.nice, 290696);
         assert_eq!(sample.total.system, 3084719);
@@ -207,7 +205,6 @@ mod tests {
 
     #[test]
     fn first_sample_no_snapshot_possible() {
-        // With identical samples, percent should be 0
         let path = fixtures_path();
         let sample = read_cpu_sample(&path, Instant::now()).unwrap();
         let snapshot = compute_cpu_snapshot(&sample, &sample);
@@ -222,7 +219,6 @@ mod tests {
         let path = fixtures_path();
         let sample1 = read_cpu_sample(&path, Instant::now()).unwrap();
 
-        // Use second fixture for a different sample
         let path2 = fixtures_path().parent().unwrap().join("proc");
         let sample2 = read_cpu_sample_from_content(
             &fs::read_to_string(path2.join("stat_sample2")).unwrap(),
@@ -231,7 +227,6 @@ mod tests {
         .unwrap();
 
         let snapshot = compute_cpu_snapshot(&sample1, &sample2);
-        // Total percent should be > 0 and <= 100
         assert!(
             snapshot.total_percent > 0.0,
             "expected >0, got {}",
@@ -256,8 +251,6 @@ mod tests {
 
     #[test]
     fn counter_reset_handled_gracefully() {
-        // If current counters are less than previous (reset/overflow),
-        // saturating_sub produces 0 -> 0% usage (safe baseline)
         let prev = CpuCounters {
             user: 1000,
             nice: 100,
@@ -283,7 +276,6 @@ mod tests {
             guest_nice: 0,
         };
         let pct = compute_percent(&prev, &curr);
-        // saturating_sub(prev.total > curr.total) -> total_delta = 0 -> 0%
         assert_eq!(pct, 0.0);
     }
 }

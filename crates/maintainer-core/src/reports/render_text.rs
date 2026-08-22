@@ -20,7 +20,6 @@ pub fn render_text(report: &RedactedReport) -> String {
     write_capability_notes(&mut out, report);
     write_redaction_notice(&mut out, &report.policy);
 
-    // Final residual scan.
     scrub_residuals(&out, &report.policy)
 }
 
@@ -333,7 +332,6 @@ mod tests {
         let report = minimal_report();
         let text = render_text(&report);
 
-        // Verify section order.
         let os_pos = text.find("--- Operating System ---").unwrap();
         let hw_pos = text.find("--- Hardware ---").unwrap();
         let health_pos = text.find("--- Storage Health ---").unwrap();
@@ -543,7 +541,6 @@ mod tests {
 
     #[test]
     fn residual_ip_in_free_text_gets_caught() {
-        // Simulate a scenario where an IP leaks into a description field.
         let mut report = minimal_report();
         report.diagnostics.failed_services[0].description = "bind to 10.0.0.5 failed".into();
         let text = render_text(&report);

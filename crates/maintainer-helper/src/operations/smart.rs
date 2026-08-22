@@ -33,22 +33,8 @@ pub fn execute_smart_refresh(
 ) -> Result<OperationResponse, HelperError> {
     let object_path = build_drive_object_path(&request.drive_id);
 
-    // In a production build with a running D-Bus session, this would use zbus
-    // to call SmartUpdate. For now, we validate the path construction and
-    // return an appropriate error if UDisks2 is not available.
-    //
-    // The actual D-Bus call will be:
-    //   connection.call_method(
-    //       Some(UDISKS2_BUS_NAME),
-    //       &object_path,
-    //       Some(UDISKS2_ATA_INTERFACE),
-    //       "SmartUpdate",
-    //       &(std::collections::HashMap::<String, zbus::zvariant::Value>::new(),),
-    //   )
     let _ = (UDISKS2_BUS_NAME, UDISKS2_ATA_INTERFACE);
 
-    // Placeholder: in integration, this calls UDisks2 over the system bus.
-    // Unit tests verify path construction and validation only.
     Err(HelperError::OperationFailed {
         reason: format!(
             "UDisks2 SMART refresh not available in this context (path: {object_path})"
@@ -68,11 +54,8 @@ mod tests {
 
     #[test]
     fn build_path_no_traversal_possible() {
-        // Even if somehow invalid chars got through, verify path stays under prefix.
-        // With validation, drive_id can only be [a-zA-Z0-9_].
         let path = build_drive_object_path("valid_drive_id");
         assert!(path.starts_with(UDISKS2_DRIVES_PREFIX));
-        // No ".." possible since dots are rejected by validation.
     }
 
     #[test]

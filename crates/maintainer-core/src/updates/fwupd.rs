@@ -77,7 +77,6 @@ impl FwupdAdapter {
             }
         };
 
-        // Exit code 2 means "no updates available" for fwupdmgr.
         if output.exit_code == Some(2) {
             return Capability::Available(Vec::new());
         }
@@ -114,9 +113,7 @@ fn parse_fwupd_updates(stdout: &str) -> Vec<UpdateCandidate> {
     for line in stdout.lines() {
         let trimmed = line.trim().trim_start_matches(['├', '─', '│', '└', ' ']);
 
-        // Device name lines don't have a colon-separated key/value with indentation.
         if !trimmed.contains(':') && !trimmed.is_empty() && !trimmed.starts_with("Devices") {
-            // Flush previous device.
             if let (Some(name), Some(ver)) = (&current_name, &update_version) {
                 candidates.push(UpdateCandidate {
                     name: name.clone(),
@@ -153,7 +150,6 @@ fn parse_fwupd_updates(stdout: &str) -> Vec<UpdateCandidate> {
         }
     }
 
-    // Flush the last device.
     if let (Some(name), Some(ver)) = (&current_name, &update_version) {
         candidates.push(UpdateCandidate {
             name: name.clone(),

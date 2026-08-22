@@ -46,7 +46,6 @@ impl Shell {
 
         window.add_css_class("maintainer_window");
 
-        // Build pages once
         let overview_page = OverviewPage::new();
         let system_page = SystemPage::new();
         let storage_page = StoragePage::new();
@@ -59,7 +58,6 @@ impl Shell {
         let runtime_for_settings = runtime.clone();
         let settings_widget = build_settings_page(&settings_snapshot, move |intent| {
             let mut rt = runtime_for_settings.borrow_mut();
-            // Apply intent to settings state and persist
             let mut settings_state =
                 crate::state::SettingsState::from_snapshot(rt.settings.clone());
             if settings_state.reduce(intent) {
@@ -197,18 +195,14 @@ impl Shell {
     ) {
         let tick_counter: Rc<RefCell<u32>> = Rc::new(RefCell::new(0));
 
-        // std channel: worker sends snapshots, main thread polls in the timer.
         let (snapshot_tx, snapshot_rx) =
             std::sync::mpsc::channel::<Box<maintainer_core::metrics::SystemSnapshot>>();
 
         // Bounded request channel (capacity=1) provides tick coalescing.
-        // The bool signals whether the caller currently needs the per-process
-        // table (only the System page renders it); when false the worker
         // reuses the last collected process list instead of re-reading all of
         // /proc/[pid], which is the single most expensive collector per tick.
         let (request_tx, request_rx) = std::sync::mpsc::sync_channel::<bool>(1);
 
-        // Worker thread owns its own metric state.
         std::thread::Builder::new()
             .name("metric-worker".into())
             .spawn(move || {
@@ -377,7 +371,6 @@ impl Shell {
             })
             .expect("failed to spawn metric-worker thread");
 
-        // Refresh a page as soon as it becomes visible. Because the timer only
         // updates the visible page, a page switched to would otherwise show
         // whatever it rendered when it was last visible until the next tick.
         {
@@ -405,13 +398,7 @@ impl Shell {
 
             let should_sample = immediate || *ticks >= interval_secs;
 
-            // Drain any ready snapshots from the worker.
-            // Only refresh the page the user is actually looking at: both
-            // update() paths rebuild widget subtrees (the temperature flow and
-            // process rows are torn down and recreated), which dirties the
             // frame and forces a repaint. Doing that for a hidden page costs
-            // CPU and changes nothing on screen. The view models are still
-            // updated by reduce(), so switching pages shows current data.
             let visible_page = page_stack.visible_child_name();
             let visible_page = visible_page.as_deref();
             while let Ok(snapshot) = snapshot_rx.try_recv() {
@@ -432,8 +419,6 @@ impl Shell {
             rt.monitoring.immediate_sample_pending = false;
 
             // Non-blocking: if worker is busy, this tick coalesces.
-            // Only request the (expensive) per-process list when the System
-            // page is actually visible — it is the only consumer.
             let needs_processes = page_stack.visible_child_name().as_deref() == Some("System");
             let _ = request_tx.try_send(needs_processes);
 
@@ -570,17 +555,8 @@ impl Shell {
             }
 
             let job_id = ScanJobId(1);
-            let (token, _progress) = dispatch::dispatch_storage_scan(
-                &executor,
-                job_id,
-                policy,
-                |_p| {
-                    // Progress delivered to UI via JobProgress widget.
-                },
-                |_result| {
-                    // Result delivered; UI update handled through state.
-                },
-            );
+            let (token, _progress) =
+                dispatch::dispatch_storage_scan(&executor, job_id, policy, |_p| {}, |_result| {});
             *token_ref.borrow_mut() = Some(token);
         });
 

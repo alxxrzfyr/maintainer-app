@@ -212,14 +212,6 @@ impl Default for RealUDisksClient {
 
 impl UDisksClient for RealUDisksClient {
     fn get_drives(&self) -> Result<Vec<UDisksDriveProperties>, UDisksError> {
-        // In production, this would:
-        // 1. Connect to system bus via zbus
-        // 2. Enumerate /org/freedesktop/UDisks2/drives/*
-        // 3. Read org.freedesktop.UDisks2.Drive properties
-        // 4. Read org.freedesktop.UDisks2.Drive.Ata properties for SMART
-        //
-        // For now, return ServiceUnavailable until the async integration
-        // is wired up in a later task.
         Err(UDisksError::ServiceUnavailable(
             "UDisks2 D-Bus integration pending async runtime setup".into(),
         ))
@@ -351,7 +343,6 @@ mod tests {
             temperature_kelvin: Some(308.15), // 35°C
             power_on_hours: Some(5678),
             smart_updated_unix: Some(now_unix),
-            // NVMe drives report fewer traditional ATA attributes
             attributes: vec![],
         }
     }
@@ -386,11 +377,9 @@ mod tests {
         assert_eq!(drive.source, "UDisks2");
         assert_eq!(drive.power_on_hours, Some(12345));
 
-        // Temperature conversion from Kelvin
         let temp = drive.temperature_celsius.unwrap();
         assert!((temp.value() - 40.0).abs() < 0.01);
 
-        // Only critical attributes should be mapped (id 5 and 197, not 9)
         assert_eq!(drive.attributes.len(), 2);
         assert!(drive.attributes.iter().any(|a| a.id == 5));
         assert!(drive.attributes.iter().any(|a| a.id == 197));
@@ -421,7 +410,6 @@ mod tests {
     #[test]
     fn map_drive_with_critical_attribute_failing() {
         let mut props = make_ata_drive();
-        // Make attribute 5 (Reallocated Sectors) fail
         props.attributes[0].value = 10;
         props.attributes[0].worst = 10;
         let drive = map_drive(&props);
@@ -432,7 +420,6 @@ mod tests {
     #[test]
     fn map_drive_stale_data() {
         let mut props = make_ata_drive();
-        // Set sample time to 10 days ago
         let old_time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()

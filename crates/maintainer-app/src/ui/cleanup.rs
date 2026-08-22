@@ -30,7 +30,6 @@ impl CleanupPage {
         container.set_margin_start(24);
         container.set_margin_end(24);
 
-        // Header.
         let header = Label::new(Some("System Cleanup"));
         header.add_css_class("title-1");
         header.set_halign(gtk4::Align::Start);
@@ -45,13 +44,11 @@ impl CleanupPage {
         description.add_css_class("dim-label");
         container.append(&description);
 
-        // Scan button.
         let scan_button = Button::with_label("Scan for Reclaimable Space");
         scan_button.add_css_class("suggested-action");
         scan_button.set_halign(gtk4::Align::Start);
         container.append(&scan_button);
 
-        // Status label.
         let status_label = Label::new(None);
         status_label.set_halign(gtk4::Align::Start);
         status_label.set_visible(false);
@@ -59,7 +56,6 @@ impl CleanupPage {
 
         container.append(&Separator::new(Orientation::Horizontal));
 
-        // Scrollable items list.
         let scrolled = ScrolledWindow::new();
         scrolled.set_vexpand(true);
         scrolled.set_min_content_height(200);
@@ -70,14 +66,12 @@ impl CleanupPage {
         scrolled.set_child(Some(&items_list));
         container.append(&scrolled);
 
-        // Execute button (hidden until items are reviewed).
         let execute_button = Button::with_label("Remove Selected Items");
         execute_button.add_css_class("destructive-action");
         execute_button.set_halign(gtk4::Align::Start);
         execute_button.set_visible(false);
         container.append(&execute_button);
 
-        // Result display.
         let result_label = Label::new(None);
         result_label.set_halign(gtk4::Align::Start);
         result_label.set_wrap(true);

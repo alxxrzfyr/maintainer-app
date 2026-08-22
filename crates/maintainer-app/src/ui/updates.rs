@@ -58,7 +58,6 @@ impl UpdatesPage {
         container.set_margin_start(24);
         container.set_margin_end(24);
 
-        // Header.
         let header = Label::new(Some("System Updates"));
         header.add_css_class("title-1");
         header.set_halign(gtk4::Align::Start);
@@ -73,19 +72,16 @@ impl UpdatesPage {
         description.add_css_class("dim-label");
         container.append(&description);
 
-        // Check button.
         let check_button = Button::with_label("Check for Updates");
         check_button.add_css_class("suggested-action");
         check_button.set_halign(gtk4::Align::Start);
         container.append(&check_button);
 
-        // Status label.
         let status_label = Label::new(None);
         status_label.set_halign(gtk4::Align::Start);
         status_label.set_visible(false);
         container.append(&status_label);
 
-        // Scrollable package list.
         let scrolled = ScrolledWindow::new();
         scrolled.set_vexpand(true);
         scrolled.set_min_content_height(200);
@@ -97,21 +93,18 @@ impl UpdatesPage {
         scrolled.set_child(Some(&package_list));
         container.append(&scrolled);
 
-        // Confirm button (shown during review).
         let confirm_button = Button::with_label("Install Updates");
         confirm_button.add_css_class("suggested-action");
         confirm_button.set_halign(gtk4::Align::Start);
         confirm_button.set_visible(false);
         container.append(&confirm_button);
 
-        // Cancel button (shown during execution when allowed).
         let cancel_button = Button::with_label("Cancel");
         cancel_button.add_css_class("destructive-action");
         cancel_button.set_halign(gtk4::Align::Start);
         cancel_button.set_visible(false);
         container.append(&cancel_button);
 
-        // Progress display.
         let progress_bar = ProgressBar::new();
         progress_bar.set_visible(false);
         progress_bar.set_show_text(true);
@@ -122,7 +115,6 @@ impl UpdatesPage {
         progress_label.set_visible(false);
         container.append(&progress_label);
 
-        // Result display.
         let result_label = Label::new(None);
         result_label.set_halign(gtk4::Align::Start);
         result_label.set_visible(false);

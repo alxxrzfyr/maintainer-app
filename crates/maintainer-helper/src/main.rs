@@ -11,7 +11,6 @@ use maintainer_helper::server::{ServerConfig, run_server};
 fn main() {
     let args: Vec<String> = std::env::args().collect();
 
-    // Provide a minimal --help for discoverability.
     if args.iter().any(|a| a == "--help" || a == "-h") {
         print_usage();
         return;

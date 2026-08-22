@@ -144,7 +144,6 @@ impl<'a> DuplicateScanner<'a> {
             return Ok(result);
         }
 
-        // Step 1: Group by size.
         let size_groups = self.group_by_size(candidates);
 
         self.progress.report(&JobProgress {
@@ -153,7 +152,6 @@ impl<'a> DuplicateScanner<'a> {
             message: "Grouping files by size".into(),
         });
 
-        // Process one size group at a time to bound memory.
         let total_groups = size_groups.len() as u64;
         for (group_idx, (size, files)) in size_groups.into_iter().enumerate() {
             if self.cancel.is_cancelled() {
@@ -167,16 +165,13 @@ impl<'a> DuplicateScanner<'a> {
                 message: format!("Processing size group {size} bytes"),
             });
 
-            // Skip groups with fewer than 2 distinct inodes.
             let distinct_inodes = distinct_inode_count(&files);
             if distinct_inodes < 2 {
                 continue;
             }
 
-            // Step 2: Partial hash.
             let partial_groups = self.partial_hash_group(size, &files, &mut result);
 
-            // Step 3: Full hash for groups with matching partial hashes.
             for (_partial_digest, partial_matches) in partial_groups {
                 if partial_matches.len() < 2 {
                     continue;
@@ -214,7 +209,6 @@ impl<'a> DuplicateScanner<'a> {
                 .push(candidate);
         }
 
-        // Only keep groups with at least 2 files.
         groups
             .into_iter()
             .filter(|(_, files)| files.len() >= 2)
@@ -272,7 +266,6 @@ impl<'a> DuplicateScanner<'a> {
                 return Ok(());
             }
 
-            // Re-stat before hashing.
             let pre_stat = match FileSnapshot::capture(&candidate.path) {
                 Ok(s) => s,
                 Err(e) => {
@@ -284,7 +277,6 @@ impl<'a> DuplicateScanner<'a> {
                 }
             };
 
-            // Verify the file hasn't changed since discovery.
             if pre_stat.size != candidate.size_bytes
                 || pre_stat.device != candidate.identity.device
                 || pre_stat.inode != candidate.identity.inode
@@ -296,7 +288,6 @@ impl<'a> DuplicateScanner<'a> {
                 continue;
             }
 
-            // Full hash.
             let (digest, bytes_read) = match full_hash(&candidate.path, self.cancel) {
                 Ok(v) => v,
                 Err(MaintainerError::Cancelled) => {
@@ -313,7 +304,6 @@ impl<'a> DuplicateScanner<'a> {
             };
             result.bytes_hashed += bytes_read;
 
-            // Re-stat after hashing to confirm stability.
             let post_stat = match FileSnapshot::capture(&candidate.path) {
                 Ok(s) => s,
                 Err(e) => {
@@ -341,7 +331,6 @@ impl<'a> DuplicateScanner<'a> {
             });
         }
 
-        // Emit groups with 2+ files that have 2+ distinct inodes.
         for (digest, files) in confirmed {
             if files.len() >= 2 && distinct_inode_count_files(&files) >= 2 {
                 result.groups.push(DuplicateGroup {
@@ -415,7 +404,6 @@ mod tests {
         let candidates = vec![make_candidate(&p1), make_candidate(&p2)];
         let result = scanner.scan(candidates).unwrap();
 
-        // Different sizes → no groups, no hashing beyond size comparison.
         assert!(result.groups.is_empty());
         assert_eq!(result.bytes_hashed, 0);
     }
@@ -425,7 +413,6 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let p1 = tmp.path().join("a.bin");
         let p2 = tmp.path().join("b.bin");
-        // Same size, different content from the start.
         std::fs::write(&p1, b"aaaa1234").unwrap();
         std::fs::write(&p2, b"bbbb1234").unwrap();
 
@@ -436,20 +423,17 @@ mod tests {
         let candidates = vec![make_candidate(&p1), make_candidate(&p2)];
         let result = scanner.scan(candidates).unwrap();
 
-        // Partial hash differs → no full hash needed → no groups.
         assert!(result.groups.is_empty());
         assert_eq!(result.bytes_hashed, 0);
     }
 
     #[test]
     fn same_partial_hash_different_full_content_no_group() {
-        // Create files that have same prefix and suffix but differ in the middle.
         let tmp = TempDir::new().unwrap();
         let size = 16384usize; // larger than 2 * PARTIAL_CHUNK_BYTES (8192)
 
         let mut content1 = vec![0xAAu8; size];
         let mut content2 = vec![0xAAu8; size];
-        // Middle differs.
         content1[5000] = 0x01;
         content2[5000] = 0x02;
 
@@ -465,9 +449,7 @@ mod tests {
         let candidates = vec![make_candidate(&p1), make_candidate(&p2)];
         let result = scanner.scan(candidates).unwrap();
 
-        // Same partial hash (prefix and suffix identical) but full hash differs.
         assert!(result.groups.is_empty());
-        // Full hash was computed for both files.
         assert!(result.bytes_hashed > 0);
     }
 
@@ -513,7 +495,6 @@ mod tests {
         let candidates = vec![make_candidate(&original), make_candidate(&hardlink)];
         let result = scanner.scan(candidates).unwrap();
 
-        // Hard links share the same inode → no reclaimable duplicate group.
         assert!(result.groups.is_empty());
     }
 
@@ -539,7 +520,6 @@ mod tests {
         ];
         let result = scanner.scan(candidates).unwrap();
 
-        // Should form a group because there are 2+ distinct inodes.
         assert_eq!(result.groups.len(), 1);
         assert_eq!(result.groups[0].files.len(), 3);
     }
@@ -567,9 +547,6 @@ mod tests {
 
     #[test]
     fn file_changed_while_hashing_is_rejected() {
-        // Simulate a "changed" file by providing a candidate whose recorded
-        // identity (inode) differs from what's on disk, as would happen if the
-        // file was replaced between discovery and hashing.
         let tmp = TempDir::new().unwrap();
         let content = b"stable content here";
         let p1 = tmp.path().join("stable.dat");
@@ -577,7 +554,6 @@ mod tests {
         std::fs::write(&p1, content).unwrap();
         std::fs::write(&p2, content).unwrap();
 
-        // Create a candidate for p2 with correct size but wrong inode.
         let meta2 = p2.symlink_metadata().unwrap();
         let fake_candidate = DuplicateCandidate {
             path: p2.clone(),
@@ -596,9 +572,7 @@ mod tests {
         let candidates = vec![make_candidate(&p1), fake_candidate];
         let result = scanner.scan(candidates).unwrap();
 
-        // The changed file is rejected during pre-hash stat check, so no group forms.
         assert!(result.groups.is_empty());
-        // Should have an issue about the changed file.
         assert!(result.issues.iter().any(|i| i.path == p2));
     }
 
@@ -617,20 +591,17 @@ mod tests {
         let candidates = vec![make_candidate(&p1), make_candidate(&p2)];
         let result = scanner.scan(candidates).unwrap();
 
-        // Zero-byte files are not useful duplicates.
         assert!(result.groups.is_empty());
     }
 
     #[test]
     fn multiple_size_groups_processed_independently() {
         let tmp = TempDir::new().unwrap();
-        // Group A: 10 bytes.
         let a1 = tmp.path().join("a1.bin");
         let a2 = tmp.path().join("a2.bin");
         std::fs::write(&a1, b"0123456789").unwrap();
         std::fs::write(&a2, b"0123456789").unwrap();
 
-        // Group B: 5 bytes.
         let b1 = tmp.path().join("b1.bin");
         let b2 = tmp.path().join("b2.bin");
         std::fs::write(&b1, b"abcde").unwrap();
@@ -707,7 +678,6 @@ mod tests {
         let existing = tmp.path().join("real.dat");
         std::fs::write(&existing, b"real content").unwrap();
 
-        // Create a candidate pointing to a path we then delete.
         let vanished = tmp.path().join("vanished.dat");
         std::fs::write(&vanished, b"real content").unwrap();
         let candidate_vanished = make_candidate(&vanished);
@@ -720,7 +690,6 @@ mod tests {
         let candidates = vec![make_candidate(&existing), candidate_vanished];
         let result = scanner.scan(candidates).unwrap();
 
-        // The vanished file should produce an issue.
         assert!(result.issues.iter().any(|i| i.path == vanished));
         assert!(result.groups.is_empty());
     }

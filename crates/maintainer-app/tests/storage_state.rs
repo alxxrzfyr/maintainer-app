@@ -15,10 +15,6 @@ use maintainer_core::storage::{
     ContentDigest, DuplicateFile, DuplicateGroup, LargeFile, ScanIssue,
 };
 
-// ---------------------------------------------------------------------------
-// Root selection
-// ---------------------------------------------------------------------------
-
 #[test]
 fn set_scan_root_stores_path() {
     let mut state = StorageState::default();
@@ -39,10 +35,6 @@ fn duplicate_scan_denied_without_root() {
     assert!(!state.reduce(StorageIntent::StartDuplicateScan));
     assert!(state.duplicate_scan.is_none());
 }
-
-// ---------------------------------------------------------------------------
-// Start / Progress / Cancel / Result lifecycle
-// ---------------------------------------------------------------------------
 
 #[test]
 fn start_storage_scan_creates_running_state() {
@@ -66,7 +58,6 @@ fn cannot_start_scan_while_running() {
     let mut state = StorageState::default();
     state.reduce(StorageIntent::SetScanRoot(PathBuf::from("/tmp")));
     state.reduce(StorageIntent::StartStorageScan);
-    // Second start denied.
     assert!(!state.reduce(StorageIntent::StartStorageScan));
 }
 
@@ -141,10 +132,6 @@ fn completed_scan_stores_results() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Stale job rejection
-// ---------------------------------------------------------------------------
-
 #[test]
 fn stale_progress_rejected() {
     let mut state = StorageState::default();
@@ -152,7 +139,6 @@ fn stale_progress_rejected() {
     state.reduce(StorageIntent::StartStorageScan);
     let _job_id = state.storage_scan.as_ref().unwrap().job_id;
 
-    // Stale ID from a hypothetical previous scan.
     let stale_id = ScanJobId(999);
     assert!(!state.reduce(StorageIntent::StorageScanProgress {
         job_id: stale_id,
@@ -185,10 +171,6 @@ fn stale_cancel_rejected() {
     assert!(!state.reduce(StorageIntent::CancelStorageScan { job_id: stale_id }));
 }
 
-// ---------------------------------------------------------------------------
-// Sort stability
-// ---------------------------------------------------------------------------
-
 #[test]
 fn sort_change_reorders_large_files() {
     let mut state = StorageState::default();
@@ -216,17 +198,14 @@ fn sort_change_reorders_large_files() {
         issues: Vec::new(),
     });
 
-    // Default is SizeDesc.
     assert_eq!(state.large_files[0].size_bytes, 300);
     assert_eq!(state.large_files[1].size_bytes, 200);
     assert_eq!(state.large_files[2].size_bytes, 100);
 
-    // Switch to SizeAsc.
     assert!(state.reduce(StorageIntent::SetLargeFileSort(LargeFileSort::SizeAsc)));
     assert_eq!(state.large_files[0].size_bytes, 100);
     assert_eq!(state.large_files[2].size_bytes, 300);
 
-    // Same sort is a no-op.
     assert!(!state.reduce(StorageIntent::SetLargeFileSort(LargeFileSort::SizeAsc)));
 }
 
@@ -258,10 +237,6 @@ fn sort_by_path_orders_alphabetically() {
     assert_eq!(state.large_files[1].path, PathBuf::from("/tmp/zeta.bin"));
 }
 
-// ---------------------------------------------------------------------------
-// Directory drill-down
-// ---------------------------------------------------------------------------
-
 #[test]
 fn drill_down_sets_path() {
     let mut state = StorageState::default();
@@ -284,9 +259,7 @@ fn drill_up_navigates_parent() {
 fn drill_up_from_root_clears() {
     let mut state = StorageState::default();
     state.reduce(StorageIntent::DrillDown(PathBuf::from("/")));
-    // Drilling up from "/" yields empty string parent which becomes None-equivalent.
     assert!(state.reduce(StorageIntent::DrillUp));
-    // Parent of "/" is None on Unix.
     assert!(state.drill_down_path.is_none());
 }
 
@@ -295,10 +268,6 @@ fn drill_up_without_path_is_noop() {
     let mut state = StorageState::default();
     assert!(!state.reduce(StorageIntent::DrillUp));
 }
-
-// ---------------------------------------------------------------------------
-// Duplicate selections default empty
-// ---------------------------------------------------------------------------
 
 fn make_duplicate_groups() -> Vec<DuplicateGroup> {
     vec![
@@ -378,14 +347,12 @@ fn toggle_selection_adds_and_removes() {
         issues: Vec::new(),
     });
 
-    // Select file 1 from group 0.
     assert!(state.reduce(StorageIntent::ToggleDuplicateSelection {
         group_idx: 0,
         file_idx: 1,
     }));
     assert_eq!(state.duplicate_selections.len(), 1);
 
-    // Toggle again to deselect.
     assert!(state.reduce(StorageIntent::ToggleDuplicateSelection {
         group_idx: 0,
         file_idx: 1,
@@ -406,21 +373,15 @@ fn invalid_selection_indices_rejected() {
         issues: Vec::new(),
     });
 
-    // Out of bounds group.
     assert!(!state.reduce(StorageIntent::ToggleDuplicateSelection {
         group_idx: 99,
         file_idx: 0,
     }));
-    // Out of bounds file.
     assert!(!state.reduce(StorageIntent::ToggleDuplicateSelection {
         group_idx: 0,
         file_idx: 99,
     }));
 }
-
-// ---------------------------------------------------------------------------
-// Full-path review before removal
-// ---------------------------------------------------------------------------
 
 #[test]
 fn build_removal_plan_shows_full_paths() {
@@ -435,7 +396,6 @@ fn build_removal_plan_shows_full_paths() {
         issues: Vec::new(),
     });
 
-    // Select one file from each group.
     state.reduce(StorageIntent::ToggleDuplicateSelection {
         group_idx: 0,
         file_idx: 1,
@@ -469,7 +429,6 @@ fn build_removal_plan_denied_with_empty_selections() {
         issues: Vec::new(),
     });
 
-    // No selections -> denied.
     assert!(!state.reduce(StorageIntent::BuildRemovalPlan));
     assert!(state.removal_review.is_none());
 }
@@ -496,10 +455,6 @@ fn dismiss_removal_review_clears() {
     assert!(state.reduce(StorageIntent::DismissRemovalReview));
     assert!(state.removal_review.is_none());
 }
-
-// ---------------------------------------------------------------------------
-// Duplicate scan lifecycle
-// ---------------------------------------------------------------------------
 
 #[test]
 fn duplicate_scan_progress_and_cancel() {
@@ -533,7 +488,6 @@ fn can_start_new_scan_after_completed() {
         issues: Vec::new(),
     });
 
-    // Start a new scan after completion.
     assert!(state.reduce(StorageIntent::StartStorageScan));
     let new_id = state.storage_scan.as_ref().unwrap().job_id;
     assert_ne!(new_id, job_id);
@@ -550,10 +504,6 @@ fn can_start_new_scan_after_cancelled() {
     assert!(state.reduce(StorageIntent::StartStorageScan));
 }
 
-// ---------------------------------------------------------------------------
-// Sub-page navigation
-// ---------------------------------------------------------------------------
-
 #[test]
 fn navigate_sub_page() {
     let mut state = StorageState::default();
@@ -561,10 +511,6 @@ fn navigate_sub_page() {
     assert!(state.reduce(StorageIntent::NavigateSubPage(StorageSubPage::LargeFiles)));
     assert_eq!(state.sub_page, StorageSubPage::LargeFiles);
 }
-
-// ---------------------------------------------------------------------------
-// Recoverable issue count
-// ---------------------------------------------------------------------------
 
 #[test]
 fn recoverable_issues_stored_on_completion() {

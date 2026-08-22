@@ -111,7 +111,6 @@ fn parse_start_time(stat_content: &str) -> Result<u64, MaintainerError> {
         ));
     }
 
-    // Field index 19 (0-based after comm) = start_time
     fields[19].parse::<u64>().map_err(|_| {
         MaintainerError::invalid_data("/proc/[pid]/stat", "start_time not a valid u64")
     })
@@ -132,20 +131,16 @@ pub fn terminate_process(
         return Ok(TerminateResult::Cancelled);
     }
 
-    // Re-read the process stat to verify identity
     let stat_content = match reader.read_stat(identity.pid) {
         Some(content) => content,
         None => return Ok(TerminateResult::AlreadyExited),
     };
 
-    // Verify start_time matches
     let current_start_time = parse_start_time(&stat_content)?;
     if current_start_time != identity.start_time_ticks {
         return Ok(TerminateResult::PidReused);
     }
 
-    // Check if current user owns the process (heuristic: compare UID)
-    // For now, attempt the signal and handle EPERM
     match reader.send_sigterm(identity.pid) {
         Ok(()) => Ok(TerminateResult::Sent),
         Err(e) if e.raw_os_error() == Some(libc::EPERM) => {
@@ -221,7 +216,6 @@ mod tests {
         fn send_sigterm(&self, _pid: u32) -> std::result::Result<(), std::io::Error> {
             *self.sigterm_called.lock().unwrap() = true;
             let mut result = self.sigterm_result.lock().unwrap();
-            // Take the result to satisfy borrow checker; replace with Ok for subsequent calls
             std::mem::replace(&mut *result, Ok(()))
         }
 

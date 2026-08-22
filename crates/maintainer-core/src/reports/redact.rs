@@ -272,7 +272,6 @@ fn redact_diagnostics(
 /// Remove likely process arguments from a log template.
 /// Replaces content after common command patterns with [args].
 fn scrub_process_args(template: &str) -> String {
-    // Simple heuristic: if line contains an absolute path followed by arguments,
     // keep the path but redact arguments.
     if let Some(idx) = template.find(" -- ") {
         return format!("{} -- {REDACTED_ARGS}", &template[..idx]);
@@ -317,7 +316,6 @@ fn scrub_ipv4(text: &str) -> String {
                 } else {
                     result.push_str(&text[i..end]);
                 }
-                // Advance past the matched sequence.
                 while let Some(&(j, _)) = chars.peek() {
                     if j >= end {
                         break;
@@ -342,7 +340,6 @@ fn try_parse_ipv4_str(text: &str, start: usize) -> Option<(usize, bool)> {
     let mut i = 0;
 
     loop {
-        // Parse one octet (1-3 ASCII digits).
         let octet_start = i;
         while i < slice.len() && slice.as_bytes()[i].is_ascii_digit() {
             i += 1;
@@ -357,14 +354,12 @@ fn try_parse_ipv4_str(text: &str, start: usize) -> Option<(usize, bool)> {
             break;
         }
 
-        // Expect a dot.
         if i >= slice.len() || slice.as_bytes()[i] != b'.' {
             return None;
         }
         i += 1; // consume dot
     }
 
-    // Validate octets are in 0-255 range.
     let candidate = &slice[..i];
     let parts: Vec<&str> = candidate.split('.').collect();
     if parts.len() != 4 {
@@ -383,7 +378,6 @@ fn try_parse_ipv4_str(text: &str, start: usize) -> Option<(usize, bool)> {
 
     let end = start + i;
 
-    // Check it's not preceded by a letter (version prefix like "v").
     if start > 0 {
         let prev_byte = text.as_bytes()[start - 1];
         if prev_byte.is_ascii_alphabetic() {
@@ -391,7 +385,6 @@ fn try_parse_ipv4_str(text: &str, start: usize) -> Option<(usize, bool)> {
         }
     }
 
-    // Check it's not followed by another dot (more than 4 octets = version).
     if end < text.len() && text.as_bytes()[end] == b'.' {
         return Some((end, false));
     }
@@ -401,8 +394,6 @@ fn try_parse_ipv4_str(text: &str, start: usize) -> Option<(usize, bool)> {
 
 /// Replace IPv6 addresses.
 fn scrub_ipv6(text: &str) -> String {
-    // Matches common IPv6 patterns: groups of hex separated by colons.
-    // Simplified: look for sequences with at least 2 colon-hex groups.
     let mut result = String::with_capacity(text.len());
     let chars: Vec<char> = text.chars().collect();
     let mut i = 0;
@@ -422,13 +413,11 @@ fn scrub_ipv6(text: &str) -> String {
 
 /// Try to match an IPv6 address starting at position `start`.
 fn try_match_ipv6(chars: &[char], start: usize) -> Option<usize> {
-    // IPv6: groups of hex digits separated by colons, with possible ::
     let mut i = start;
     let mut colon_count = 0;
     let mut hex_groups = 0;
     let mut has_double_colon = false;
 
-    // Must start with hex digit or ':' (for ::).
     if i >= chars.len() {
         return None;
     }
@@ -436,7 +425,6 @@ fn try_match_ipv6(chars: &[char], start: usize) -> Option<usize> {
         return None;
     }
 
-    // Don't match if preceded by alphanumeric (part of a word).
     if start > 0 && (chars[start - 1].is_ascii_alphanumeric() || chars[start - 1] == ':') {
         return None;
     }
@@ -471,14 +459,10 @@ fn try_match_ipv6(chars: &[char], start: usize) -> Option<usize> {
         }
     }
 
-    // A valid IPv6 needs either:
-    // - 7+ colons (full form), or
-    // - :: with at least 1 hex group and 2+ colons
     let is_valid = (colon_count >= 3 && hex_groups >= 3)
         || (has_double_colon && hex_groups >= 1 && colon_count >= 2);
 
     if is_valid {
-        // Don't match if followed by alphanumeric.
         if i < chars.len() && chars[i].is_ascii_alphanumeric() {
             return None;
         }
@@ -510,13 +494,10 @@ fn scrub_mac(text: &str) -> String {
 
 /// Try to match a MAC address at position `start`.
 fn try_match_mac(chars: &[char], start: usize) -> Option<usize> {
-    // MAC: XX:XX:XX:XX:XX:XX or XX-XX-XX-XX-XX-XX
-    // Exactly 6 groups of 2 hex digits separated by : or -.
     if start + 17 > chars.len() {
         return None;
     }
 
-    // Don't match if preceded by hex digit or colon.
     if start > 0 && (chars[start - 1].is_ascii_hexdigit() || chars[start - 1] == ':') {
         return None;
     }
@@ -537,7 +518,6 @@ fn try_match_mac(chars: &[char], start: usize) -> Option<usize> {
     }
 
     let end = start + 17;
-    // Don't match if followed by hex or separator.
     if end < chars.len() && (chars[end].is_ascii_hexdigit() || chars[end] == separator) {
         return None;
     }
@@ -551,11 +531,8 @@ fn scrub_email(text: &str) -> String {
     let mut last_end = 0;
 
     for (i, _) in text.char_indices().filter(|&(_, c)| c == '@') {
-        // Look backwards for local part start.
         let local_start = find_email_local_start_str(text, i);
-        // Look forwards for domain end.
         if let Some(domain_end) = find_email_domain_end_str(text, i + 1) {
-            // Emit everything before the email.
             result.push_str(&text[last_end..local_start]);
             result.push_str(REDACTED_EMAIL);
             last_end = domain_end;
@@ -595,7 +572,6 @@ fn find_email_domain_end_str(text: &str, start: usize) -> Option<usize> {
             break;
         }
     }
-    // Must have at least one dot and end after start.
     if has_dot && i > start + 2 {
         Some(i)
     } else {
@@ -611,13 +587,11 @@ fn scrub_home_paths(text: &str) -> String {
     while let Some(idx) = remaining.find("/home/") {
         result.push_str(&remaining[..idx]);
         let after_home = &remaining[idx + 6..];
-        // Find end of username component.
         let end = after_home
             .find(|c: char| c == '/' || c.is_whitespace())
             .unwrap_or(after_home.len());
         if end > 0 {
             result.push_str(REDACTED_PATH);
-            // Skip the rest of the path if it continues.
             let path_rest = &after_home[end..];
             if let Some(path_end) = path_rest.find(|c: char| c.is_whitespace()) {
                 // Include the rest of the path in the redaction.
@@ -655,7 +629,6 @@ mod tests {
     fn scrub_ipv4_preserves_version_with_prefix() {
         let input = "Running version v1.2.3.4 of app";
         let result = scrub_ipv4(input);
-        // v1.2.3.4 preceded by 'v' — should not be treated as IP.
         assert!(
             result.contains("v1.2.3.4"),
             "version was incorrectly redacted: {result}"

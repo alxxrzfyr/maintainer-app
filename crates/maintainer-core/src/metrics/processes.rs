@@ -63,7 +63,6 @@ pub fn read_processes(proc_path: &Path) -> Result<Vec<ProcessSnapshot>, Maintain
 
         let pid_dir = entry.path();
 
-        // Try reading process info; skip silently on permission denied or vanished
         match read_single_process(&pid_dir) {
             Ok(snapshot) => processes.push(snapshot),
             Err(_) => continue, // Process vanished or permission denied
@@ -122,7 +121,6 @@ struct StatFields {
 fn parse_proc_stat(content: &str) -> Result<StatFields, MaintainerError> {
     let content = content.trim();
 
-    // Find the opening and closing parentheses for comm
     let open_paren = content.find('(').ok_or_else(|| {
         MaintainerError::invalid_data("/proc/[pid]/stat", "missing opening parenthesis")
     })?;
@@ -137,7 +135,6 @@ fn parse_proc_stat(content: &str) -> Result<StatFields, MaintainerError> {
 
     let comm = content[open_paren + 1..close_paren].to_string();
 
-    // Fields after the closing paren
     let rest = &content[close_paren + 2..]; // skip ") "
     let fields: Vec<&str> = rest.split_whitespace().collect();
 
@@ -196,7 +193,6 @@ fn parse_proc_status(content: &str) -> Result<StatusFields, MaintainerError> {
 
 /// Get the system page size.
 fn page_size() -> u64 {
-    // Default to 4096 which is by far the most common on Linux x86_64/arm64
     4096
 }
 
@@ -212,7 +208,6 @@ mod tests {
     #[test]
     fn read_processes_from_fixture() {
         let processes = read_processes(&fixtures_path()).unwrap();
-        // Should find processes 1, 42, 1234 from fixtures
         assert!(
             processes.len() >= 3,
             "expected at least 3 processes, got {}",
@@ -254,7 +249,6 @@ mod tests {
     fn rss_bytes_computed_from_pages() {
         let processes = read_processes(&fixtures_path()).unwrap();
         let firefox = processes.iter().find(|p| p.identity.pid == 1234).unwrap();
-        // From fixture: rss field (field index 23, which is fields[21] after comm) = 234567 pages
         assert_eq!(firefox.rss_bytes, 234567 * 4096);
     }
 

@@ -29,7 +29,6 @@ impl StorageOverview {
         container.set_margin_end(24);
         container.add_css_class("storage-overview");
 
-        // Root selection row.
         let root_row = GtkBox::new(Orientation::Horizontal, 12);
         let root_title = Label::new(Some("Scan root:"));
         root_title.set_halign(Align::Start);
@@ -44,7 +43,6 @@ impl StorageOverview {
         root_row.append(&root_label);
         container.append(&root_row);
 
-        // Scan action buttons.
         let button_row = GtkBox::new(Orientation::Horizontal, 12);
         let scan_button = Button::with_label("Scan Storage");
         scan_button.add_css_class("suggested-action");
@@ -56,19 +54,16 @@ impl StorageOverview {
         button_row.append(&duplicate_button);
         container.append(&button_row);
 
-        // Progress indicator.
         let progress = JobProgress::new("Ready");
         progress.set_visible(false);
         container.append(progress.widget());
 
-        // Summary.
         let summary_label = Label::new(None);
         summary_label.set_halign(Align::Start);
         summary_label.set_wrap(true);
         summary_label.add_css_class("storage-summary");
         container.append(&summary_label);
 
-        // Issues count.
         let issues_label = Label::new(None);
         issues_label.set_halign(Align::Start);
         issues_label.add_css_class("dim-label");
@@ -92,13 +87,11 @@ impl StorageOverview {
 
     /// Update the overview from current state.
     pub fn apply_state(&self, state: &StorageState) {
-        // Root label.
         match &state.scan_root {
             Some(path) => self.root_label.set_text(&path.to_string_lossy()),
             None => self.root_label.set_text("No directory selected"),
         }
 
-        // Scan button sensitivity.
         let can_scan = state.scan_root.is_some()
             && !matches!(
                 state.storage_scan.as_ref().map(|s| &s.phase),
@@ -113,7 +106,6 @@ impl StorageOverview {
             );
         self.duplicate_button.set_sensitive(can_dup);
 
-        // Progress.
         if let Some(ref scan) = state.storage_scan {
             match &scan.phase {
                 ScanPhase::Running { completed, total } => {
@@ -133,7 +125,6 @@ impl StorageOverview {
             self.progress.set_visible(false);
         }
 
-        // Summary.
         let file_count = state.large_files.len();
         let issue_count = state.scan_issues.len();
         if file_count > 0 {

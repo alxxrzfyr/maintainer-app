@@ -43,10 +43,6 @@ pub trait InterpretationRule: Send + Sync {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Built-in rules
-// ---------------------------------------------------------------------------
-
 /// Rule: OOM killer activity.
 struct OomKillerRule;
 
@@ -247,10 +243,6 @@ impl InterpretationRule for RateLimitRule {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------
-
 /// All built-in interpretation rules.
 fn built_in_rules() -> Vec<Box<dyn InterpretationRule>> {
     vec![
@@ -274,7 +266,6 @@ pub fn interpret_groups(
     let rules = built_in_rules();
     let mut findings = Vec::new();
 
-    // Interpret failed services.
     for service in services {
         for rule in &rules {
             if let Some(finding) = rule.match_service(service) {
@@ -284,7 +275,6 @@ pub fn interpret_groups(
         }
     }
 
-    // Interpret grouped journal events.
     for group in groups {
         for rule in &rules {
             if let Some(finding) = rule.match_group(group) {
@@ -390,7 +380,6 @@ mod tests {
             10,
         );
         let findings = interpret_groups(&[group], &[]);
-        // Unknown events must NOT get an invented interpretation.
         assert!(findings.is_empty());
     }
 
@@ -411,7 +400,6 @@ mod tests {
         let group = make_group("Out of memory: Killed process [<PID>]", "OOM kill", 1);
         let findings = interpret_groups(&[group], &[]);
         for cause in &findings[0].possible_causes {
-            // All causes should use cautious language.
             assert!(
                 cause.contains("may")
                     || cause.contains("might")

@@ -174,8 +174,6 @@ fn parse_journal_line(line: &str) -> Option<JournalEntry> {
         return None;
     }
 
-    // Minimal JSON parsing without adding serde_json dependency.
-    // journalctl --output=json produces one JSON object per line with known fields.
     let message = extract_json_string(line, "MESSAGE")?;
     let unit = extract_json_string(line, "_SYSTEMD_UNIT");
     let syslog_identifier = extract_json_string(line, "SYSLOG_IDENTIFIER");
@@ -204,19 +202,16 @@ fn parse_journal_line(line: &str) -> Option<JournalEntry> {
 /// This is a lightweight parser for the specific flat structure that
 /// journalctl produces. It avoids adding serde_json as a dependency.
 fn extract_json_string(json: &str, key: &str) -> Option<String> {
-    // Look for "KEY" : "VALUE" or "KEY" : NUMBER patterns.
     let search = format!("\"{}\"", key);
     let key_start = json.find(&search)?;
     let after_key = key_start + search.len();
     let rest = &json[after_key..];
 
-    // Skip whitespace and colon.
     let rest = rest.trim_start();
     let rest = rest.strip_prefix(':')?;
     let rest = rest.trim_start();
 
     if let Some(content) = rest.strip_prefix('"') {
-        // String value — parse until unescaped closing quote.
         let mut value = String::new();
         let mut chars = content.chars();
         loop {
@@ -240,7 +235,6 @@ fn extract_json_string(json: &str, key: &str) -> Option<String> {
         }
         Some(value)
     } else if rest.starts_with('[') {
-        // Array value (binary field encoding) — skip.
         None
     } else {
         // Numeric or other literal — take until comma, brace, or whitespace.
@@ -313,11 +307,9 @@ mod tests {
 
     #[test]
     fn binary_field_array_skipped() {
-        // journalctl encodes binary fields as arrays of integers.
         let json = r#"{"MESSAGE":[72,101,108,108,111],"PRIORITY":"3"}"#;
         let out = output_from(json);
         let entries = parse_journal_output(&out);
-        // MESSAGE is an array, not a string — entry is skipped.
         assert!(entries.is_empty());
     }
 

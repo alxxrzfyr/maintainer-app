@@ -54,7 +54,6 @@ impl ConfirmCleanupDialog {
         container.set_margin_start(24);
         container.set_margin_end(24);
 
-        // Title.
         let title = if has_permanent {
             Label::new(Some("Permanently Remove Files"))
         } else {
@@ -64,7 +63,6 @@ impl ConfirmCleanupDialog {
         title.set_halign(gtk4::Align::Start);
         container.append(&title);
 
-        // Warning for permanent deletion.
         if has_permanent {
             let warning = Label::new(Some(
                 "⚠️ The following items will be permanently deleted. \
@@ -76,7 +74,6 @@ impl ConfirmCleanupDialog {
             container.append(&warning);
         }
 
-        // Summary.
         let summary = Label::new(Some(&format!(
             "{} items • {} will be freed",
             items.len(),
@@ -86,7 +83,6 @@ impl ConfirmCleanupDialog {
         summary.add_css_class("dim-label");
         container.append(&summary);
 
-        // Item list.
         let scrolled = ScrolledWindow::new();
         scrolled.set_max_content_height(300);
         scrolled.set_propagate_natural_height(true);
@@ -126,7 +122,6 @@ impl ConfirmCleanupDialog {
         scrolled.set_child(Some(&list));
         container.append(&scrolled);
 
-        // Permanent deletion checkbox (not preselected).
         let permanent_check = if has_permanent {
             let check = CheckButton::with_label(
                 "I understand these files will be permanently deleted and cannot be recovered",
@@ -138,7 +133,6 @@ impl ConfirmCleanupDialog {
             None
         };
 
-        // Action buttons.
         let button_box = GtkBox::new(Orientation::Horizontal, 8);
         button_box.set_halign(gtk4::Align::End);
         button_box.set_margin_top(12);
@@ -154,7 +148,6 @@ impl ConfirmCleanupDialog {
         let confirm_button = Button::with_label(confirm_label);
         confirm_button.add_css_class("destructive-action");
 
-        // Disable confirm button until checkbox is checked for permanent deletions.
         if has_permanent {
             confirm_button.set_sensitive(false);
         }
@@ -162,7 +155,6 @@ impl ConfirmCleanupDialog {
         button_box.append(&confirm_button);
         container.append(&button_box);
 
-        // Wire up checkbox to enable/disable confirm button.
         if let Some(ref check) = permanent_check {
             let btn = confirm_button.clone();
             check.connect_toggled(move |c| {

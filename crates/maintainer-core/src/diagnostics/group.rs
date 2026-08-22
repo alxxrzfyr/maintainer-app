@@ -64,7 +64,6 @@ pub fn group_journal_entries(entries: &[JournalEntry]) -> Vec<EventGroup> {
 
         group.count += 1;
 
-        // Update time bounds.
         if let Some(ts) = entry.realtime_usec {
             match group.first_seen {
                 None => group.first_seen = Some(ts),
@@ -78,14 +77,12 @@ pub fn group_journal_entries(entries: &[JournalEntry]) -> Vec<EventGroup> {
             }
         }
 
-        // Store bounded evidence samples.
         if group.samples.len() < MAX_EVIDENCE_SAMPLES {
             group.samples.push(entry.message.clone());
         }
     }
 
     let mut result: Vec<EventGroup> = groups.into_values().collect();
-    // Sort by count descending, then by template for stability.
     result.sort_by(|a, b| {
         b.count
             .cmp(&a.count)
@@ -151,7 +148,6 @@ fn normalize_message(msg: &str) -> String {
             }
         }
 
-        // Pattern: standalone epoch timestamp (10+ digits not part of a path or version)
         if chars[i].is_ascii_digit() && (i == 0 || !chars[i - 1].is_alphanumeric()) {
             let start = i;
             while i < len && chars[i].is_ascii_digit() {
@@ -159,8 +155,6 @@ fn normalize_message(msg: &str) -> String {
             }
             let digit_len = i - start;
 
-            // Only replace if it looks like a standalone timestamp (10-16 digits)
-            // and is not preceded by '.' (version) or '/' (path) or ':' (port).
             let preceded_by_structural = start > 0
                 && (chars[start - 1] == '.'
                     || chars[start - 1] == '/'
@@ -171,7 +165,6 @@ fn normalize_message(msg: &str) -> String {
             if (10..=16).contains(&digit_len) && !preceded_by_structural {
                 result.push_str("<TIMESTAMP>");
             } else {
-                // Emit digits as-is.
                 for c in &chars[start..i] {
                     result.push(*c);
                 }
@@ -228,7 +221,6 @@ mod tests {
 
     #[test]
     fn port_numbers_preserved() {
-        // Port after colon should NOT be normalized.
         assert_eq!(
             normalize_message("listening on :8080"),
             "listening on :8080"
@@ -237,7 +229,6 @@ mod tests {
 
     #[test]
     fn version_numbers_preserved() {
-        // Version numbers with dots should NOT be normalized.
         assert_eq!(
             normalize_message("upgraded to 3.14.159"),
             "upgraded to 3.14.159"
@@ -246,7 +237,6 @@ mod tests {
 
     #[test]
     fn path_numbers_preserved() {
-        // Numbers in file paths should NOT be normalized.
         assert_eq!(
             normalize_message("reading /proc/12345/status"),
             "reading /proc/12345/status"
@@ -255,7 +245,6 @@ mod tests {
 
     #[test]
     fn unrelated_messages_never_merge() {
-        // Critical test: different error codes must NOT collapse.
         let entries = vec![
             entry("exit code 1"),
             entry("exit code 2"),
@@ -263,7 +252,6 @@ mod tests {
             entry("error 500 internal"),
         ];
         let groups = group_journal_entries(&entries);
-        // Each distinct message should be its own group.
         assert_eq!(groups.len(), 4, "Unrelated messages must not merge");
     }
 
@@ -382,14 +370,12 @@ mod tests {
 
     #[test]
     fn small_numbers_not_treated_as_timestamps() {
-        // Error codes, exit codes, and small numbers must NOT be stripped.
         assert_eq!(normalize_message("exit status 127"), "exit status 127");
         assert_eq!(normalize_message("returned error 42"), "returned error 42");
     }
 
     #[test]
     fn hyphenated_numbers_preserved() {
-        // UUID-like or structured identifiers should not be mangled.
         assert_eq!(
             normalize_message("job-12345-abcdef started"),
             "job-12345-abcdef started"

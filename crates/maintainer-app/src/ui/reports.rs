@@ -39,7 +39,6 @@ pub fn build_reports_page() -> GtkBox {
 
     let state = Rc::new(RefCell::new(ReportsState { preview_text: None }));
 
-    // Header.
     let header = Label::new(Some("System Report"));
     header.add_css_class("heading");
     header.set_halign(Align::Start);
@@ -53,7 +52,6 @@ pub fn build_reports_page() -> GtkBox {
     description.set_wrap(true);
     container.append(&description);
 
-    // Text view for preview.
     let text_view = TextView::new();
     text_view.set_editable(false);
     text_view.set_monospace(true);
@@ -66,7 +64,6 @@ pub fn build_reports_page() -> GtkBox {
     scrolled.set_min_content_height(300);
     container.append(&scrolled);
 
-    // Button bar.
     let button_bar = GtkBox::new(Orientation::Horizontal, 8);
     button_bar.set_halign(Align::End);
 
@@ -82,7 +79,6 @@ pub fn build_reports_page() -> GtkBox {
     button_bar.append(&save_btn);
     container.append(&button_bar);
 
-    // Generate preview action.
     {
         let state_clone = state.clone();
         let text_view_clone = text_view.clone();
@@ -105,7 +101,6 @@ pub fn build_reports_page() -> GtkBox {
         });
     }
 
-    // Copy to clipboard action.
     {
         let state_clone = state.clone();
         let text_view_clone = text_view.clone();
@@ -114,7 +109,6 @@ pub fn build_reports_page() -> GtkBox {
             if let Some(ref text) = st.preview_text {
                 let clipboard = gtk4::prelude::WidgetExt::clipboard(&text_view_clone);
                 clipboard.set_text(text);
-                // Brief feedback.
                 btn.set_label("Copied!");
                 let btn_clone = btn.clone();
                 glib::timeout_add_local_once(std::time::Duration::from_secs(2), move || {
@@ -124,7 +118,6 @@ pub fn build_reports_page() -> GtkBox {
         });
     }
 
-    // Save to file action.
     {
         let state_clone = state.clone();
         save_btn.connect_clicked(move |btn| {
@@ -186,7 +179,6 @@ fn atomic_save(path: &Path, content: &str) -> std::io::Result<()> {
     let tmp_name = format!(".{file_name}.tmp");
     let tmp_path = parent.join(&tmp_name);
 
-    // Write to temporary file with restrictive permissions.
     let mut file = OpenOptions::new()
         .write(true)
         .create(true)
@@ -198,7 +190,6 @@ fn atomic_save(path: &Path, content: &str) -> std::io::Result<()> {
     file.flush()?;
     file.sync_all()?;
 
-    // Atomic rename.
     fs::rename(&tmp_path, path)?;
     Ok(())
 }
@@ -300,13 +291,11 @@ fn username_or_redacted() -> String {
 
 /// Generate a timestamp string.
 fn chrono_like_now() -> String {
-    // Simple UTC-ish timestamp without pulling in chrono.
     use std::time::SystemTime;
     let duration = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap_or_default();
     let secs = duration.as_secs();
-    // Format as Unix timestamp for now (proper formatting would use chrono).
     format!("{secs} (Unix timestamp)")
 }
 
@@ -350,7 +339,6 @@ mod tests {
         let read_back = fs::read_to_string(&path).unwrap();
         assert_eq!(read_back, content);
 
-        // Cleanup.
         let _ = fs::remove_file(&path);
     }
 

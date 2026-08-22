@@ -47,11 +47,6 @@ pub struct SystemPolicy;
 
 impl AuthorizePolicy for SystemPolicy {
     fn resolve_caller(&self, sender: &str) -> Result<CallerCredentials, HelperError> {
-        // In production, this would call:
-        //   org.freedesktop.DBus.GetConnectionUnixProcessID(sender)
-        //   org.freedesktop.DBus.GetConnectionUnixUser(sender)
-        // For now, this is a compile-time placeholder that will be connected
-        // to the real zbus connection in the D-Bus server integration.
         let _ = sender;
         Err(HelperError::CallerIdentityFailed)
     }
@@ -61,9 +56,6 @@ impl AuthorizePolicy for SystemPolicy {
         _credentials: &CallerCredentials,
         _action_id: &str,
     ) -> Result<(), HelperError> {
-        // In production, this would call:
-        //   org.freedesktop.PolicyKit1.Authority.CheckAuthorization
-        // with subject = system-bus-name of the caller.
         Err(HelperError::AuthorizationDenied {
             action: "not implemented".to_string(),
         })

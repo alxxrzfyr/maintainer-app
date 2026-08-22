@@ -47,7 +47,6 @@ impl Database {
             message: e.to_string(),
         })?;
 
-        // Set file permissions to 0600 (user read/write only).
         let perms = fs::Permissions::from_mode(0o600);
         fs::set_permissions(path, perms).map_err(|e| {
             MaintainerError::io(format!("setting permissions on {}", path.display()), e)
@@ -153,7 +152,6 @@ mod tests {
         let mode = metadata.permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
 
-        // Verify foreign keys are enabled.
         let fk: i32 = db
             .with_connection(|conn| {
                 conn.query_row("PRAGMA foreign_keys", [], |r| r.get(0))
@@ -169,7 +167,6 @@ mod tests {
     #[test]
     fn open_in_memory_applies_migrations() {
         let db = Database::open_in_memory().unwrap();
-        // schema_migrations table should exist after migrations.
         let count: i32 = db
             .with_connection(|conn| {
                 conn.query_row("SELECT COUNT(*) FROM schema_migrations", [], |r| r.get(0))
@@ -187,9 +184,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let db_path = tmp.path().join("test.db");
 
-        // First open creates and migrates.
         let _db1 = Database::open(&db_path).unwrap();
-        // Second open should succeed without errors.
         let db2 = Database::open(&db_path).unwrap();
 
         let version: i32 = db2

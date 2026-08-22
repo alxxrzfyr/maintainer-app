@@ -47,7 +47,6 @@ impl PartialOrd for MinEntry {
 
 impl Ord for MinEntry {
     fn cmp(&self, other: &Self) -> Ordering {
-        // Reverse: smallest at top for a min-heap via BinaryHeap (which is max-heap).
         other.size_bytes.cmp(&self.size_bytes)
     }
 }
@@ -84,7 +83,6 @@ impl LargeFileRanking {
             return true;
         }
 
-        // Compare with the smallest currently tracked entry.
         if let Some(min) = self.heap.peek() {
             if size_bytes > min.size_bytes {
                 self.heap.pop();
@@ -144,13 +142,11 @@ mod tests {
         ranking.offer(PathBuf::from("/a"), 200);
         ranking.offer(PathBuf::from("/b"), 300);
         ranking.offer(PathBuf::from("/c"), 400);
-        // Full: eviction happens now
         assert!(ranking.offer(PathBuf::from("/d"), 500));
         assert_eq!(ranking.len(), 3);
 
         let result = ranking.into_sorted();
         assert_eq!(result.len(), 3);
-        // Largest first
         assert_eq!(result[0].size_bytes, 500);
         assert_eq!(result[1].size_bytes, 400);
         assert_eq!(result[2].size_bytes, 300);
@@ -161,7 +157,6 @@ mod tests {
         let mut ranking = LargeFileRanking::new(2, 100);
         ranking.offer(PathBuf::from("/a"), 500);
         ranking.offer(PathBuf::from("/b"), 400);
-        // Smaller than current min (400), should be rejected
         assert!(!ranking.offer(PathBuf::from("/c"), 300));
         assert_eq!(ranking.len(), 2);
     }

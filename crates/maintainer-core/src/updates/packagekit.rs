@@ -13,10 +13,6 @@ use crate::jobs::Cancellation;
 
 use super::model::{TransactionStatus, UpdateProgress, UpdateResult};
 
-// ---------------------------------------------------------------------------
-// PackageKit constants
-// ---------------------------------------------------------------------------
-
 /// PackageKit D-Bus well-known name.
 pub const PK_BUS_NAME: &str = "org.freedesktop.PackageKit";
 
@@ -28,10 +24,6 @@ pub const PK_INTERFACE: &str = "org.freedesktop.PackageKit";
 
 /// PackageKit Transaction interface.
 pub const PK_TRANSACTION_INTERFACE: &str = "org.freedesktop.PackageKit.Transaction";
-
-// ---------------------------------------------------------------------------
-// PackageKit status codes
-// ---------------------------------------------------------------------------
 
 /// Map PackageKit numeric status to our typed enum.
 pub fn map_pk_status(status: u32) -> TransactionStatus {
@@ -60,10 +52,6 @@ pub fn map_pk_error_code(code: u32) -> &'static str {
         _ => "unknown-error",
     }
 }
-
-// ---------------------------------------------------------------------------
-// Transaction state machine
-// ---------------------------------------------------------------------------
 
 /// Internal state of a PackageKit transaction.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -108,7 +96,6 @@ impl TransactionState {
 
     /// Apply a percentage update.
     pub fn on_percentage_changed(&mut self, percentage: u32) {
-        // PackageKit uses 101 for "unknown".
         if percentage <= 100 {
             self.percentage = Some(percentage);
         }
@@ -119,7 +106,6 @@ impl TransactionState {
         let name = package_id.split(';').next().unwrap_or(package_id);
         self.current_package = Some(name.to_string());
 
-        // Info 1 = installed successfully.
         if info == 1 {
             self.completed_packages.push(name.to_string());
         }
@@ -198,23 +184,16 @@ impl Default for TransactionState {
     }
 }
 
-// ---------------------------------------------------------------------------
-// PackageKit availability check
-// ---------------------------------------------------------------------------
-
 /// Check whether PackageKit is available on D-Bus.
 ///
 /// This is a synchronous probe; it does not start a transaction.
 pub fn check_packagekit_available() -> Capability<()> {
-    // Attempt to see if the PackageKit name is activatable on the session/system bus.
-    // In the real system this would be a D-Bus call; here we check if the binary exists.
     let path = std::path::Path::new(
         "/usr/share/dbus-1/system-services/org.freedesktop.PackageKit.service",
     );
     if path.exists() {
         Capability::Available(())
     } else {
-        // Also check if the daemon binary exists.
         let daemon = std::path::Path::new("/usr/lib/packagekit/packagekitd");
         if daemon.exists() {
             Capability::Available(())
@@ -264,12 +243,7 @@ pub fn execute_update<F>(
 where
     F: FnMut(&UpdateProgress),
 {
-    // Report initial progress.
     progress_callback(&state.to_progress());
-
-    // In production, this would loop reading D-Bus signals.
-    // The state machine is driven externally; this function is
-    // the integration point that checks cancellation between events.
 
     if cancel.is_cancelled() && state.allow_cancel {
         state.status = TransactionStatus::Cancelled;
@@ -346,7 +320,6 @@ mod tests {
         cancel.cancel();
 
         let result = execute_update(&mut state, &cancel, |_| {});
-        // Cancellation was applied.
         assert!(!result.success);
     }
 
@@ -359,9 +332,7 @@ mod tests {
         let cancel = crate::jobs::CancellationToken::new();
         cancel.cancel();
 
-        // Cancel requested but not allowed - transaction continues.
         let result = execute_update(&mut state, &cancel, |_| {});
-        // State was not terminal, so result reflects current (non-cancelled) state.
         assert_eq!(state.status, TransactionStatus::Installing);
         assert!(!result.success); // Not finished yet.
     }

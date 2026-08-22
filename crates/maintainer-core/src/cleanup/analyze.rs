@@ -95,7 +95,6 @@ impl CleanupAnalyzer {
     pub fn new(home_dir: PathBuf) -> Self {
         Self {
             user_cache_roots: vec![
-                // Only explicitly known-safe cache directories.
                 PathBuf::from("mesa_shader_cache"),
                 PathBuf::from("fontconfig"),
                 PathBuf::from("event-sound-cache"),
@@ -140,9 +139,7 @@ impl CleanupAnalyzer {
 
             match self.scan_category(*cat) {
                 Ok(mut found) => targets.append(&mut found),
-                Err(MaintainerError::Io { .. }) => {
-                    // Permission or access errors are recoverable — skip category.
-                }
+                Err(MaintainerError::Io { .. }) => {}
                 Err(e) => return Err(e),
             }
         }
@@ -220,7 +217,6 @@ impl CleanupAnalyzer {
     }
 
     fn scan_logs(&self) -> Result<Vec<CleanupTarget>, MaintainerError> {
-        // User journal logs.
         let user_log_dir = self.home_dir.join(".local/share/systemd");
         let mut targets = Vec::new();
         match self.scan_directory_files(
@@ -257,7 +253,6 @@ impl CleanupAnalyzer {
             };
             let path = entry.path();
 
-            // Skip symlinks.
             let metadata = match fs::symlink_metadata(&path) {
                 Ok(m) => m,
                 Err(_) => continue,
@@ -357,13 +352,11 @@ mod tests {
         let home = setup_temp_home();
         let cache_base = home.path().join(".cache");
 
-        // Create a supported root.
         let supported = cache_base.join("fontconfig");
         fs::create_dir_all(&supported).unwrap();
         let mut f = File::create(supported.join("cache.dat")).unwrap();
         f.write_all(&[0u8; 512]).unwrap();
 
-        // Create an unsupported root (should be ignored).
         let unsupported = cache_base.join("chromium");
         fs::create_dir_all(&unsupported).unwrap();
         let mut f2 = File::create(unsupported.join("data.bin")).unwrap();
@@ -372,7 +365,6 @@ mod tests {
         let analyzer = CleanupAnalyzer::new(home.path().to_path_buf());
         let targets = analyzer.scan_category(CleanupCategory::UserCache).unwrap();
 
-        // Only the fontconfig file should appear.
         assert_eq!(targets.len(), 1);
         assert!(targets[0].path.starts_with(&supported));
     }
@@ -400,12 +392,10 @@ mod tests {
         let thumb_dir = home.path().join(".cache/thumbnails");
         fs::create_dir_all(&thumb_dir).unwrap();
 
-        // Create a real file.
         let real_file = thumb_dir.join("real.png");
         let mut f = File::create(&real_file).unwrap();
         f.write_all(&[0u8; 100]).unwrap();
 
-        // Create a symlink.
         std::os::unix::fs::symlink(&real_file, thumb_dir.join("link.png")).unwrap();
 
         let analyzer = CleanupAnalyzer::new(home.path().to_path_buf());
@@ -413,7 +403,6 @@ mod tests {
             .scan_category(CleanupCategory::ThumbnailCache)
             .unwrap();
 
-        // Only the real file should appear.
         assert_eq!(targets.len(), 1);
         assert!(targets[0].path.ends_with("real.png"));
     }
@@ -455,7 +444,6 @@ mod tests {
     fn missing_directory_returns_io_error() {
         let home = setup_temp_home();
         let analyzer = CleanupAnalyzer::new(home.path().to_path_buf());
-        // Thumbnail cache doesn't exist.
         let result = analyzer.scan_category(CleanupCategory::ThumbnailCache);
         assert!(matches!(result, Err(MaintainerError::Io { .. })));
     }
