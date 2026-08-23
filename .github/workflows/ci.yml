@@ -37,7 +37,22 @@ jobs:
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
       - name: Test
-        run: cargo test --workspace --all-features
+        run: |
+          # GTK is process-global and main-thread-affine. Keep ordinary tests
+          # parallel, then run each native widget regression in its own process
+          # with a real display so GTK cannot leak thread state between tests.
+          cargo test --workspace --all-features -- \
+            --skip regression_tests::storage_apply_state_does_not_reenter_borrowed_state \
+            --skip regression_tests::sidebar_is_fixed_pinned_and_updates_active_destination \
+            --skip regression_tests::update_execution_buttons_follow_transaction_safety
+          xvfb-run -a bash -c '
+            cargo test -p maintainer-app --lib --all-features \
+              regression_tests::storage_apply_state_does_not_reenter_borrowed_state -- --exact &&
+            cargo test -p maintainer-app --lib --all-features \
+              regression_tests::sidebar_is_fixed_pinned_and_updates_active_destination -- --exact &&
+            cargo test -p maintainer-app --lib --all-features \
+              regression_tests::update_execution_buttons_follow_transaction_safety -- --exact
+          '
 
       - name: Build release
         run: cargo build --workspace --release
