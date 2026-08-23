@@ -30,6 +30,8 @@ fn no_activity_page_variant_exists() {
     let expected = [
         Page::Overview,
         Page::System,
+        Page::Network,
+        Page::Processes,
         Page::Storage,
         Page::Cleanup,
         Page::Updates,

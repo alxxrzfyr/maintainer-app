@@ -6,9 +6,10 @@
 //! - Drawer/switcher (below 640 px)
 
 use gtk4::prelude::*;
-use gtk4::{Align, Box as GtkBox, Button, Image, Label, Orientation, Separator, Widget};
+use gtk4::{Align, Box as GtkBox, Button, Label, Orientation, Separator, Widget};
 
 use crate::state::{FOOTER_PAGES, NAVIGATION_GROUPS, Page};
+use crate::ui::icons;
 
 /// Layout mode for the navigation sidebar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -143,8 +144,12 @@ fn build_nav_button(page: Page, active_page: Page, mode: NavigationMode) -> Butt
         Align::Start
     });
 
-    let icon = Image::from_icon_name(page.icon_name());
-    icon.set_pixel_size(20);
+    let icon_size = if mode == NavigationMode::Compact {
+        20
+    } else {
+        16
+    };
+    let icon = icons::icon_with_fallback(page.icon_chain(), icon_size);
     content.append(&icon);
 
     if mode != NavigationMode::Compact {

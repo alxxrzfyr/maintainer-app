@@ -8,8 +8,8 @@ use std::time::Duration;
 use glib::ControlFlow;
 use gtk4::prelude::*;
 use gtk4::{
-    Align, ApplicationWindow, Box as GtkBox, Button, Image, Label, MenuButton, Orientation,
-    Popover, Stack, StackTransitionType,
+    Align, ApplicationWindow, Box as GtkBox, Button, Label, MenuButton, Orientation, Popover,
+    Stack, StackTransitionType,
 };
 
 use maintainer_core::settings::SettingsRepository;
@@ -19,8 +19,11 @@ use crate::runtime::RuntimeHandle;
 use crate::state::{AppState, FOOTER_PAGES, NAVIGATION_GROUPS, Page};
 use crate::ui::cleanup::CleanupPage;
 use crate::ui::diagnostics::DiagnosticsPage;
+use crate::ui::icons;
 use crate::ui::navigation::{self, NavigationMode};
+use crate::ui::network::NetworkPage;
 use crate::ui::overview::OverviewPage;
+use crate::ui::processes::ProcessesPage;
 use crate::ui::reports::build_reports_page;
 use crate::ui::settings::build_settings_page;
 use crate::ui::storage::StoragePage;
@@ -45,10 +48,20 @@ impl Shell {
             .build();
 
         window.add_css_class("maintainer_window");
-        window.set_size_request(360, 480);
+        // Minimum size enforces landscape orientation where width > height.
+        window.set_size_request(640, 420);
 
         let overview_page = OverviewPage::new();
         let system_page = SystemPage::new();
+        let network_page = NetworkPage::new();
+        let processes_page = ProcessesPage::new();
+        // GTK4 has no refuse-fullscreen flag. Reverse compositor or keyboard
+        // fullscreen requests as soon as the asynchronous property changes.
+        window.connect_fullscreened_notify(|window| {
+            if window.is_fullscreen() {
+                window.unfullscreen();
+            }
+        });
         let storage_page = StoragePage::new();
         let cleanup_page = CleanupPage::new();
         let updates_page = UpdatesPage::new();
@@ -97,6 +110,8 @@ impl Shell {
 
         page_stack.add_named(overview_page.widget(), Some("Overview"));
         page_stack.add_named(system_page.widget(), Some("System"));
+        page_stack.add_named(network_page.widget(), Some("Network"));
+        page_stack.add_named(processes_page.widget(), Some("Processes"));
         page_stack.add_named(storage_page.widget(), Some("Storage"));
         page_stack.add_named(cleanup_page.widget(), Some("Cleanup"));
         page_stack.add_named(updates_page.widget(), Some("Updates"));
@@ -207,28 +222,30 @@ impl Shell {
 
         let overview_ref = Rc::new(overview_page);
         let system_ref = Rc::new(system_page);
+        let network_ref = Rc::new(network_page);
+        let processes_ref = Rc::new(processes_page);
 
-        let runtime_for_sort = runtime.clone();
-        let system_for_sort = system_ref.clone();
-        system_ref.connect_sort_changed(move |sort| {
-            let mut rt = runtime_for_sort.borrow_mut();
+        let runtime_for_proc_sort = runtime.clone();
+        let processes_for_sort = processes_ref.clone();
+        processes_ref.connect_sort_changed(move |sort| {
+            let mut rt = runtime_for_proc_sort.borrow_mut();
             rt.monitoring
                 .reduce(MonitoringMessage::SetProcessSort(sort));
-            system_for_sort.update(&rt.monitoring.system);
+            processes_for_sort.update(&rt.monitoring.processes_vm);
         });
 
-        let runtime_for_terminate = runtime.clone();
-        let terminate_status = system_ref.operation_status_handle();
-        system_ref.connect_terminate(move |pid, start_time_ticks| {
-            terminate_status.remove_css_class("error");
-            terminate_status.set_text("Requesting authorization…");
-            terminate_status.set_visible(true);
+        let runtime_for_proc_terminate = runtime.clone();
+        let proc_terminate_status = processes_ref.operation_status_handle().clone();
+        processes_ref.connect_terminate(move |pid, start_time_ticks| {
+            proc_terminate_status.remove_css_class("error");
+            proc_terminate_status.set_text("Requesting authorization…");
+            proc_terminate_status.set_visible(true);
 
-            let rt = runtime_for_terminate.borrow();
+            let rt = runtime_for_proc_terminate.borrow();
             let helper = rt.helper.clone();
             let executor = rt.executor.clone();
             drop(rt);
-            let status = terminate_status.clone();
+            let status = proc_terminate_status.clone();
             crate::dispatch::dispatch_helper_call(
                 &executor,
                 move || helper.terminate_process(pid, start_time_ticks),
@@ -243,6 +260,8 @@ impl Shell {
         let runtime_for_timer = runtime.clone();
         let overview_for_timer = overview_ref.clone();
         let system_for_timer = system_ref.clone();
+        let network_for_timer = network_ref.clone();
+        let processes_for_timer = processes_ref.clone();
 
         let runtime_for_vis = runtime.clone();
         window.connect_is_active_notify(move |win| {
@@ -256,6 +275,8 @@ impl Shell {
             runtime_for_timer,
             overview_for_timer,
             system_for_timer,
+            network_for_timer,
+            processes_for_timer,
             page_stack.clone(),
         );
 
@@ -416,6 +437,8 @@ impl Shell {
         runtime: RuntimeHandle,
         overview: Rc<OverviewPage>,
         system: Rc<SystemPage>,
+        network: Rc<NetworkPage>,
+        processes: Rc<ProcessesPage>,
         page_stack: Stack,
     ) {
         let tick_counter: Rc<RefCell<u32>> = Rc::new(RefCell::new(0));
@@ -603,11 +626,15 @@ impl Shell {
             let runtime_for_switch = runtime.clone();
             let overview_for_switch = overview.clone();
             let system_for_switch = system.clone();
+            let network_for_switch = network.clone();
+            let processes_for_switch = processes.clone();
             page_stack.connect_visible_child_name_notify(move |stack| {
                 let rt = runtime_for_switch.borrow();
                 match stack.visible_child_name().as_deref() {
                     Some("Overview") => overview_for_switch.update(&rt.monitoring.overview),
                     Some("System") => system_for_switch.update(&rt.monitoring.system),
+                    Some("Network") => network_for_switch.update(&rt.monitoring.network_vm),
+                    Some("Processes") => processes_for_switch.update(&rt.monitoring.processes_vm),
                     _ => {}
                 }
             });
@@ -637,6 +664,8 @@ impl Shell {
                 match visible_page {
                     Some("Overview") => overview.update(&rt.monitoring.overview),
                     Some("System") => system.update(&rt.monitoring.system),
+                    Some("Network") => network.update(&rt.monitoring.network_vm),
+                    Some("Processes") => processes.update(&rt.monitoring.processes_vm),
                     _ => {}
                 }
             }
@@ -649,7 +678,10 @@ impl Shell {
             rt.monitoring.immediate_sample_pending = false;
 
             // Non-blocking: if worker is busy, this tick coalesces.
-            let needs_processes = page_stack.visible_child_name().as_deref() == Some("System");
+            let needs_processes = matches!(
+                page_stack.visible_child_name().as_deref(),
+                Some("System") | Some("Processes")
+            );
             let _ = request_tx.try_send(needs_processes);
 
             ControlFlow::Continue
@@ -707,8 +739,7 @@ impl Shell {
         let btn_content = GtkBox::new(Orientation::Horizontal, 8);
         btn_content.set_halign(Align::Start);
 
-        let icon = Image::from_icon_name(page.icon_name());
-        icon.set_pixel_size(20);
+        let icon = icons::icon_with_fallback(page.icon_chain(), 16);
         btn_content.append(&icon);
 
         let label = Label::new(Some(page.label()));
@@ -811,9 +842,19 @@ impl Shell {
             });
 
         let state_for_subpage = storage_state.clone();
+        let programmatic_nav_guard = storage_page.programmatic_navigation.clone();
         storage_page
             .stack_handle()
             .connect_visible_child_name_notify(move |stack| {
+                // Skip re-deriving state for a transition StoragePage::apply_state
+                // itself drove: state.sub_page is already authoritative in that
+                // case, and re-entering this borrow while apply_state's caller
+                // may still hold the same RefCell borrowed panics with
+                // BorrowMutError inside a GTK signal callback, which aborts the
+                // process rather than unwinding. See StoragePage::apply_state.
+                if programmatic_nav_guard.get() {
+                    return;
+                }
                 if let Some(name) = stack.visible_child_name() {
                     let sub = match name.as_str() {
                         "large-files" => StorageSubPage::LargeFiles,
@@ -1289,7 +1330,7 @@ impl Shell {
         });
     }
 
-    /// Wire update discovery, review, and PackageKit execution.
+    /// Wire update discovery, review, and helper-authorized APT execution.
     fn wire_updates_dispatch(updates_page: &UpdatesPage, runtime: &RuntimeHandle) {
         use crate::dispatch::{self, UpdateExecutionOutcome, UpdatesCheckOutcome};
         use crate::ui::updates::{
@@ -1519,12 +1560,14 @@ impl Shell {
                 &executor,
                 plan,
                 move |progress| {
-                    let fraction = progress
-                        .total
-                        .filter(|total| *total > 0)
-                        .map(|total| progress.completed as f64 / total as f64)
-                        .unwrap_or(0.0);
-                    progress_page.set_progress(fraction, &progress.message, true);
+                    let allow_cancel =
+                        crate::ui::updates::cancellation_allowed_for_progress(&progress.message);
+                    progress_page.set_progress(
+                        progress.completed,
+                        progress.total,
+                        &progress.message,
+                        allow_cancel,
+                    );
                 },
                 move |outcome| {
                     match outcome {

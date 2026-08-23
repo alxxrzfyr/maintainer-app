@@ -59,7 +59,7 @@
     padding: 8px 12px;
     min-height: 40px;
     color: @maintainer_text;
-    font-size: 13px;
+    font-size: 15px;
     font-weight: 500;
     transition: background-color 120ms ease;
 }
@@ -93,7 +93,7 @@
 
 /* Navigation group label */
 .maintainer_nav_group_label {
-    font-size: 11px;
+    font-size: 13px;
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.8px;
@@ -112,7 +112,7 @@
 /* Page title */
 .maintainer_page_title,
 .title-1 {
-    font-size: 26px;
+    font-size: 27px;
     font-weight: 800;
     letter-spacing: -0.5px;
     color: @maintainer_text;
@@ -122,15 +122,21 @@
 .maintainer_section_title,
 .title-2,
 .heading {
-    font-size: 15px;
+    font-size: 17px;
     font-weight: 700;
     letter-spacing: -0.2px;
     color: @maintainer_text;
 }
 
 .dim-label {
-    font-size: 13px;
+    font-size: 15px;
     color: @maintainer_text_muted;
+}
+
+/* Subtitle tightened under page title */
+.maintainer_page_content > .dim-label {
+    margin-top: 2px;
+    margin-bottom: 8px;
 }
 
 /* ---- Metric Cards (Modern Bento Style) ---- */
@@ -148,7 +154,7 @@
 }
 
 .maintainer_metric_card_title {
-    font-size: 11px;
+    font-size: 13px;
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.7px;
@@ -156,14 +162,14 @@
 }
 
 .maintainer_metric_card_value {
-    font-size: 28px;
+    font-size: 29px;
     font-weight: 800;
     letter-spacing: -0.5px;
     color: @maintainer_text;
 }
 
 .maintainer_metric_value {
-    font-size: 28px;
+    font-size: 29px;
     font-weight: 800;
     color: @maintainer_text;
 }
@@ -185,7 +191,7 @@
 }
 
 .maintainer_spec_title {
-    font-size: 16px;
+    font-size: 18px;
     font-weight: 800;
     letter-spacing: -0.2px;
     color: @maintainer_text;
@@ -197,7 +203,7 @@
 }
 
 .maintainer_spec_label {
-    font-size: 11px;
+    font-size: 13px;
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.6px;
@@ -205,7 +211,7 @@
 }
 
 .maintainer_spec_value {
-    font-size: 13px;
+    font-size: 15px;
     font-weight: 600;
     color: @maintainer_text;
 }
@@ -215,7 +221,7 @@
     border: 1px solid alpha(@maintainer_accent, 0.35);
     color: @maintainer_accent;
     border-radius: 6px;
-    font-size: 12px;
+    font-size: 14px;
     font-weight: 600;
     padding: 4px 10px;
     min-height: 28px;
@@ -232,11 +238,12 @@
 }
 
 .maintainer_temperature_chip {
-    background-color: @maintainer_surface;
-    border: 1px solid @maintainer_border;
-    border-radius: 10px;
-    padding: 10px 16px;
-    min-width: 110px;
+    background-color: @maintainer_surface_alt;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    padding: 6px 10px;
+    min-width: 96px;
+    min-height: 48px;
     transition: border-color 120ms ease;
 }
 
@@ -245,7 +252,7 @@
 }
 
 .maintainer_temperature_label {
-    font-size: 11px;
+    font-size: 13px;
     color: @maintainer_text_muted;
     font-weight: 600;
     text-transform: uppercase;
@@ -253,7 +260,7 @@
 }
 
 .maintainer_temperature_value {
-    font-size: 16px;
+    font-size: 18px;
     font-weight: 700;
     color: @maintainer_text;
 }
@@ -268,9 +275,9 @@
 
 /* ---- Process Table ---- */
 .maintainer_process_list {
-    background-color: @maintainer_surface;
-    border: 1px solid @maintainer_border;
-    border-radius: 12px;
+    background-color: transparent;
+    border: none;
+    border-radius: 0 0 12px 12px;
     padding: 4px;
 }
 
@@ -282,7 +289,7 @@
 }
 
 .maintainer_process_header label {
-    font-size: 11px;
+    font-size: 13px;
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.7px;
@@ -290,9 +297,9 @@
 }
 
 .maintainer_process_row {
-    padding: 8px 14px;
+    padding: 10px 14px;
     border-radius: 6px;
-    min-height: 40px;
+    min-height: 44px;
     transition: background-color 80ms ease;
 }
 
@@ -305,18 +312,18 @@
 }
 
 .maintainer_process_row label {
-    font-size: 13px;
+    font-size: 15px;
 }
 
 .maintainer_process_pid {
-    font-size: 12px;
+    font-size: 14px;
     color: @maintainer_text_muted;
     font-family: monospace;
     font-weight: 500;
 }
 
 .maintainer_process_memory {
-    font-size: 12px;
+    font-size: 14px;
     color: @maintainer_text;
     font-family: monospace;
     font-weight: 600;
@@ -328,7 +335,7 @@
     border: 1px solid @maintainer_border;
     border-radius: 6px;
     padding: 4px 10px;
-    font-size: 12px;
+    font-size: 14px;
     font-weight: 500;
     color: @maintainer_text_muted;
     min-height: 30px;
@@ -353,7 +360,7 @@
     border: 1px solid alpha(@maintainer_danger, 0.3);
     border-radius: 6px;
     padding: 4px 10px;
-    font-size: 11px;
+    font-size: 13px;
     font-weight: 600;
     color: @maintainer_danger;
     min-height: 26px;
@@ -399,13 +406,13 @@
 }
 
 .maintainer_status_title {
-    font-size: 16px;
+    font-size: 18px;
     font-weight: 700;
     color: @maintainer_text;
 }
 
 .maintainer_status_description {
-    font-size: 14px;
+    font-size: 15px;
     color: @maintainer_text_muted;
 }
 
@@ -464,7 +471,7 @@ button {
     border: 1px solid @maintainer_border;
     border-radius: 8px;
     padding: 8px 16px;
-    font-size: 13px;
+    font-size: 15px;
     font-weight: 500;
     color: @maintainer_text;
     min-height: 38px;
@@ -491,29 +498,34 @@ button:hover {
     color: #0A0D14;
 }
 
-.destructive-action {
-    background-color: alpha(@maintainer_danger, 0.12);
+.maintainer_destructive {
+    background-color: alpha(@maintainer_danger, 0.16);
     color: @maintainer_danger;
-    border: 1px solid alpha(@maintainer_danger, 0.35);
+    border: 1px solid alpha(@maintainer_danger, 0.4);
     font-weight: 600;
     border-radius: 8px;
     padding: 8px 18px;
-}
-
-.destructive-action:hover {
-    background-color: alpha(@maintainer_danger, 0.22);
-    border-color: @maintainer_danger;
-}
-
-.maintainer_destructive {
-    background-color: @maintainer_danger;
-    color: #FFFFFF;
-    border-radius: 8px;
-    font-weight: 600;
+    min-height: 40px;
+    min-width: 40px;
 }
 
 .maintainer_destructive:hover {
-    background-color: shade(@maintainer_danger, 1.1);
+    background-color: alpha(@maintainer_danger, 0.24);
+    border-color: @maintainer_danger;
+    color: @maintainer_danger;
+}
+
+.maintainer_destructive:active {
+    background-color: alpha(@maintainer_danger, 0.30);
+    border-color: @maintainer_danger;
+    color: @maintainer_danger;
+    opacity: 0.86;
+}
+
+.maintainer_destructive:disabled {
+    background-color: alpha(@maintainer_danger, 0.06);
+    color: alpha(@maintainer_danger, 0.45);
+    border-color: alpha(@maintainer_danger, 0.15);
 }
 
 /* ---- Fluid-Responsive Page Content ---- */
@@ -532,7 +544,7 @@ button:hover {
 
 /* Temperature FlowBox */
 .maintainer_temperature_flow {
-    margin-top: 4px;
+    margin-top: 0;
 }
 
 .maintainer_temperature_flow > flowboxchild {
@@ -542,6 +554,33 @@ button:hover {
 /* Process section header alignment */
 .maintainer_process_section_header {
     margin-bottom: 4px;
+    padding: 14px 16px 10px 16px;
+}
+
+/* Process section: card container wrapping header, status, and scrollable list */
+.maintainer_process_section {
+    background-color: @maintainer_surface;
+    border: 1px solid @maintainer_border;
+    border-radius: 12px;
+    padding: 0;
+}
+
+/* Process section title: slightly promoted over read-only section titles */
+.maintainer_process_section_title {
+    font-size: 17px;
+    font-weight: 800;
+    letter-spacing: -0.3px;
+    color: @maintainer_text;
+}
+
+/* Process count badge shown beside the title */
+.maintainer_process_count {
+    font-size: 13px;
+    font-weight: 600;
+    color: @maintainer_text_muted;
+    background-color: alpha(@maintainer_surface_alt, 0.8);
+    border-radius: 10px;
+    padding: 2px 8px;
 }
 
 .maintainer_sidebar_groups {
@@ -563,10 +602,6 @@ button:hover {
     min-height: 48px;
 }
 
-.maintainer_sidebar {
-    border-right: none;
-}
-
 .maintainer_drawer_popover contents {
     background-color: @maintainer_surface;
     border: 1px solid @maintainer_border;
@@ -576,15 +611,13 @@ button:hover {
 
 .maintainer_drawer_menu_button,
 .maintainer_nav_button,
-.suggested-action,
-.destructive-action {
+.suggested-action {
     min-height: 40px;
     min-width: 40px;
 }
 
 .maintainer_nav_button:active,
-.suggested-action:active,
-.destructive-action:active {
+.suggested-action:active {
     opacity: 0.86;
 }
 
@@ -636,7 +669,7 @@ listview {
 
 /* ---- Settings Page Styles ---- */
 .maintainer_settings_group_header {
-    font-size: 13px;
+    font-size: 15px;
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.8px;
@@ -660,7 +693,7 @@ listview {
 .maintainer_settings_label {
     color: @maintainer_text;
     font-weight: 600;
-    font-size: 14px;
+    font-size: 15px;
 }
 
 /* Status colors */
@@ -691,7 +724,7 @@ textview text {
     color: @maintainer_text;
     padding: 14px;
     font-family: monospace;
-    font-size: 13px;
+    font-size: 15px;
     line-height: 1.5;
 }
 
@@ -704,7 +737,7 @@ textview text {
 }
 
 .maintainer_job_progress_label {
-    font-size: 14px;
+    font-size: 15px;
     font-weight: 600;
     color: @maintainer_text;
 }
@@ -733,11 +766,11 @@ textview text {
 .maintainer_history_operation {
     font-weight: 700;
     color: @maintainer_text;
-    font-size: 14px;
+    font-size: 15px;
 }
 
 .maintainer_history_result {
-    font-size: 12px;
+    font-size: 14px;
     font-weight: 600;
     padding: 2px 8px;
     border-radius: 6px;
@@ -757,7 +790,7 @@ textview text {
 
 .duplicates-group-header {
     padding: 12px 14px 6px 14px;
-    font-size: 12px;
+    font-size: 14px;
     font-weight: 700;
     color: @maintainer_text;
     background-color: alpha(@maintainer_surface_alt, 0.6);
@@ -766,7 +799,7 @@ textview text {
 }
 
 .duplicates-keep-hint {
-    font-size: 11px;
+    font-size: 13px;
     font-weight: 600;
     color: @maintainer_success;
     padding: 0 12px 4px 32px;
@@ -784,7 +817,7 @@ textview text {
 
 .large-files-column-view header {
     padding: 10px 14px;
-    font-size: 11px;
+    font-size: 13px;
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.7px;
@@ -806,7 +839,7 @@ stackswitcher button {
     border: none;
     border-radius: 7px;
     padding: 6px 16px;
-    font-size: 13px;
+    font-size: 15px;
     font-weight: 500;
     color: @maintainer_text_muted;
     min-height: 32px;
@@ -860,7 +893,7 @@ spinbutton button:hover {
 
 .directory-browser-path {
     font-family: monospace;
-    font-size: 13px;
+    font-size: 15px;
     color: @maintainer_text;
     font-weight: 500;
 }
@@ -871,7 +904,7 @@ spinbutton button:hover {
     background-color: alpha(@maintainer_success, 0.15);
     border-radius: 6px;
     padding: 3px 10px;
-    font-size: 12px;
+    font-size: 14px;
     font-weight: 700;
 }
 
@@ -880,7 +913,7 @@ spinbutton button:hover {
     background-color: alpha(@maintainer_warning, 0.15);
     border-radius: 6px;
     padding: 3px 10px;
-    font-size: 12px;
+    font-size: 14px;
     font-weight: 700;
 }
 
@@ -889,7 +922,7 @@ spinbutton button:hover {
     background-color: alpha(@maintainer_danger, 0.15);
     border-radius: 6px;
     padding: 3px 10px;
-    font-size: 12px;
+    font-size: 14px;
     font-weight: 700;
 }
 
@@ -899,7 +932,7 @@ spinbutton button:hover {
     background-color: alpha(@maintainer_text_muted, 0.15);
     border-radius: 6px;
     padding: 3px 10px;
-    font-size: 12px;
+    font-size: 14px;
     font-weight: 500;
 }
 
@@ -953,7 +986,7 @@ spinbutton button:hover {
     border: 1px solid alpha(@maintainer_accent, 0.3);
     border-radius: 6px;
     padding: 2px 8px;
-    font-size: 11px;
+    font-size: 13px;
     font-weight: 700;
 }
 
@@ -988,7 +1021,7 @@ spinbutton button:hover {
     border: 1px solid alpha(@maintainer_accent, 0.4);
     border-radius: 12px;
     padding: 3px 12px;
-    font-size: 11px;
+    font-size: 13px;
     font-weight: 700;
     letter-spacing: 0.3px;
 }
@@ -1000,7 +1033,7 @@ spinbutton button:hover {
     border: 1px solid alpha(@maintainer_warning, 0.3);
     border-radius: 12px;
     padding: 3px 12px;
-    font-size: 11px;
+    font-size: 13px;
     font-weight: 600;
 }
 
@@ -1010,13 +1043,13 @@ spinbutton button:hover {
     background-color: alpha(@maintainer_text_muted, 0.12);
     border-radius: 12px;
     padding: 3px 12px;
-    font-size: 11px;
+    font-size: 13px;
     font-weight: 600;
 }
 
 /* Operation result inline status */
 .maintainer_kernel_op_status {
-    font-size: 12px;
+    font-size: 14px;
     font-weight: 600;
 }
 
@@ -1049,14 +1082,14 @@ spinbutton button:hover {
 }
 
 .maintainer_net_rate_label {
-    font-size: 11px;
+    font-size: 13px;
     font-weight: 600;
     color: @maintainer_text_muted;
     font-family: monospace;
 }
 
 .maintainer_net_rate_value {
-    font-size: 12px;
+    font-size: 14px;
     font-weight: 700;
     color: @maintainer_text;
     font-family: monospace;
@@ -1067,11 +1100,11 @@ spinbutton button:hover {
     background-color: @maintainer_surface;
     border: 1px solid @maintainer_border;
     border-radius: 12px;
-    padding: 14px 16px;
+    padding: 12px 14px;
 }
 
 .maintainer_detail_card_title {
-    font-size: 12px;
+    font-size: 14px;
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.6px;
@@ -1084,7 +1117,7 @@ spinbutton button:hover {
 }
 
 .maintainer_core_label {
-    font-size: 11px;
+    font-size: 13px;
     font-weight: 600;
     color: @maintainer_text_muted;
     min-width: 52px;
@@ -1103,7 +1136,7 @@ spinbutton button:hover {
 }
 
 .maintainer_core_percent {
-    font-size: 11px;
+    font-size: 13px;
     font-weight: 700;
     color: @maintainer_text;
     font-family: monospace;
@@ -1111,13 +1144,13 @@ spinbutton button:hover {
 }
 
 .maintainer_mem_segment_label {
-    font-size: 11px;
+    font-size: 13px;
     font-weight: 600;
     color: @maintainer_text_muted;
 }
 
 .maintainer_mem_segment_value {
-    font-size: 12px;
+    font-size: 14px;
     font-weight: 700;
     color: @maintainer_text;
     font-family: monospace;
@@ -1125,7 +1158,7 @@ spinbutton button:hover {
 
 /* ---- System page: disk and network detail sections ---- */
 .maintainer_disk_row {
-    padding: 8px 12px;
+    padding: 5px 0;
     border-radius: 8px;
     transition: background-color 80ms ease;
 }
@@ -1135,19 +1168,19 @@ spinbutton button:hover {
 }
 
 .maintainer_disk_name {
-    font-size: 12px;
+    font-size: 14px;
     font-weight: 700;
     color: @maintainer_text;
 }
 
 .maintainer_disk_detail {
-    font-size: 11px;
+    font-size: 13px;
     color: @maintainer_text_muted;
     font-family: monospace;
 }
 
 .maintainer_iface_row {
-    padding: 8px 12px;
+    padding: 5px 0;
     border-radius: 8px;
     transition: background-color 80ms ease;
 }
@@ -1157,13 +1190,136 @@ spinbutton button:hover {
 }
 
 .maintainer_iface_name {
-    font-size: 12px;
+    font-size: 14px;
     font-weight: 700;
     color: @maintainer_text;
 }
 
 .maintainer_iface_stat {
-    font-size: 11px;
+    font-size: 13px;
     color: @maintainer_text_muted;
     font-family: monospace;
+}
+
+/* ---- Package category badges in Updates page ---- */
+.maintainer_badge_desktop {
+    font-size: 11px;
+    font-weight: 700;
+    color: @maintainer_accent;
+    background-color: alpha(@maintainer_accent, 0.15);
+    border-radius: 6px;
+    padding: 2px 8px;
+}
+
+.maintainer_badge_kernel {
+    font-size: 11px;
+    font-weight: 700;
+    color: #A855F7;
+    background-color: alpha(#A855F7, 0.15);
+    border-radius: 6px;
+    padding: 2px 8px;
+}
+
+.maintainer_badge_driver {
+    font-size: 11px;
+    font-weight: 700;
+    color: @maintainer_warning;
+    background-color: alpha(@maintainer_warning, 0.15);
+    border-radius: 6px;
+    padding: 2px 8px;
+}
+
+.maintainer_badge_security {
+    font-size: 11px;
+    font-weight: 700;
+    color: @maintainer_danger;
+    background-color: alpha(@maintainer_danger, 0.15);
+    border-radius: 6px;
+    padding: 2px 8px;
+}
+
+.maintainer_badge_app {
+    font-size: 11px;
+    font-weight: 700;
+    color: @maintainer_success;
+    background-color: alpha(@maintainer_success, 0.15);
+    border-radius: 6px;
+    padding: 2px 8px;
+}
+
+.maintainer_badge_system {
+    font-size: 11px;
+    font-weight: 700;
+    color: @maintainer_text_muted;
+    background-color: alpha(@maintainer_surface_alt, 0.8);
+    border-radius: 6px;
+    padding: 2px 8px;
+}
+
+/* Network, severity, and process state semantic tokens */
+@define-color maintainer_rx @maintainer_success;
+@define-color maintainer_tx @maintainer_accent;
+@define-color maintainer_severity_info @maintainer_accent;
+@define-color maintainer_severity_warn @maintainer_warning;
+@define-color maintainer_severity_crit @maintainer_danger;
+@define-color maintainer_severity_ok @maintainer_success;
+@define-color maintainer_process_running @maintainer_success;
+@define-color maintainer_process_zombie @maintainer_danger;
+
+.maintainer_net_rx {
+    color: @maintainer_rx;
+    font-family: monospace;
+    font-size: 14px;
+    font-weight: 600;
+}
+
+.maintainer_net_tx {
+    color: @maintainer_tx;
+    font-family: monospace;
+    font-size: 14px;
+    font-weight: 600;
+}
+
+.maintainer_speed_result_value {
+    font-size: 18px;
+    font-weight: 700;
+    color: @maintainer_text;
+}
+
+.maintainer_row_separator {
+    min-height: 1px;
+    background-color: @maintainer_border;
+    margin: 0 8px;
+}
+
+.maintainer_severity_info {
+    color: @maintainer_severity_info;
+}
+
+.maintainer_severity_warn {
+    color: @maintainer_severity_warn;
+}
+
+.maintainer_severity_crit {
+    color: @maintainer_severity_crit;
+}
+
+.maintainer_severity_ok {
+    color: @maintainer_severity_ok;
+}
+
+.maintainer_process_state_running {
+    color: @maintainer_process_running;
+}
+
+.maintainer_process_state_zombie {
+    color: @maintainer_process_zombie;
+}
+
+.maintainer_danger_text {
+    color: @maintainer_danger;
+}
+
+.maintainer_accent {
+    color: @maintainer_accent;
 }

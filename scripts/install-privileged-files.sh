@@ -73,8 +73,27 @@ if [[ ! -x /usr/libexec/maintainer-helper ]]; then
 fi
 
 echo "Authorization required for each action:"
-for action in terminate-process vacuum-journal clean-package-cache refresh-smart; do
+POLICY_ERRORS=0
+for action in terminate-process vacuum-journal clean-package-cache refresh-smart remove-kernel install-updates; do
     result="$(pkaction --action-id "io.github.maintainerapp.${action}" --verbose 2>/dev/null \
         | sed -n 's/^[[:space:]]*implicit active:[[:space:]]*//p')"
-    printf '  %-22s %s\n' "${action}" "${result:-unknown}"
+    if [[ -z "${result}" ]]; then
+        echo "  ERROR: action io.github.maintainerapp.${action} not found in installed policy" >&2
+        POLICY_ERRORS=$((POLICY_ERRORS + 1))
+    else
+        printf '  %-22s %s\n' "${action}" "${result}"
+    fi
 done
+
+# Verify install-updates has the exec.path annotation.
+EXEC_PATH="$(pkaction --action-id "io.github.maintainerapp.install-updates" --verbose 2>/dev/null \
+    | grep -o '/usr/libexec/maintainer-helper' || true)"
+if [[ -z "${EXEC_PATH}" ]]; then
+    echo "  ERROR: install-updates action is missing org.freedesktop.policykit.exec.path annotation" >&2
+    POLICY_ERRORS=$((POLICY_ERRORS + 1))
+fi
+
+if [[ "${POLICY_ERRORS}" -gt 0 ]]; then
+    echo "FATAL: ${POLICY_ERRORS} policy verification error(s) found." >&2
+    exit 1
+fi

@@ -81,6 +81,17 @@ pub struct SmartRefreshRequest {
     pub drive_id: String,
 }
 
+/// Fixed system-update request accepted by the privileged helper CLI.
+///
+/// `Full` runs APT's resolver-driven full upgrade for this machine. `Selected`
+/// installs only exact package/version pairs produced by the unprivileged APT
+/// review step. No caller-provided programs, options, or shell text are
+/// accepted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InstallUpdatesRequest {
+    Full,
+    Selected(Vec<String>),
+}
 /// Polkit action identifiers for each operation.
 pub mod actions {
     pub const TERMINATE_PROCESS: &str = "io.github.maintainerapp.terminate-process";
@@ -88,6 +99,7 @@ pub mod actions {
     pub const VACUUM_JOURNAL: &str = "io.github.maintainerapp.vacuum-journal";
     pub const REFRESH_SMART: &str = "io.github.maintainerapp.refresh-smart";
     pub const REMOVE_KERNEL: &str = "io.github.maintainerapp.remove-kernel";
+    pub const INSTALL_UPDATES: &str = "io.github.maintainerapp.install-updates";
 }
 
 /// Request to remove an old kernel package via apt-get purge.

@@ -1,14 +1,3 @@
-//! On-demand job dispatch: routes page actions through `JobExecutor` with
-//! cancellation, progress, and stale-job rejection.
-//!
-//! Each dispatch function submits work to the shared `JobExecutor`, receives a
-//! typed `Receiver`, and installs a short-interval GTK timer that polls for
-//! results. Results are delivered to `glib::idle_add_once` callbacks on the
-//! main thread. Stale-job messages (from a superseded job ID) are discarded.
-//!
-//! Progress updates flow through a `SharedProgress` polled from the timer —
-//! GTK objects never cross thread boundaries.
-
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -501,6 +490,9 @@ pub fn dispatch_replan_selection(
     (token, progress)
 }
 
+/// Progress text used while pkexec may still be safely cancelled before APT starts.
+pub const UPDATE_AUTHENTICATION_PROGRESS: &str = "Waiting for administrator authentication…";
+
 /// Result of executing a reviewed update plan.
 pub enum UpdateExecutionOutcome {
     Completed {
@@ -512,9 +504,105 @@ pub enum UpdateExecutionOutcome {
     },
 }
 
-/// Revalidate and execute an immutable update plan through PackageKit's CLI.
+fn current_plan_candidate_count(
+    current: &maintainer_core::capability::Capability<maintainer_core::updates::DiscoveryResult>,
+) -> usize {
+    match current {
+        maintainer_core::capability::Capability::Available(
+            maintainer_core::updates::DiscoveryResult::Available(p),
+        ) => p.candidates.len(),
+        _ => 0,
+    }
+}
+
+fn build_apt_update_command(
+    plan: &maintainer_core::updates::UpdatePlan,
+    current_candidate_count: usize,
+) -> Result<maintainer_core::command::CommandSpec, maintainer_core::error::CommandSpecError> {
+    let mut arguments = vec![
+        "/usr/libexec/maintainer-helper".to_string(),
+        "install-updates".to_string(),
+    ];
+    if !plan.candidates.is_empty() && plan.candidates.len() < current_candidate_count {
+        arguments.push("selected".to_string());
+        arguments.extend(
+            plan.candidates
+                .iter()
+                .map(|candidate| format!("{}={}", candidate.name, candidate.available_version)),
+        );
+    } else {
+        arguments.push("full".to_string());
+    }
+
+    maintainer_core::command::CommandSpec::new("/usr/bin/pkexec", arguments)
+        .map(|command| command.with_timeout(Duration::from_secs(6 * 60 * 60)))
+}
+
+fn verify_installed_versions(
+    runner: &dyn maintainer_core::command::CommandRunner,
+    cancel: &dyn maintainer_core::jobs::Cancellation,
+    candidates: &[maintainer_core::updates::UpdateCandidate],
+) -> Result<(), String> {
+    let mut mismatches = Vec::new();
+
+    for candidate in candidates {
+        let command = maintainer_core::command::CommandSpec::new(
+            "/usr/bin/dpkg-query",
+            [
+                "-W".to_string(),
+                "-f=${Version}".to_string(),
+                "--".to_string(),
+                candidate.name.clone(),
+            ],
+        )
+        .map_err(|error| {
+            format!(
+                "cannot construct dpkg-query for {}: {error}",
+                candidate.name
+            )
+        })?
+        .with_timeout(Duration::from_secs(30));
+
+        let output = runner.run(&command, cancel).map_err(|error| {
+            format!(
+                "cannot query installed version of {}: {error}",
+                candidate.name
+            )
+        })?;
+        if !output.success() {
+            let detail = output
+                .stderr
+                .lines()
+                .find(|line| !line.trim().is_empty())
+                .unwrap_or("dpkg-query returned a non-zero exit code");
+            mismatches.push(format!("{}: {detail}", candidate.name));
+            continue;
+        }
+
+        let installed = output.stdout.trim();
+        if installed != candidate.available_version {
+            let found = if installed.is_empty() {
+                "not installed"
+            } else {
+                installed
+            };
+            mismatches.push(format!(
+                "{} expected {}, found {found}",
+                candidate.name, candidate.available_version
+            ));
+        }
+    }
+
+    if mismatches.is_empty() {
+        Ok(())
+    } else {
+        Err(mismatches.join("; "))
+    }
+}
+/// Revalidate and execute an immutable update plan.
 pub fn dispatch_update_execution(
     executor: &Arc<JobExecutor>,
+
     plan: maintainer_core::updates::UpdatePlan,
     on_progress: impl Fn(&maintainer_core::jobs::JobProgress) + 'static,
     on_done: impl FnOnce(UpdateExecutionOutcome) + 'static,
@@ -526,7 +614,7 @@ pub fn dispatch_update_execution(
 
     let job = move || -> maintainer_core::error::Result<UpdateExecutionOutcome> {
         use maintainer_core::capability::Capability;
-        use maintainer_core::command::{CommandRunner, CommandSpec, SystemCommandRunner};
+        use maintainer_core::command::SystemCommandRunner;
         use maintainer_core::updates::{AptDiscovery, DiscoveryResult};
 
         let runner = SystemCommandRunner;
@@ -534,7 +622,7 @@ pub fn dispatch_update_execution(
         // (check_full_upgrade), or content_hash will never match and every
         // install would be rejected as "changed since review".
         let current = AptDiscovery::check_full_upgrade(&runner, &worker_token);
-        match current {
+        match &current {
             Capability::Available(DiscoveryResult::Available(current_plan))
                 if current_plan.content_hash == plan.content_hash => {}
             Capability::Available(DiscoveryResult::UpToDate) => {
@@ -556,12 +644,12 @@ pub fn dispatch_update_execution(
             }
             Capability::Unavailable(reason) => {
                 return Ok(UpdateExecutionOutcome::Failed {
-                    message: reason.message,
+                    message: reason.message.clone(),
                 });
             }
             Capability::PermissionRequired(request) => {
                 return Ok(UpdateExecutionOutcome::Failed {
-                    message: request.explanation,
+                    message: request.explanation.clone(),
                 });
             }
         }
@@ -581,42 +669,90 @@ pub fn dispatch_update_execution(
         worker_progress.report(&maintainer_core::jobs::JobProgress {
             completed: 0,
             total: None,
-            message: "Waiting for PackageKit authorization…".to_string(),
+            message: UPDATE_AUTHENTICATION_PROGRESS.to_string(),
         });
-        let mut arguments = vec![
-            "--plain".to_string(),
-            "--noninteractive".to_string(),
-            "update".to_string(),
-        ];
-        arguments.extend(
-            plan.candidates
-                .iter()
-                .map(|candidate| candidate.name.clone()),
-        );
-        let command = CommandSpec::new("/usr/bin/pkcon", arguments)
+
+        use maintainer_core::command::run_streaming;
+        use maintainer_core::updates::apt_parser::parse_apt_progress_line;
+
+        let command = build_apt_update_command(&plan, current_plan_candidate_count(&current))
             .map_err(
                 |error| maintainer_core::error::MaintainerError::CommandFailed {
                     message: error.to_string(),
                 },
-            )?
-            .with_timeout(Duration::from_secs(6 * 60 * 60));
+            )?;
 
-        match runner.run(&command, &worker_token) {
+        let mut current_status_msg = "Installing updates…".to_string();
+        let stream_result = run_streaming(&command, &worker_token, |line| {
+            if let Some(parsed) = parse_apt_progress_line(line) {
+                let percentage = parsed.percentage();
+                current_status_msg = parsed.display_message();
+                worker_progress.report(&maintainer_core::jobs::JobProgress {
+                    completed: percentage.unwrap_or(0),
+                    total: percentage.map(|_| 100),
+                    message: current_status_msg.clone(),
+                });
+            }
+        });
+
+        match stream_result {
             Ok(output) if output.success() => {
+                worker_progress.report(&maintainer_core::jobs::JobProgress {
+                    completed: 1,
+                    total: Some(1),
+                    message: "Verifying installed package versions…".to_string(),
+                });
+
+                // Once APT has exited successfully, verification must complete
+                // even if the user pressed Cancel at the end of the transaction.
+                // Otherwise cancellation could suppress the only check that
+                // prevents a false success result.
+                let verification_cancel = CancellationToken::new();
+                if let Err(error) =
+                    verify_installed_versions(&runner, &verification_cancel, &plan.candidates)
+                {
+                    return Ok(UpdateExecutionOutcome::Failed {
+                        message: format!(
+                            "APT exited successfully, but installed package verification failed: \
+                             {error}. No success was recorded."
+                        ),
+                    });
+                }
+
                 let combined = format!("{}\n{}", output.stdout, output.stderr);
-                let restart_required = combined.to_ascii_lowercase().contains("restart");
+                let restart_required = combined.to_ascii_lowercase().contains("restart")
+                    || maintainer_core::updates::reboot_required(std::path::Path::new("/var/run"));
                 Ok(UpdateExecutionOutcome::Completed {
-                    message: "Updates installed successfully.".to_string(),
+                    message: "Updates installed and verified successfully.".to_string(),
                     restart_required,
                 })
             }
             Ok(output) => {
+                let err_combined = format!("{}\n{}", output.stderr, output.stdout);
+                if err_combined.contains("dismissed")
+                    || err_combined.contains("not authorized")
+                    || err_combined.contains("Authentication cancelled")
+                    || output.exit_code == Some(126)
+                    || output.exit_code == Some(127)
+                {
+                    return Ok(UpdateExecutionOutcome::Failed {
+                        message: "Authentication was cancelled.".to_string(),
+                    });
+                }
+                if err_combined.contains("Could not get lock")
+                    || err_combined.contains("Resource temporarily unavailable")
+                {
+                    return Ok(UpdateExecutionOutcome::Failed {
+                        message: "Another package manager is currently running. Try again later."
+                            .to_string(),
+                    });
+                }
                 let message = output
                     .stderr
                     .lines()
                     .chain(output.stdout.lines())
                     .find(|line| !line.trim().is_empty())
-                    .unwrap_or("PackageKit could not install the reviewed updates")
+                    .unwrap_or("Failed to install updates")
                     .to_string();
                 Ok(UpdateExecutionOutcome::Failed { message })
             }
@@ -1019,5 +1155,171 @@ fn build_os_section() -> maintainer_core::reports::model::OsSection {
         desktop,
         hostname,
         username,
+    }
+}
+
+#[cfg(test)]
+mod update_execution_tests {
+    use super::build_apt_update_command;
+    use maintainer_core::updates::{
+        HoldState, UpdateBackend, UpdateCandidate, UpdateClassification, UpdatePlan,
+    };
+    use std::time::SystemTime;
+
+    fn candidate(name: &str, available_version: &str) -> UpdateCandidate {
+        UpdateCandidate {
+            name: name.to_string(),
+            installed_version: Some("1.0".to_string()),
+            available_version: available_version.to_string(),
+            classification: UpdateClassification::Standard,
+            download_bytes: None,
+            hold_state: HoldState::None,
+            backend: UpdateBackend::Apt,
+            is_new: false,
+            is_kernel: false,
+        }
+    }
+
+    fn plan(candidates: Vec<UpdateCandidate>) -> UpdatePlan {
+        UpdatePlan {
+            plan_id: "test-plan".to_string(),
+            created_at: SystemTime::UNIX_EPOCH,
+            candidates,
+            removals: Vec::new(),
+            held: Vec::new(),
+            total_download_bytes: None,
+            content_hash: "test-hash".to_string(),
+            reboot_required: false,
+        }
+    }
+
+    #[test]
+    fn full_plan_uses_pkexec_with_fixed_helper_operation() {
+        let plan = plan(vec![candidate("curl", "2.0"), candidate("wget", "3.0")]);
+        let command = build_apt_update_command(&plan, 2).unwrap();
+
+        assert_eq!(command.program(), "/usr/bin/pkexec");
+        assert_eq!(
+            command.args(),
+            ["/usr/libexec/maintainer-helper", "install-updates", "full"]
+        );
+        assert!(!command.args().iter().any(|arg| arg.contains("apt-get")));
+    }
+
+    #[test]
+    fn selected_plan_passes_only_exact_reviewed_versions_to_helper() {
+        let plan = plan(vec![candidate("curl", "2.0")]);
+        let command = build_apt_update_command(&plan, 2).unwrap();
+
+        assert_eq!(command.program(), "/usr/bin/pkexec");
+        assert_eq!(
+            command.args(),
+            [
+                "/usr/libexec/maintainer-helper",
+                "install-updates",
+                "selected",
+                "curl=2.0"
+            ]
+        );
+        assert!(!command.args().iter().any(|arg| arg.contains("apt-get")));
+    }
+}
+
+#[cfg(test)]
+mod installed_version_verification_tests {
+    use std::sync::Mutex;
+
+    use maintainer_core::command::{CommandOutput, CommandRunner, CommandSpec};
+    use maintainer_core::jobs::Cancellation;
+    use maintainer_core::updates::{
+        HoldState, UpdateBackend, UpdateCandidate, UpdateClassification,
+    };
+
+    use super::verify_installed_versions;
+
+    struct FixedRunner {
+        output: CommandOutput,
+        calls: Mutex<Vec<Vec<String>>>,
+    }
+
+    impl CommandRunner for FixedRunner {
+        fn run(
+            &self,
+            spec: &CommandSpec,
+            _cancel: &dyn Cancellation,
+        ) -> maintainer_core::error::Result<CommandOutput> {
+            self.calls.lock().unwrap().push(spec.args().to_vec());
+            Ok(self.output.clone())
+        }
+    }
+
+    fn candidate(name: &str, target: &str) -> UpdateCandidate {
+        UpdateCandidate {
+            name: name.to_string(),
+            installed_version: Some("1.0".to_string()),
+            available_version: target.to_string(),
+            classification: UpdateClassification::Standard,
+            download_bytes: None,
+            hold_state: HoldState::None,
+            backend: UpdateBackend::Apt,
+            is_new: false,
+            is_kernel: false,
+        }
+    }
+
+    fn output(stdout: &str, exit_code: i32) -> CommandOutput {
+        CommandOutput {
+            exit_code: Some(exit_code),
+            stdout: stdout.to_string(),
+            stderr: String::new(),
+            stdout_truncated: false,
+            stderr_truncated: false,
+        }
+    }
+
+    #[test]
+    fn exact_installed_version_is_verified() {
+        let runner = FixedRunner {
+            output: output("2.0", 0),
+            calls: Mutex::new(Vec::new()),
+        };
+        let cancel = maintainer_core::jobs::CancellationToken::new();
+
+        assert!(verify_installed_versions(&runner, &cancel, &[candidate("wget", "2.0")]).is_ok());
+        assert_eq!(
+            runner.calls.lock().unwrap().as_slice(),
+            &[vec![
+                "-W".to_string(),
+                "-f=${Version}".to_string(),
+                "--".to_string(),
+                "wget".to_string(),
+            ]]
+        );
+    }
+
+    #[test]
+    fn unchanged_version_rejects_false_success() {
+        let runner = FixedRunner {
+            output: output("1.0", 0),
+            calls: Mutex::new(Vec::new()),
+        };
+        let cancel = maintainer_core::jobs::CancellationToken::new();
+
+        let error = verify_installed_versions(&runner, &cancel, &[candidate("wget", "2.0")])
+            .expect_err("unchanged package must reject success");
+        assert!(error.contains("wget"));
+        assert!(error.contains("expected 2.0"));
+        assert!(error.contains("found 1.0"));
+    }
+
+    #[test]
+    fn dpkg_query_failure_rejects_success() {
+        let runner = FixedRunner {
+            output: output("", 1),
+            calls: Mutex::new(Vec::new()),
+        };
+        let cancel = maintainer_core::jobs::CancellationToken::new();
+
+        assert!(verify_installed_versions(&runner, &cancel, &[candidate("wget", "2.0")]).is_err());
     }
 }

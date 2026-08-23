@@ -285,6 +285,154 @@ fn discover_sensors(sys_path: &Path) -> Result<Vec<SensorPath>, MaintainerError>
     Ok(sensors)
 }
 
+/// A group of temperature readings from a single hardware chip.
+///
+/// For chips with multiple sensors (e.g., coretemp with per-core readings),
+/// a representative reading is selected for summary display.
+#[derive(Debug, Clone)]
+pub struct TemperatureGroup {
+    /// Chip/device name (from hwmon `name` file).
+    pub chip_name: String,
+    /// Single representative reading for summary display.
+    pub representative: TemperatureReading,
+    /// All readings from this chip, including the representative.
+    pub details: Vec<TemperatureReading>,
+}
+
+/// Group temperature readings by hardware chip, selecting a representative per group.
+///
+/// Rules for representative selection:
+/// - For "coretemp": prefer the reading whose label starts with "Package".
+/// - For all others: pick the reading with the highest available temperature.
+/// - If no readings have an available value, the first reading is representative.
+///
+/// Groups are sorted alphabetically by `chip_name`.
+pub fn group_temperatures(readings: &[TemperatureReading]) -> Vec<TemperatureGroup> {
+    use std::collections::BTreeMap;
+
+    if readings.is_empty() {
+        return Vec::new();
+    }
+
+    let mut groups: BTreeMap<String, Vec<TemperatureReading>> = BTreeMap::new();
+    for reading in readings {
+        groups
+            .entry(reading.hwmon_name.clone())
+            .or_default()
+            .push(reading.clone());
+    }
+
+    groups
+        .into_iter()
+        .map(|(chip_name, details)| {
+            let representative = select_representative(&chip_name, &details);
+            TemperatureGroup {
+                chip_name,
+                representative,
+                details,
+            }
+        })
+        .collect()
+}
+
+/// Select a representative reading from a chip's sensor list.
+fn select_representative(chip_name: &str, readings: &[TemperatureReading]) -> TemperatureReading {
+    debug_assert!(!readings.is_empty());
+
+    if chip_name == "coretemp" {
+        // Prefer "Package id *" label.
+        if let Some(pkg) = readings
+            .iter()
+            .find(|r| r.label.as_deref().is_some_and(|l| l.starts_with("Package")))
+        {
+            return pkg.clone();
+        }
+    }
+
+    // Pick reading with the highest available temperature.
+    readings
+        .iter()
+        .filter_map(|r| match &r.celsius {
+            Capability::Available(c) => Some((r, *c)),
+            _ => None,
+        })
+        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(r, _)| r.clone())
+        .unwrap_or_else(|| readings[0].clone())
+}
+
+#[cfg(test)]
+mod group_tests {
+    use super::*;
+
+    fn reading(name: &str, label: Option<&str>, celsius: f64) -> TemperatureReading {
+        TemperatureReading {
+            hwmon_name: name.to_string(),
+            label: label.map(|s| s.to_string()),
+            celsius: Capability::Available(celsius),
+        }
+    }
+
+    #[test]
+    fn coretemp_package_is_representative() {
+        let readings = vec![
+            reading("coretemp", Some("Package id 0"), 45.0),
+            reading("coretemp", Some("Core 0"), 42.0),
+            reading("coretemp", Some("Core 1"), 48.0),
+        ];
+        let groups = group_temperatures(&readings);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(
+            groups[0].representative.label.as_deref(),
+            Some("Package id 0")
+        );
+        assert_eq!(groups[0].details.len(), 3);
+    }
+
+    #[test]
+    fn no_package_uses_max_temperature() {
+        let readings = vec![
+            reading("iwlwifi", Some("Sensor 1"), 35.0),
+            reading("iwlwifi", Some("Sensor 2"), 55.0),
+            reading("iwlwifi", Some("Sensor 3"), 40.0),
+        ];
+        let groups = group_temperatures(&readings);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].representative.label.as_deref(), Some("Sensor 2"));
+    }
+
+    #[test]
+    fn multiple_chips_produce_multiple_groups() {
+        let readings = vec![
+            reading("acpitz", None, 38.0),
+            reading("coretemp", Some("Package id 0"), 50.0),
+            reading("coretemp", Some("Core 0"), 47.0),
+        ];
+        let groups = group_temperatures(&readings);
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].chip_name, "acpitz");
+        assert_eq!(groups[1].chip_name, "coretemp");
+    }
+
+    #[test]
+    fn single_sensor_chip_passes_through() {
+        let readings = vec![reading("acpitz", None, 38.5)];
+        let groups = group_temperatures(&readings);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].details.len(), 1);
+        match &groups[0].representative.celsius {
+            Capability::Available(c) => assert_eq!(*c, 38.5),
+            other => panic!("expected Available, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn empty_input_returns_empty_groups() {
+        let groups = group_temperatures(&[]);
+        assert!(groups.is_empty());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

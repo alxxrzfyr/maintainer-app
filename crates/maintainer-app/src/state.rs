@@ -11,6 +11,8 @@ pub enum Page {
     #[default]
     Overview,
     System,
+    Network,
+    Processes,
     Storage,
     Cleanup,
     Updates,
@@ -24,6 +26,8 @@ impl Page {
     pub const ALL: &'static [Page] = &[
         Page::Overview,
         Page::System,
+        Page::Network,
+        Page::Processes,
         Page::Storage,
         Page::Cleanup,
         Page::Updates,
@@ -37,6 +41,8 @@ impl Page {
         match self {
             Page::Overview => "Overview",
             Page::System => "System",
+            Page::Network => "Network",
+            Page::Processes => "Processes",
             Page::Storage => "Storage",
             Page::Cleanup => "Cleanup",
             Page::Updates => "Updates",
@@ -46,18 +52,61 @@ impl Page {
         }
     }
 
-    /// Icon name from the system icon theme.
-    pub fn icon_name(self) -> &'static str {
+    /// Fallback icon chain for this page.
+    ///
+    /// Returns a chain of icon names for fallback resolution. The last entry
+    /// is guaranteed to exist in all GTK4 installations.
+    pub fn icon_chain(self) -> &'static [&'static str] {
         match self {
-            Page::Overview => "go-home-symbolic",
-            Page::System => "utilities-system-monitor-symbolic",
-            Page::Storage => "drive-harddisk-symbolic",
-            Page::Cleanup => "edit-clear-all-symbolic",
-            Page::Updates => "software-update-available-symbolic",
-            Page::Diagnostics => "dialog-warning-symbolic",
-            Page::Reports => "document-open-symbolic",
-            Page::Settings => "preferences-system-symbolic",
+            Page::Overview => &[
+                "go-home-symbolic",
+                "user-home-symbolic",
+                "emblem-default-symbolic",
+            ],
+            Page::System => &[
+                "utilities-system-monitor-symbolic",
+                "preferences-system-symbolic",
+            ],
+            Page::Network => &[
+                "network-wired-symbolic",
+                "network-idle-symbolic",
+                "preferences-system-network-symbolic",
+            ],
+            Page::Processes => &[
+                "system-run-symbolic",
+                "system-processes-symbolic",
+                "utilities-system-monitor-symbolic",
+            ],
+            Page::Storage => &["drive-harddisk-symbolic", "drive-multidisk-symbolic"],
+            Page::Cleanup => &[
+                "edit-clear-all-symbolic",
+                "edit-clear-symbolic",
+                "emblem-default-symbolic",
+            ],
+            Page::Updates => &[
+                "software-update-available-symbolic",
+                "emblem-synchronizing-symbolic",
+            ],
+            Page::Diagnostics => &[
+                "preferences-system-details-symbolic",
+                "dialog-warning-symbolic",
+                "emblem-important-symbolic",
+            ],
+            Page::Reports => &[
+                "x-office-document-symbolic",
+                "document-open-symbolic",
+                "emblem-documents-symbolic",
+            ],
+            Page::Settings => &["emblem-system-symbolic", "preferences-system-symbolic"],
         }
+    }
+
+    /// Resolved icon name using the fallback chain.
+    ///
+    /// Delegates to `icons::resolve_icon` which queries the active GTK icon
+    /// theme. In headless / test contexts, returns the last chain entry.
+    pub fn icon_name(self) -> &'static str {
+        crate::ui::icons::resolve_icon(self.icon_chain())
     }
 }
 
@@ -124,7 +173,7 @@ pub const NAVIGATION_GROUPS: &[NavigationGroup] = &[
     },
     NavigationGroup {
         label: "Monitor",
-        pages: &[Page::System],
+        pages: &[Page::System, Page::Network, Page::Processes],
     },
     NavigationGroup {
         label: "Storage",

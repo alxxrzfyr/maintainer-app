@@ -8,8 +8,8 @@ use std::time::Duration;
 
 use maintainer_core::capability::Capability;
 use maintainer_core::metrics::{
-    CpuSnapshot, DiskSnapshot, MemorySnapshot, NetworkSnapshot, ProcessSnapshot, SystemSnapshot,
-    TemperatureReading,
+    ConnectionDetails, CpuSnapshot, DiskSnapshot, MemorySnapshot, NetworkSnapshot, ProcessSnapshot,
+    SystemSnapshot, TemperatureGroup, TemperatureReading, group_temperatures,
 };
 
 /// Maximum samples retained in ring buffers for sparkline rendering.
@@ -212,6 +212,8 @@ pub struct SystemViewModel {
     pub networks: Vec<NetworkSnapshot>,
     /// Temperature readings.
     pub temperatures: Vec<TemperatureReading>,
+    /// Temperature groups (grouped by chip with representative).
+    pub temperature_groups: Vec<TemperatureGroup>,
     /// Process list (sorted).
     pub processes: Vec<ProcessSnapshot>,
     /// Current sort mode.
@@ -231,6 +233,7 @@ impl Default for SystemViewModel {
             disks: Vec::new(),
             networks: Vec::new(),
             temperatures: Vec::new(),
+            temperature_groups: Vec::new(),
             processes: Vec::new(),
             process_sort: ProcessSort::default(),
             processes_available: false,
@@ -238,11 +241,66 @@ impl Default for SystemViewModel {
     }
 }
 
+/// Presentation state for the Network detail page.
+#[derive(Debug, Clone)]
+pub struct NetworkViewModel {
+    /// Per-interface snapshots.
+    pub interfaces: Vec<NetworkSnapshot>,
+    /// Per-interface receive rate rings (indexed by interface order).
+    pub rx_rings: Vec<SampleRing>,
+    /// Per-interface transmit rate rings (indexed by interface order).
+    pub tx_rings: Vec<SampleRing>,
+    /// Total receive rate across all interfaces (bytes/sec).
+    pub total_rx_rate: f64,
+    /// Total transmit rate across all interfaces (bytes/sec).
+    pub total_tx_rate: f64,
+    /// Whether network data is available.
+    pub available: bool,
+    /// Reason network is unavailable, if applicable.
+    pub unavailable_reason: Option<String>,
+    /// Connection details (IP, gateway, DNS, WiFi) from core collector.
+    pub connection_details: ConnectionDetails,
+}
+
+impl Default for NetworkViewModel {
+    fn default() -> Self {
+        Self {
+            interfaces: Vec::new(),
+            rx_rings: Vec::new(),
+            tx_rings: Vec::new(),
+            total_rx_rate: 0.0,
+            total_tx_rate: 0.0,
+            available: false,
+            unavailable_reason: None,
+            connection_details: ConnectionDetails::default(),
+        }
+    }
+}
+
+/// Presentation state for the Processes detail page.
+#[derive(Debug, Clone, Default)]
+pub struct ProcessesViewModel {
+    /// Process list (sorted by current sort mode).
+    pub processes: Vec<ProcessSnapshot>,
+    /// Current sort mode.
+    pub sort: ProcessSort,
+    /// Whether process data is available.
+    pub available: bool,
+    /// Reason processes are unavailable, if applicable.
+    pub unavailable_reason: Option<String>,
+    /// Total number of processes.
+    pub total_count: usize,
+}
+
 /// Combined monitoring state managed by the monitoring service.
 #[derive(Debug, Clone)]
 pub struct MonitoringState {
     pub overview: OverviewViewModel,
     pub system: SystemViewModel,
+    /// Dedicated network page view model.
+    pub network_vm: NetworkViewModel,
+    /// Dedicated processes page view model.
+    pub processes_vm: ProcessesViewModel,
     /// Whether the window is currently visible (affects sampling interval).
     pub window_visible: bool,
     /// Current sampling interval.
@@ -256,6 +314,8 @@ impl Default for MonitoringState {
         Self {
             overview: OverviewViewModel::default(),
             system: SystemViewModel::default(),
+            network_vm: NetworkViewModel::default(),
+            processes_vm: ProcessesViewModel::default(),
             window_visible: true,
             interval: VISIBLE_INTERVAL,
             immediate_sample_pending: false,
@@ -410,19 +470,52 @@ impl MonitoringState {
             );
             self.overview.net_rx_text = format!("{}/s", format_bytes_rate(total_rx));
             self.overview.net_tx_text = format!("{}/s", format_bytes_rate(total_tx));
+
+            // Populate network view model.
+            self.network_vm.available = true;
+            self.network_vm.unavailable_reason = None;
+            self.network_vm.total_rx_rate = total_rx;
+            self.network_vm.total_tx_rate = total_tx;
+            self.network_vm.interfaces = snaps.clone();
+
+            // Grow ring buffers to match interface count.
+            while self.network_vm.rx_rings.len() < snaps.len() {
+                self.network_vm.rx_rings.push(SampleRing::new());
+                self.network_vm.tx_rings.push(SampleRing::new());
+            }
+            for (i, iface) in snaps.iter().enumerate() {
+                if let Some(rx_ring) = self.network_vm.rx_rings.get_mut(i) {
+                    rx_ring.push(iface.rx_bytes_per_sec.unwrap_or(0.0));
+                }
+                if let Some(tx_ring) = self.network_vm.tx_rings.get_mut(i) {
+                    tx_ring.push(iface.tx_bytes_per_sec.unwrap_or(0.0));
+                }
+            }
+
+            // Refresh connection details (IP, gateway, DNS, WiFi) from core.
+            self.network_vm.connection_details =
+                maintainer_core::metrics::read_connection_details();
         } else {
             self.overview.network_text = "Unavailable".into();
             self.overview.net_rx_text = "—".into();
             self.overview.net_tx_text = "—".into();
             self.system.networks.clear();
+
+            self.network_vm.available = false;
+            if let Capability::Unavailable(reason) = network {
+                self.network_vm.unavailable_reason = Some(reason.message.clone());
+            }
+            self.network_vm.interfaces.clear();
         }
     }
 
     fn apply_temperatures(&mut self, temps: &Capability<Vec<TemperatureReading>>) {
         if let Capability::Available(readings) = temps {
             self.system.temperatures = readings.clone();
+            self.system.temperature_groups = group_temperatures(readings);
         } else {
             self.system.temperatures.clear();
+            self.system.temperature_groups.clear();
         }
     }
 
@@ -432,10 +525,30 @@ impl MonitoringState {
                 self.system.processes = procs.clone();
                 self.system.processes_available = true;
                 self.sort_processes();
+
+                // Populate processes view model.
+                self.processes_vm.available = true;
+                self.processes_vm.unavailable_reason = None;
+                self.processes_vm.total_count = procs.len();
+                self.processes_vm.processes = self.system.processes.clone();
+                self.processes_vm.sort = self.system.process_sort;
+            }
+            Capability::Unavailable(reason) => {
+                self.system.processes_available = false;
+                self.system.processes.clear();
+
+                self.processes_vm.available = false;
+                self.processes_vm.unavailable_reason = Some(reason.message.clone());
+                self.processes_vm.processes.clear();
+                self.processes_vm.total_count = 0;
             }
             _ => {
                 self.system.processes_available = false;
                 self.system.processes.clear();
+
+                self.processes_vm.available = false;
+                self.processes_vm.processes.clear();
+                self.processes_vm.total_count = 0;
             }
         }
     }

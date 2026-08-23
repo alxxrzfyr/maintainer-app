@@ -267,7 +267,7 @@ fn build_privacy_rows(on_intent: std::rc::Rc<dyn Fn(SettingsIntent)>) -> GtkBox 
 
     let on_intent_delete_history = on_intent.clone();
     let delete_history_btn = Button::with_label("Delete all history");
-    delete_history_btn.add_css_class("destructive-action");
+    delete_history_btn.add_css_class("maintainer_destructive");
     delete_history_btn.set_halign(Align::Start);
     delete_history_btn.set_tooltip_text(Some("Remove all operation history records"));
     delete_history_btn.update_property(&[gtk4::accessible::Property::Label("Delete all history")]);
@@ -277,7 +277,7 @@ fn build_privacy_rows(on_intent: std::rc::Rc<dyn Fn(SettingsIntent)>) -> GtkBox 
     container.append(&delete_history_btn);
 
     let delete_all_btn = Button::with_label("Delete all Maintainer data");
-    delete_all_btn.add_css_class("destructive-action");
+    delete_all_btn.add_css_class("maintainer_destructive");
     delete_all_btn.set_halign(Align::Start);
     delete_all_btn.set_tooltip_text(Some(
         "Remove local settings and maintenance history, then recreate defaults",

@@ -9,11 +9,34 @@ use maintainer_helper::authorize::SystemPolicy;
 use maintainer_helper::server::{ServerConfig, run_server};
 
 fn main() {
-    let args: Vec<String> = std::env::args().collect();
+    let args: Vec<String> = std::env::args().skip(1).collect();
 
     if args.iter().any(|a| a == "--help" || a == "-h") {
         print_usage();
         return;
+    }
+
+    // pkexec sets PKEXEC_UID for the invoking user. Under that trust boundary,
+    // this binary accepts exactly one fixed operation; it never starts the
+    // general D-Bus service or accepts a caller-provided program/option list.
+    if std::env::var_os("PKEXEC_UID").is_some() {
+        if args.first().map(String::as_str) != Some("install-updates") {
+            eprintln!("maintainer-helper: pkexec invocation requires install-updates");
+            std::process::exit(2);
+        }
+        let request = maintainer_helper::validate::parse_install_updates_cli(&args[1..])
+            .unwrap_or_else(|error| {
+                eprintln!("maintainer-helper: {error}");
+                std::process::exit(2);
+            });
+        let error = maintainer_helper::operations::updates::exec_install_updates(&request);
+        eprintln!("maintainer-helper: failed to execute apt-get: {error}");
+        std::process::exit(1);
+    }
+
+    if !args.is_empty() {
+        eprintln!("maintainer-helper: unsupported arguments");
+        std::process::exit(2);
     }
 
     let rt = tokio::runtime::Builder::new_current_thread()

@@ -146,7 +146,7 @@ impl ConfirmCleanupDialog {
             "Move to Trash"
         };
         let confirm_button = Button::with_label(confirm_label);
-        confirm_button.add_css_class("destructive-action");
+        confirm_button.add_css_class("maintainer_destructive");
 
         if has_permanent {
             confirm_button.set_sensitive(false);

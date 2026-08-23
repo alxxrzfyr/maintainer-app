@@ -1,56 +1,45 @@
-//! System Monitor page: detailed live metrics, process table, and termination.
+//! System Monitor page: live CPU, memory, disk, and temperature metrics.
 //!
-//! Shows per-core CPU, memory breakdown, disk I/O, network rates, temperatures,
-//! and a sortable process table. Process termination shows a confirmation dialog
-//! before sending SIGTERM.
-//!
-//! Temperature chips use FlowBox for fluid wrapping. The process table adapts
-//! its visible columns based on allocated width.
-
-use std::cell::RefCell;
-use std::rc::Rc;
+//! Network and process tables live on their dedicated pages (Network, Processes).
+//! System retains only a compact network summary row showing total rates, and
+//! uses grouped temperature readings (one chip per card) to avoid duplicates.
 
 use gtk4::prelude::*;
 use gtk4::{
-    Align, Box as GtkBox, Button, Dialog, DialogFlags, FlowBox, Image, Label, Orientation,
-    ResponseType, ScrolledWindow, SelectionMode,
+    Align, Box as GtkBox, FlowBox, Grid, Label, Orientation, ScrolledWindow, SelectionMode,
 };
 
-use crate::monitoring::{ProcessSort, SystemViewModel};
+use crate::monitoring::SystemViewModel;
+use crate::ui::icons;
 use crate::ui::widgets::metric_card::MetricCard;
 
-/// Callback type for sort changes.
-type SortCallback = Rc<RefCell<Option<Box<dyn Fn(ProcessSort)>>>>;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TemperatureSeverity {
+    Normal,
+    Warning,
+    Critical,
+}
 
-/// Callback type for terminate requests (pid, start_time_ticks).
-type TerminateCallback = Rc<RefCell<Option<Box<dyn Fn(u32, u64)>>>>;
+fn temperature_severity(celsius: f64) -> TemperatureSeverity {
+    if celsius >= 85.0 {
+        TemperatureSeverity::Critical
+    } else if celsius >= 70.0 {
+        TemperatureSeverity::Warning
+    } else {
+        TemperatureSeverity::Normal
+    }
+}
 
 /// The system monitor page widget tree.
 pub struct SystemPage {
     root: ScrolledWindow,
     cpu_card: MetricCard,
     memory_card: MetricCard,
-    // Per-core CPU detail
     cpu_detail_box: GtkBox,
-    // Memory composition detail
     memory_detail_box: GtkBox,
-    // Disk detail section
     disk_detail_box: GtkBox,
-    // Network detail section
-    network_detail_box: GtkBox,
-    process_list_box: GtkBox,
-    sort_buttons: SortButtons,
+    network_summary_label: Label,
     temperature_flow: FlowBox,
-    operation_status: Label,
-    on_sort_changed: SortCallback,
-    on_terminate: TerminateCallback,
-}
-
-struct SortButtons {
-    cpu_btn: Button,
-    memory_btn: Button,
-    name_btn: Button,
-    pid_btn: Button,
 }
 
 impl Default for SystemPage {
@@ -72,7 +61,7 @@ impl SystemPage {
         content.append(&title);
 
         let subtitle = Label::new(Some(
-            "Live resource metrics, hardware temperature sensors, and process management.",
+            "Live resource metrics and hardware temperature sensors.",
         ));
         subtitle.add_css_class("dim-label");
         subtitle.set_halign(Align::Start);
@@ -96,154 +85,86 @@ impl SystemPage {
 
         content.append(&metrics_flow);
 
-        // --- Per-core CPU detail card (below the sparkline cards) ---
+        // CPU and memory detail grid.
+        let detail_grid = Grid::new();
+        detail_grid.set_column_homogeneous(true);
+        detail_grid.set_column_spacing(12);
+        detail_grid.add_css_class("maintainer_resource_grid");
+
         let cpu_detail_box = GtkBox::new(Orientation::Vertical, 4);
         cpu_detail_box.add_css_class("maintainer_detail_card");
-        cpu_detail_box.set_margin_top(8);
+        cpu_detail_box.set_hexpand(true);
 
         let cpu_detail_title = Label::new(Some("Per-Core Usage"));
         cpu_detail_title.add_css_class("maintainer_detail_card_title");
         cpu_detail_title.set_halign(Align::Start);
         cpu_detail_box.append(&cpu_detail_title);
-        content.append(&cpu_detail_box);
 
-        // --- Memory composition detail card ---
         let memory_detail_box = GtkBox::new(Orientation::Vertical, 4);
         memory_detail_box.add_css_class("maintainer_detail_card");
-        memory_detail_box.set_margin_top(8);
+        memory_detail_box.set_hexpand(true);
 
         let mem_detail_title = Label::new(Some("Memory Composition"));
         mem_detail_title.add_css_class("maintainer_detail_card_title");
         mem_detail_title.set_halign(Align::Start);
         memory_detail_box.append(&mem_detail_title);
-        content.append(&memory_detail_box);
 
-        // --- Disk detail section ---
-        let disk_section_label = Label::new(Some("Disks"));
-        disk_section_label.add_css_class("maintainer_section_title");
-        disk_section_label.set_halign(Align::Start);
-        disk_section_label.set_margin_top(12);
-        content.append(&disk_section_label);
+        detail_grid.attach(&cpu_detail_box, 0, 0, 1, 1);
+        detail_grid.attach(&memory_detail_box, 1, 0, 1, 1);
+        content.append(&detail_grid);
 
-        let disk_detail_box = GtkBox::new(Orientation::Vertical, 4);
-        disk_detail_box.add_css_class("maintainer_detail_card");
-        content.append(&disk_detail_box);
+        // Disk detail card.
+        let disk_card = GtkBox::new(Orientation::Vertical, 4);
+        disk_card.add_css_class("maintainer_detail_card");
+        disk_card.set_hexpand(true);
+        let disk_title = Label::new(Some("Disks"));
+        disk_title.add_css_class("maintainer_detail_card_title");
+        disk_title.set_halign(Align::Start);
+        disk_card.append(&disk_title);
+        let disk_detail_box = GtkBox::new(Orientation::Vertical, 2);
+        disk_card.append(&disk_detail_box);
+        content.append(&disk_card);
 
-        // --- Network detail section ---
-        let network_section_label = Label::new(Some("Network Interfaces"));
-        network_section_label.add_css_class("maintainer_section_title");
-        network_section_label.set_halign(Align::Start);
-        network_section_label.set_margin_top(12);
-        content.append(&network_section_label);
+        // Compact network summary (no per-interface table).
+        let network_row = GtkBox::new(Orientation::Horizontal, 8);
+        network_row.add_css_class("maintainer_detail_card");
+        network_row.set_margin_top(4);
 
-        let network_detail_box = GtkBox::new(Orientation::Vertical, 4);
-        network_detail_box.add_css_class("maintainer_detail_card");
-        content.append(&network_detail_box);
+        let net_icon = icons::icon_with_fallback(icons::chains::NETWORK_ACTIVITY, 16);
+        network_row.append(&net_icon);
+
+        let network_summary_label = Label::new(Some("Network: —"));
+        network_summary_label.set_halign(Align::Start);
+        network_summary_label.set_hexpand(true);
+        network_row.append(&network_summary_label);
+
+        content.append(&network_row);
+
+        // Temperature panel using grouped readings.
+        let temperature_panel = GtkBox::new(Orientation::Vertical, 4);
+        temperature_panel.add_css_class("maintainer_detail_card");
+        temperature_panel.add_css_class("maintainer_temperature_panel");
 
         let temp_label = Label::new(Some("Temperatures"));
-        temp_label.add_css_class("maintainer_section_title");
+        temp_label.add_css_class("maintainer_detail_card_title");
         temp_label.set_halign(Align::Start);
-        temp_label.set_margin_top(8);
-        content.append(&temp_label);
+        temperature_panel.append(&temp_label);
 
         let temperature_flow = FlowBox::new();
         temperature_flow.set_selection_mode(SelectionMode::None);
-        temperature_flow.set_homogeneous(false);
-        temperature_flow.set_row_spacing(8);
-        temperature_flow.set_column_spacing(8);
-        temperature_flow.set_min_children_per_line(2);
+        temperature_flow.set_homogeneous(true);
+        temperature_flow.set_row_spacing(6);
+        temperature_flow.set_column_spacing(6);
+        temperature_flow.set_min_children_per_line(1);
         temperature_flow.set_max_children_per_line(8);
         temperature_flow.add_css_class("maintainer_temperature_flow");
-        content.append(&temperature_flow);
-
-        let process_header = GtkBox::new(Orientation::Horizontal, 12);
-        process_header.set_margin_top(12);
-        process_header.set_valign(Align::Center);
-        process_header.add_css_class("maintainer_process_section_header");
-
-        let process_label = Label::new(Some("Processes"));
-        process_label.add_css_class("maintainer_section_title");
-        process_label.set_halign(Align::Start);
-        process_label.set_hexpand(true);
-        process_header.append(&process_label);
-
-        let on_sort_changed: SortCallback = Rc::new(RefCell::new(None));
-        let sort_row = GtkBox::new(Orientation::Horizontal, 6);
-        sort_row.set_halign(Align::End);
-
-        let sort_label = Label::new(Some("Sort:"));
-        sort_label.add_css_class("maintainer_text_muted");
-        sort_row.append(&sort_label);
-
-        let cpu_btn = Button::with_label("CPU");
-        cpu_btn.add_css_class("maintainer_sort_button");
-        cpu_btn.add_css_class("maintainer_sort_active");
-        let on_sort = on_sort_changed.clone();
-        cpu_btn.connect_clicked(move |_| {
-            if let Some(ref cb) = *on_sort.borrow() {
-                cb(ProcessSort::Cpu);
-            }
-        });
-
-        let memory_btn = Button::with_label("Mem");
-        memory_btn.add_css_class("maintainer_sort_button");
-        let on_sort = on_sort_changed.clone();
-        memory_btn.connect_clicked(move |_| {
-            if let Some(ref cb) = *on_sort.borrow() {
-                cb(ProcessSort::Memory);
-            }
-        });
-
-        let name_btn = Button::with_label("Name");
-        name_btn.add_css_class("maintainer_sort_button");
-        let on_sort = on_sort_changed.clone();
-        name_btn.connect_clicked(move |_| {
-            if let Some(ref cb) = *on_sort.borrow() {
-                cb(ProcessSort::Name);
-            }
-        });
-
-        let pid_btn = Button::with_label("PID");
-        pid_btn.add_css_class("maintainer_sort_button");
-        let on_sort = on_sort_changed.clone();
-        pid_btn.connect_clicked(move |_| {
-            if let Some(ref cb) = *on_sort.borrow() {
-                cb(ProcessSort::Pid);
-            }
-        });
-
-        sort_row.append(&cpu_btn);
-        sort_row.append(&memory_btn);
-        sort_row.append(&name_btn);
-        sort_row.append(&pid_btn);
-        process_header.append(&sort_row);
-
-        content.append(&process_header);
-
-        let operation_status = Label::new(None);
-        operation_status.set_halign(Align::Start);
-        operation_status.set_wrap(true);
-        operation_status.set_visible(false);
-        content.append(&operation_status);
-
-        let process_list_box = GtkBox::new(Orientation::Vertical, 0);
-        process_list_box.add_css_class("maintainer_process_list");
-
-        let process_scroll = ScrolledWindow::new();
-        process_scroll.set_child(Some(&process_list_box));
-        process_scroll.set_hexpand(true);
-        process_scroll.set_vexpand(true);
-        process_scroll.set_min_content_height(200);
-        process_scroll.set_propagate_natural_height(true);
-        process_scroll.set_max_content_height(600);
-        content.append(&process_scroll);
+        temperature_panel.append(&temperature_flow);
+        content.append(&temperature_panel);
 
         let root = ScrolledWindow::new();
         root.set_child(Some(&content));
         root.set_hexpand(true);
         root.set_vexpand(true);
-
-        let on_terminate: TerminateCallback = Rc::new(RefCell::new(None));
 
         Self {
             root,
@@ -252,36 +173,16 @@ impl SystemPage {
             cpu_detail_box,
             memory_detail_box,
             disk_detail_box,
-            network_detail_box,
-            process_list_box,
-            sort_buttons: SortButtons {
-                cpu_btn,
-                memory_btn,
-                name_btn,
-                pid_btn,
-            },
+            network_summary_label,
             temperature_flow,
-            operation_status,
-            on_sort_changed,
-            on_terminate,
         }
     }
 
-    /// Set callback for when sort order changes.
-    pub fn connect_sort_changed(&self, cb: impl Fn(ProcessSort) + 'static) {
-        *self.on_sort_changed.borrow_mut() = Some(Box::new(cb));
+    /// Get the root widget for embedding in the shell.
+    pub fn widget(&self) -> &ScrolledWindow {
+        &self.root
     }
 
-    /// Set callback for when a process termination is requested.
-    /// Callback receives (pid, start_time_ticks).
-    pub fn connect_terminate(&self, cb: impl Fn(u32, u64) + 'static) {
-        *self.on_terminate.borrow_mut() = Some(Box::new(cb));
-    }
-
-    /// Status label for process operation feedback.
-    pub fn operation_status_handle(&self) -> Label {
-        self.operation_status.clone()
-    }
     /// Update the page from the view model.
     pub fn update(&self, vm: &SystemViewModel) {
         if let Some(ref cpu) = vm.cpu {
@@ -292,7 +193,7 @@ impl SystemPage {
                 vm.cpu_ring.samples(),
                 &format!("CPU: {:.0}%", cpu.total_percent),
             );
-            self.update_cpu_detail(cpu, vm);
+            self.update_cpu_detail(cpu);
         }
 
         if let Some(ref mem) = vm.memory {
@@ -307,27 +208,18 @@ impl SystemPage {
         }
 
         self.update_disk_detail(&vm.disks);
-        self.update_network_detail(&vm.networks);
+        self.update_network_summary(&vm.networks);
         self.update_temperatures(vm);
-        self.update_processes(vm);
-        self.update_sort_buttons(vm.process_sort);
     }
 
     /// Render per-core CPU breakdown bars.
-    fn update_cpu_detail(
-        &self,
-        cpu: &maintainer_core::metrics::CpuSnapshot,
-        _vm: &SystemViewModel,
-    ) {
-        // Only rebuild if core count changed (avoids widget churn every tick).
+    fn update_cpu_detail(&self, cpu: &maintainer_core::metrics::CpuSnapshot) {
         let current_children = count_children_of_class(&self.cpu_detail_box, "maintainer_core_row");
         if current_children == cpu.per_core_percent.len() {
-            // Update existing bars in-place by iterating children.
             update_core_bars_inplace(&self.cpu_detail_box, &cpu.per_core_percent);
             return;
         }
 
-        // Remove old rows (keep the title label).
         remove_children_except_first(&self.cpu_detail_box);
 
         for (i, &pct) in cpu.per_core_percent.iter().enumerate() {
@@ -361,7 +253,6 @@ impl SystemPage {
 
     /// Render memory composition (used, buffers/cache, available).
     fn update_memory_detail(&self, mem: &maintainer_core::metrics::MemorySnapshot) {
-        // Remove old rows (keep title).
         remove_children_except_first(&self.memory_detail_box);
 
         let segments = [
@@ -393,7 +284,6 @@ impl SystemPage {
 
     /// Render per-disk breakdown with usage bars.
     fn update_disk_detail(&self, disks: &[maintainer_core::metrics::DiskSnapshot]) {
-        // Remove old content.
         while let Some(child) = self.disk_detail_box.first_child() {
             self.disk_detail_box.remove(&child);
         }
@@ -435,7 +325,6 @@ impl SystemPage {
 
             row.append(&header);
 
-            // Mini capacity bar per disk
             let bar_trough = GtkBox::new(Orientation::Horizontal, 0);
             bar_trough.add_css_class("maintainer_core_bar_trough");
             bar_trough.set_hexpand(true);
@@ -456,81 +345,81 @@ impl SystemPage {
         }
     }
 
-    /// Render per-interface network detail.
-    fn update_network_detail(&self, networks: &[maintainer_core::metrics::NetworkSnapshot]) {
-        while let Some(child) = self.network_detail_box.first_child() {
-            self.network_detail_box.remove(&child);
-        }
-
+    /// Compact network summary (total rates only; detail is on Network page).
+    fn update_network_summary(&self, networks: &[maintainer_core::metrics::NetworkSnapshot]) {
         let non_loopback: Vec<_> = networks.iter().filter(|n| !n.is_loopback).collect();
-
         if non_loopback.is_empty() {
-            let empty = Label::new(Some("No active network interfaces"));
-            empty.add_css_class("maintainer_text_muted");
-            self.network_detail_box.append(&empty);
+            self.network_summary_label
+                .set_text("Network: no active interfaces");
+            self.network_summary_label
+                .add_css_class("maintainer_text_muted");
             return;
         }
 
-        for iface in &non_loopback {
-            let row = GtkBox::new(Orientation::Horizontal, 12);
-            row.add_css_class("maintainer_iface_row");
-
-            let name = Label::new(Some(&iface.interface));
-            name.add_css_class("maintainer_iface_name");
-            name.set_halign(Align::Start);
-            name.set_hexpand(true);
-            row.append(&name);
-
-            let rx_text = match iface.rx_bytes_per_sec {
-                Some(rate) => format!("↓ {}/s", format_rate_bytes(rate)),
-                None => "↓ —".into(),
-            };
-            let rx = Label::new(Some(&rx_text));
-            rx.add_css_class("maintainer_iface_stat");
-            row.append(&rx);
-
-            let tx_text = match iface.tx_bytes_per_sec {
-                Some(rate) => format!("↑ {}/s", format_rate_bytes(rate)),
-                None => "↑ —".into(),
-            };
-            let tx = Label::new(Some(&tx_text));
-            tx.add_css_class("maintainer_iface_stat");
-            row.append(&tx);
-
-            self.network_detail_box.append(&row);
-        }
+        self.network_summary_label
+            .remove_css_class("maintainer_text_muted");
+        let total_rx: f64 = non_loopback.iter().filter_map(|n| n.rx_bytes_per_sec).sum();
+        let total_tx: f64 = non_loopback.iter().filter_map(|n| n.tx_bytes_per_sec).sum();
+        self.network_summary_label.set_text(&format!(
+            "Network: ↓ {}/s  ↑ {}/s ({} interface{})",
+            format_rate_bytes(total_rx),
+            format_rate_bytes(total_tx),
+            non_loopback.len(),
+            if non_loopback.len() == 1 { "" } else { "s" }
+        ));
     }
 
+    /// Render temperatures using grouped readings (one chip per card).
+    ///
+    /// Filters invalid 0°C phantom readings (non-reporting sensors in Linux hwmon),
+    /// deduplicates identical label/source channels, humanizes labels, and limits
+    /// sub-sensor expansion to avoid tall chips. Details are exposed via tooltip.
     fn update_temperatures(&self, vm: &SystemViewModel) {
         while let Some(child) = self.temperature_flow.first_child() {
             self.temperature_flow.remove(&child);
         }
 
-        if vm.temperatures.is_empty() {
+        if vm.temperature_groups.is_empty() {
             let empty = Label::new(Some("No sensors detected"));
             empty.add_css_class("maintainer_text_muted");
             self.temperature_flow.insert(&empty, -1);
             return;
         }
 
-        for reading in &vm.temperatures {
-            if let maintainer_core::capability::Capability::Available(celsius) = &reading.celsius {
-                let name = reading.label.as_deref().unwrap_or(&reading.hwmon_name);
+        let mut displayed = 0_usize;
+        for group in &vm.temperature_groups {
+            if let maintainer_core::capability::Capability::Available(celsius) =
+                &group.representative.celsius
+            {
+                // Filter invalid/unavailable phantom 0°C readings.
+                // 0°C indicates a non-reporting sensor in Linux hwmon — omit
+                // rather than display.
+                if *celsius <= 0.0 {
+                    continue;
+                }
+
+                displayed += 1;
+                let chip_label = humanize_sensor_label(
+                    group
+                        .representative
+                        .label
+                        .as_deref()
+                        .unwrap_or(&group.chip_name),
+                );
 
                 let chip = GtkBox::new(Orientation::Vertical, 2);
                 chip.add_css_class("maintainer_temperature_chip");
 
-                let name_label = Label::new(Some(name));
+                let header_row = GtkBox::new(Orientation::Horizontal, 6);
+                let temp_icon = icons::icon_with_fallback(icons::chains::TEMPERATURE, 12);
+                temp_icon.add_css_class("maintainer_text_muted");
+                header_row.append(&temp_icon);
+
+                let name_label = Label::new(Some(&chip_label));
                 name_label.add_css_class("maintainer_temperature_label");
                 name_label.set_halign(Align::Start);
                 name_label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
-                name_label.set_max_width_chars(14);
-
-                let header_row = GtkBox::new(Orientation::Horizontal, 6);
-                let temp_icon = Image::from_icon_name("sensors-temperature-symbolic");
-                temp_icon.set_pixel_size(12);
-                temp_icon.add_css_class("maintainer_text_muted");
-                header_row.append(&temp_icon);
+                name_label.set_max_width_chars(18);
                 header_row.append(&name_label);
                 chip.append(&header_row);
 
@@ -538,243 +427,134 @@ impl SystemPage {
                 value_label.add_css_class("maintainer_temperature_value");
                 value_label.set_halign(Align::Start);
 
-                if *celsius >= 85.0 {
-                    value_label.add_css_class("maintainer_temperature_critical");
-                    value_label.set_text(&format!("{celsius:.0}°C · Critical"));
-                    value_label.update_property(&[gtk4::accessible::Property::Description(
-                        &format!("{name} temperature {celsius:.0} degrees Celsius, critical"),
-                    )]);
-                } else if *celsius >= 70.0 {
-                    value_label.add_css_class("maintainer_temperature_warning");
-                    value_label.set_text(&format!("{celsius:.0}°C · Warning"));
-                    value_label.update_property(&[gtk4::accessible::Property::Description(
-                        &format!("{name} temperature {celsius:.0} degrees Celsius, warning"),
-                    )]);
+                match temperature_severity(*celsius) {
+                    TemperatureSeverity::Critical => {
+                        value_label.add_css_class("maintainer_temperature_critical");
+                        value_label.set_text(&format!("{celsius:.0}°C · Critical"));
+                    }
+                    TemperatureSeverity::Warning => {
+                        value_label.add_css_class("maintainer_temperature_warning");
+                        value_label.set_text(&format!("{celsius:.0}°C · Warm"));
+                    }
+                    TemperatureSeverity::Normal => {}
                 }
 
+                value_label.update_property(&[gtk4::accessible::Property::Description(&format!(
+                    "{chip_label} temperature {celsius:.0} degrees Celsius"
+                ))]);
+
                 chip.append(&value_label);
+
+                // Build tooltip with sub-sensor details instead of expanding chip height.
+                let mut tooltip_parts = vec![format!("{chip_label}: {celsius:.0}°C")];
+                let valid_details: Vec<_> = group
+                    .details
+                    .iter()
+                    .filter(|d| {
+                        if let maintainer_core::capability::Capability::Available(c) = &d.celsius {
+                            // Skip 0°C phantom readings and deduplicate representative.
+                            if *c <= 0.0 {
+                                return false;
+                            }
+                            // Skip exact duplicate of representative.
+                            if d.label == group.representative.label
+                                && d.hwmon_name == group.representative.hwmon_name
+                            {
+                                if let maintainer_core::capability::Capability::Available(rep_c) =
+                                    &group.representative.celsius
+                                {
+                                    if (c - rep_c).abs() < 0.01 {
+                                        return false;
+                                    }
+                                }
+                            }
+                            true
+                        } else {
+                            false
+                        }
+                    })
+                    .collect();
+
+                if !valid_details.is_empty() {
+                    for detail in &valid_details {
+                        if let maintainer_core::capability::Capability::Available(sub_c) =
+                            &detail.celsius
+                        {
+                            let sub_name = humanize_sensor_label(
+                                detail.label.as_deref().unwrap_or(&detail.hwmon_name),
+                            );
+                            tooltip_parts.push(format!("  {sub_name}: {sub_c:.0}°C"));
+                        }
+                    }
+                }
+
+                chip.set_tooltip_text(Some(&tooltip_parts.join("\n")));
+
+                // Show at most 3 distinct sub-sensors as a compact secondary line.
+                if valid_details.len() <= 3 && !valid_details.is_empty() {
+                    let sub_text: Vec<String> = valid_details
+                        .iter()
+                        .filter_map(|d| {
+                            if let maintainer_core::capability::Capability::Available(c) =
+                                &d.celsius
+                            {
+                                Some(format!("{:.0}°C", c))
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    if !sub_text.is_empty() {
+                        let summary = Label::new(Some(&sub_text.join(" · ")));
+                        summary.add_css_class("maintainer_text_muted");
+                        summary.set_halign(Align::Start);
+                        chip.append(&summary);
+                    }
+                } else if valid_details.len() > 3 {
+                    let summary = Label::new(Some(&format!("+{} sensors", valid_details.len())));
+                    summary.add_css_class("maintainer_text_muted");
+                    summary.set_halign(Align::Start);
+                    chip.append(&summary);
+                }
+
                 self.temperature_flow.insert(&chip, -1);
             }
         }
-    }
 
-    fn update_processes(&self, vm: &SystemViewModel) {
-        while let Some(child) = self.process_list_box.first_child() {
-            self.process_list_box.remove(&child);
+        if displayed == 0 {
+            let unavailable = Label::new(Some("Sensor readings unavailable"));
+            unavailable.add_css_class("maintainer_text_muted");
+            unavailable.set_tooltip_text(Some(
+                "Sensors were detected, but Linux could not read their current values.",
+            ));
+            self.temperature_flow.insert(&unavailable, -1);
         }
-
-        if !vm.processes_available {
-            let label = Label::new(Some("Process information unavailable"));
-            label.add_css_class("maintainer_text_muted");
-            label.set_margin_top(16);
-            label.set_margin_bottom(16);
-            self.process_list_box.append(&label);
-            return;
-        }
-
-        if vm.processes.is_empty() {
-            let label = Label::new(Some("No processes"));
-            label.add_css_class("maintainer_text_muted");
-            label.set_margin_top(16);
-            label.set_margin_bottom(16);
-            self.process_list_box.append(&label);
-            return;
-        }
-
-        let header = GtkBox::new(Orientation::Horizontal, 0);
-        header.add_css_class("maintainer_process_header");
-
-        let pid_h = Label::new(Some("PID"));
-        pid_h.set_width_request(70);
-        pid_h.set_halign(Align::Start);
-        header.append(&pid_h);
-
-        let name_h = Label::new(Some("Name"));
-        name_h.set_hexpand(true);
-        name_h.set_halign(Align::Start);
-        header.append(&name_h);
-
-        let mem_h = Label::new(Some("Memory"));
-        mem_h.set_width_request(90);
-        mem_h.set_halign(Align::End);
-        mem_h.add_css_class("maintainer_col_memory");
-        header.append(&mem_h);
-
-        let state_h = Label::new(Some("State"));
-        state_h.set_width_request(60);
-        state_h.set_halign(Align::Center);
-        state_h.add_css_class("maintainer_col_state");
-        header.append(&state_h);
-
-        let action_h = Label::new(Some("Action"));
-        action_h.set_width_request(60);
-        action_h.set_halign(Align::End);
-        header.append(&action_h);
-
-        self.process_list_box.append(&header);
-
-        let display_count = vm.processes.len().min(50);
-        for (i, proc) in vm.processes[..display_count].iter().enumerate() {
-            let row = self.build_process_row(proc, i % 2 == 1);
-            self.process_list_box.append(&row);
-        }
-    }
-
-    fn build_process_row(
-        &self,
-        proc: &maintainer_core::metrics::ProcessSnapshot,
-        alternate: bool,
-    ) -> GtkBox {
-        let row = GtkBox::new(Orientation::Horizontal, 0);
-        row.add_css_class("maintainer_process_row");
-        if alternate {
-            row.add_css_class("maintainer_process_row_alt");
-        }
-
-        let pid_label = Label::new(Some(&proc.identity.pid.to_string()));
-        pid_label.set_width_request(70);
-        pid_label.set_halign(Align::Start);
-        pid_label.add_css_class("maintainer_process_pid");
-        row.append(&pid_label);
-
-        let name_label = Label::new(Some(&proc.name));
-        name_label.set_hexpand(true);
-        name_label.set_halign(Align::Start);
-        name_label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
-        row.append(&name_label);
-
-        let mem_text = format_memory_bytes(proc.rss_bytes);
-        let mem_label = Label::new(Some(&mem_text));
-        mem_label.set_width_request(90);
-        mem_label.set_halign(Align::End);
-        mem_label.add_css_class("maintainer_process_memory");
-        mem_label.add_css_class("maintainer_col_memory");
-        row.append(&mem_label);
-
-        let state_label = Label::new(Some(&proc.state.to_string()));
-        state_label.set_width_request(60);
-        state_label.set_halign(Align::Center);
-        state_label.add_css_class("maintainer_text_muted");
-        state_label.add_css_class("maintainer_col_state");
-        row.append(&state_label);
-
-        let terminate_btn = Button::with_label("End");
-        terminate_btn.add_css_class("maintainer_terminate_button");
-        terminate_btn.set_tooltip_text(Some(&format!("Terminate {}", proc.name)));
-        terminate_btn.update_property(&[gtk4::accessible::Property::Label(&format!(
-            "Terminate process {}",
-            proc.name
-        ))]);
-
-        let on_term = self.on_terminate.clone();
-        let pid = proc.identity.pid;
-        let start_time = proc.identity.start_time_ticks;
-        let name = proc.name.clone();
-        let uid = proc.uid;
-        terminate_btn.connect_clicked(move |btn| {
-            let window = btn.root().and_then(|r| r.downcast::<gtk4::Window>().ok());
-
-            if let Some(win) = window {
-                show_terminate_dialog(&win, &name, pid, uid, start_time, &on_term);
-            }
-        });
-
-        let action_box = GtkBox::new(Orientation::Horizontal, 0);
-        action_box.set_width_request(60);
-        action_box.set_halign(Align::End);
-        action_box.append(&terminate_btn);
-        row.append(&action_box);
-        row
-    }
-
-    fn update_sort_buttons(&self, current: ProcessSort) {
-        let buttons = [
-            (&self.sort_buttons.cpu_btn, ProcessSort::Cpu),
-            (&self.sort_buttons.memory_btn, ProcessSort::Memory),
-            (&self.sort_buttons.name_btn, ProcessSort::Name),
-            (&self.sort_buttons.pid_btn, ProcessSort::Pid),
-        ];
-
-        for (btn, sort) in buttons {
-            if sort == current {
-                btn.add_css_class("maintainer_sort_active");
-            } else {
-                btn.remove_css_class("maintainer_sort_active");
-            }
-        }
-    }
-
-    /// Get the root widget for embedding in the shell.
-    pub fn widget(&self) -> &ScrolledWindow {
-        &self.root
     }
 }
 
-/// Show a confirmation dialog before terminating a process.
-fn show_terminate_dialog(
-    parent: &gtk4::Window,
-    name: &str,
-    pid: u32,
-    uid: u32,
-    start_time_ticks: u64,
-    on_terminate: &TerminateCallback,
-) {
-    let dialog = Dialog::with_buttons(
-        Some("Terminate Process"),
-        Some(parent),
-        DialogFlags::MODAL | DialogFlags::DESTROY_WITH_PARENT,
-        &[
-            ("Cancel", ResponseType::Cancel),
-            ("Terminate", ResponseType::Accept),
-        ],
-    );
-
-    let content = dialog.content_area();
-    content.set_margin_top(12);
-    content.set_margin_bottom(12);
-    content.set_margin_start(12);
-    content.set_margin_end(12);
-    content.set_spacing(8);
-
-    let msg = Label::new(Some(&format!(
-        "Terminate \"{}\" (PID {}, UID {})?",
-        name, pid, uid
-    )));
-    msg.set_halign(Align::Start);
-    content.append(&msg);
-
-    let detail = Label::new(Some(
-        "This sends SIGTERM, requesting the process exit gracefully.\n\
-         The process may save state before stopping.",
-    ));
-    detail.add_css_class("maintainer_text_muted");
-    detail.set_halign(Align::Start);
-    detail.set_wrap(true);
-    content.append(&detail);
-
-    let on_term = on_terminate.clone();
-    dialog.connect_response(move |dlg, response| {
-        if response == ResponseType::Accept {
-            if let Some(ref cb) = *on_term.borrow() {
-                cb(pid, start_time_ticks);
+/// Humanize hardware sensor labels for display.
+///
+/// Converts kernel-style identifiers (e.g., "thinkpad_acpi", "pch_cannonlake",
+/// "Package id 0") into friendlier forms.
+fn humanize_sensor_label(raw: &str) -> String {
+    match raw {
+        "coretemp" => "CPU Package".to_string(),
+        "acpitz" => "ACPI Thermal".to_string(),
+        "iwlwifi_1" | "iwlwifi" => "Wi-Fi Adapter".to_string(),
+        "pch_cannonlake" | "pch_skylake" | "pch_haswell" => "PCH".to_string(),
+        "thinkpad" | "thinkpad_acpi" => "ThinkPad EC".to_string(),
+        "nvme" | "nvme0" => "NVMe SSD".to_string(),
+        _ if raw.starts_with("Package id") => "CPU Package".to_string(),
+        _ if raw.starts_with("Core ") => raw.to_string(),
+        _ => {
+            // Replace underscores with spaces and title-case first letter.
+            let cleaned = raw.replace('_', " ");
+            let mut chars = cleaned.chars();
+            match chars.next() {
+                None => String::new(),
+                Some(first) => first.to_uppercase().to_string() + chars.as_str(),
             }
         }
-        dlg.close();
-    });
-
-    dialog.present();
-}
-
-/// Format bytes as a human-readable memory string.
-fn format_memory_bytes(bytes: u64) -> String {
-    if bytes >= 1_073_741_824 {
-        format!("{:.1} GiB", bytes as f64 / 1_073_741_824.0)
-    } else if bytes >= 1_048_576 {
-        format!("{:.0} MiB", bytes as f64 / 1_048_576.0)
-    } else if bytes >= 1024 {
-        format!("{:.0} KiB", bytes as f64 / 1024.0)
-    } else {
-        format!("{bytes} B")
     }
 }
 
@@ -831,7 +611,6 @@ fn remove_children_except_first(container: &GtkBox) {
 /// Update existing per-core bars in-place without rebuilding.
 fn update_core_bars_inplace(container: &GtkBox, percentages: &[f64]) {
     let mut child = container.first_child();
-    // Skip the title label.
     if let Some(w) = child {
         child = w.next_sibling();
     }
@@ -839,13 +618,10 @@ fn update_core_bars_inplace(container: &GtkBox, percentages: &[f64]) {
     for &pct in percentages {
         let Some(widget) = child else { break };
         if let Some(row) = widget.downcast_ref::<GtkBox>() {
-            // The row structure: [Label, GtkBox(trough > fill), Label(percent)]
             let mut row_child = row.first_child();
-            // Skip the core label
             if let Some(w) = row_child {
                 row_child = w.next_sibling();
             }
-            // The trough box
             if let Some(trough) = row_child.as_ref().and_then(|w| w.downcast_ref::<GtkBox>()) {
                 if let Some(fill) = trough
                     .first_child()
@@ -856,7 +632,6 @@ fn update_core_bars_inplace(container: &GtkBox, percentages: &[f64]) {
                 }
                 row_child = row_child.as_ref().and_then(|w| w.next_sibling());
             }
-            // The percent label
             if let Some(pct_widget) = row_child {
                 if let Some(pct_label) = pct_widget.downcast_ref::<Label>() {
                     pct_label.set_text(&format!("{pct:.0}%"));
@@ -864,5 +639,18 @@ fn update_core_bars_inplace(container: &GtkBox, percentages: &[f64]) {
             }
         }
         child = widget.next_sibling();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{TemperatureSeverity, temperature_severity};
+
+    #[test]
+    fn temperature_thresholds_match_ui_policy() {
+        assert_eq!(temperature_severity(69.9), TemperatureSeverity::Normal);
+        assert_eq!(temperature_severity(70.0), TemperatureSeverity::Warning);
+        assert_eq!(temperature_severity(84.9), TemperatureSeverity::Warning);
+        assert_eq!(temperature_severity(85.0), TemperatureSeverity::Critical);
     }
 }

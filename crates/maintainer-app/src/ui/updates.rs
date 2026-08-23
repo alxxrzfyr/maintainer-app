@@ -5,7 +5,7 @@
 //! Invariants:
 //! - Security labels only appear when backend evidence supports them.
 //! - Cancellation is disabled when the backend reports it unsafe.
-//! - No credentials are stored; authentication is delegated to PackageKit/Polkit.
+//! - No credentials are stored; authentication is delegated to the fixed helper/Polkit path.
 //! - The Install button is only enabled after a plan has been reviewed.
 
 use gtk4::prelude::*;
@@ -17,9 +17,10 @@ use maintainer_core::updates::{
     HoldState, UpdateBackend, UpdateCandidate, UpdateClassification, UpdatePlan,
 };
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::rc::Rc;
+use std::time::Duration;
 
 /// Coarse selection mode controlling which candidates from the fetched
 /// `UpdatePlan` are included for execution.
@@ -32,12 +33,23 @@ use std::rc::Rc;
 pub enum SelectionMode {
     /// Include only candidates classified as security updates.
     SecurityOnly,
+
     /// Include all candidates (equivalent to "select all").
     Everything,
     /// Per-package selection via individual checkboxes. When active, the
     /// coarse toggle buttons are deactivated and a re-plan through apt's
     /// resolver is required before the Install button becomes submittable.
     Custom,
+}
+
+fn progress_fraction(completed: u64, total: Option<u64>) -> Option<f64> {
+    total
+        .filter(|total| *total > 0)
+        .map(|total| (completed as f64 / total as f64).clamp(0.0, 1.0))
+}
+
+pub(crate) fn cancellation_allowed_for_progress(message: &str) -> bool {
+    message == crate::dispatch::UPDATE_AUTHENTICATION_PROGRESS
 }
 
 impl Default for SelectionMode {
@@ -117,6 +129,8 @@ pub struct UpdatesPage {
     cancel_button: Button,
     progress_bar: ProgressBar,
     progress_label: Label,
+    progress_indeterminate: Rc<Cell<bool>>,
+    progress_generation: Rc<Cell<u64>>,
     result_label: Label,
     phase: UpdatePhase,
 }
@@ -260,7 +274,7 @@ impl UpdatesPage {
         bottom_footer.set_halign(gtk4::Align::Start);
 
         let cancel_button = Button::with_label("Cancel");
-        cancel_button.add_css_class("destructive-action");
+        cancel_button.add_css_class("maintainer_destructive");
         cancel_button.set_visible(false);
         bottom_footer.append(&cancel_button);
 
@@ -305,6 +319,8 @@ impl UpdatesPage {
             cancel_button,
             progress_bar,
             progress_label,
+            progress_indeterminate: Rc::new(Cell::new(false)),
+            progress_generation: Rc::new(Cell::new(0)),
             result_label,
             phase: UpdatePhase::Idle,
         }
@@ -394,8 +410,8 @@ impl UpdatesPage {
         self.action_bar.set_visible(true);
         self.summary_label.set_text(summary);
         self.confirm_button.set_sensitive(true);
-        // Show mode toggle
-        self.mode_row.set_visible(true);
+        // Keep coarse mode toggle hidden by default for a clean, unified view
+        self.mode_row.set_visible(false);
     }
 
     /// Show the immutable update plan that will be handed to PackageKit.
@@ -417,7 +433,13 @@ impl UpdatesPage {
     /// Used both on initial plan display and when selection mode changes.
     /// Each row includes a checkbox for per-package selection. All checkboxes
     /// default to checked (matching the coarse "everything selected" state).
+    ///
+    /// Kernel candidates sharing a version are grouped into a single visual row
+    /// (display-only grouping). The full ungrouped candidate list is preserved
+    /// in `selected_packages` and flows to execution unchanged.
     pub fn populate_package_list(&self, candidates: &[UpdateCandidate]) {
+        use super::kernel_grouping::{DisplayRow, group_kernel_candidates};
+
         while let Some(child) = self.package_list.first_child() {
             self.package_list.remove(&child);
         }
@@ -436,141 +458,266 @@ impl UpdatesPage {
         self.review_button.set_visible(false);
         self.confirm_button.set_sensitive(true);
 
-        for candidate in candidates {
-            let outer_row = GtkBox::new(Orientation::Horizontal, 8);
-            outer_row.set_margin_top(6);
-            outer_row.set_margin_bottom(6);
-            outer_row.set_margin_start(8);
-            outer_row.set_margin_end(8);
+        let display_rows = group_kernel_candidates(candidates);
 
-            // --- Per-package checkbox ---
-            let check = CheckButton::new();
-            check.set_active(true);
-            check.set_valign(gtk4::Align::Center);
-            outer_row.append(&check);
+        for display_row in &display_rows {
+            match display_row {
+                DisplayRow::Single(idx) => {
+                    let candidate = &candidates[*idx];
+                    self.append_single_candidate_row(candidate);
+                }
+                DisplayRow::KernelGroup(group) => {
+                    self.append_kernel_group_row(group);
+                }
+            }
+        }
+    }
 
-            let row = GtkBox::new(Orientation::Vertical, 4);
+    /// Render a single non-kernel candidate as one list row.
+    fn append_single_candidate_row(&self, candidate: &UpdateCandidate) {
+        let outer_row = GtkBox::new(Orientation::Horizontal, 8);
+        outer_row.set_margin_top(6);
+        outer_row.set_margin_bottom(6);
+        outer_row.set_margin_start(8);
+        outer_row.set_margin_end(8);
 
-            let title_box = GtkBox::new(Orientation::Horizontal, 8);
-            let title = Label::new(Some(&candidate.name));
-            title.set_halign(gtk4::Align::Start);
-            title.add_css_class("heading");
-            title_box.append(&title);
+        // --- Per-package checkbox ---
+        let check = CheckButton::new();
+        check.set_active(true);
+        check.set_valign(gtk4::Align::Center);
+        outer_row.append(&check);
 
-            // --- Status icons ---
+        let row = GtkBox::new(Orientation::Vertical, 4);
 
-            // 1. Security update indicator
-            if candidate.classification == UpdateClassification::Security {
-                let icon = Image::from_icon_name("security-high-symbolic");
+        let title_box = GtkBox::new(Orientation::Horizontal, 8);
+        let title = Label::new(Some(&candidate.name));
+        title.set_halign(gtk4::Align::Start);
+        title.add_css_class("heading");
+        title_box.append(&title);
+
+        // Category / Desktop environment badge
+        let desktop_env = maintainer_core::updates::DesktopEnvironment::detect();
+        let category = maintainer_core::updates::classify_package(&candidate.name, desktop_env);
+        let cat_badge = Label::new(Some(category.badge_label()));
+        cat_badge.add_css_class(category.css_class());
+        title_box.append(&cat_badge);
+
+        // --- Status icons ---
+
+        // 1. Security update indicator
+        if candidate.classification == UpdateClassification::Security {
+            let icon = Image::from_icon_name("security-high-symbolic");
+            icon.set_icon_size(gtk4::IconSize::Normal);
+            icon.set_tooltip_text(Some("Security update"));
+            icon.add_css_class("security-icon");
+            title_box.append(&icon);
+        }
+
+        // 2. Kernel update indicator (orthogonal to security)
+        if candidate.is_kernel {
+            let icon = Image::from_icon_name("system-run-symbolic");
+            icon.set_icon_size(gtk4::IconSize::Normal);
+            icon.set_tooltip_text(Some("Kernel update"));
+            icon.add_css_class("kernel-icon");
+            title_box.append(&icon);
+        }
+
+        // 3. Held / Phased indicator
+        match candidate.hold_state {
+            HoldState::Held => {
+                let icon = Image::from_icon_name("changes-prevent-symbolic");
                 icon.set_icon_size(gtk4::IconSize::Normal);
-                icon.set_tooltip_text(Some("Security update"));
-                icon.add_css_class("security-icon");
+                icon.set_tooltip_text(Some("Held back"));
+                icon.add_css_class("held-icon");
                 title_box.append(&icon);
             }
-
-            // 2. Kernel update indicator (orthogonal to security)
-            if candidate.is_kernel {
-                let icon = Image::from_icon_name("system-run-symbolic");
+            HoldState::Phased => {
+                let icon = Image::from_icon_name("changes-prevent-symbolic");
                 icon.set_icon_size(gtk4::IconSize::Normal);
-                icon.set_tooltip_text(Some("Kernel update"));
-                icon.add_css_class("kernel-icon");
+                icon.set_tooltip_text(Some("Phased rollout, not yet offered"));
+                icon.add_css_class("held-icon");
                 title_box.append(&icon);
             }
+            HoldState::None => {}
+        }
 
-            // 3. Held / Phased indicator
-            match candidate.hold_state {
-                HoldState::Held => {
-                    let icon = Image::from_icon_name("changes-prevent-symbolic");
-                    icon.set_icon_size(gtk4::IconSize::Normal);
-                    icon.set_tooltip_text(Some("Held back"));
-                    icon.add_css_class("held-icon");
-                    title_box.append(&icon);
-                }
-                HoldState::Phased => {
-                    let icon = Image::from_icon_name("changes-prevent-symbolic");
-                    icon.set_icon_size(gtk4::IconSize::Normal);
-                    icon.set_tooltip_text(Some("Phased rollout, not yet offered"));
-                    icon.add_css_class("held-icon");
-                    title_box.append(&icon);
-                }
-                HoldState::None => {}
+        // 4. Backend indicator for non-Apt entries
+        match candidate.backend {
+            UpdateBackend::Flatpak => {
+                let icon = Image::from_icon_name("package-x-generic-symbolic");
+                icon.set_icon_size(gtk4::IconSize::Normal);
+                icon.set_tooltip_text(Some("Flatpak"));
+                icon.add_css_class("backend-icon");
+                title_box.append(&icon);
             }
-
-            // 4. Backend indicator for non-Apt entries
-            match candidate.backend {
-                UpdateBackend::Flatpak => {
-                    let icon = Image::from_icon_name("package-x-generic-symbolic");
-                    icon.set_icon_size(gtk4::IconSize::Normal);
-                    icon.set_tooltip_text(Some("Flatpak"));
-                    icon.add_css_class("backend-icon");
-                    title_box.append(&icon);
-                }
-                UpdateBackend::Fwupd => {
-                    let icon = Image::from_icon_name("firmware-symbolic");
-                    icon.set_icon_size(gtk4::IconSize::Normal);
-                    icon.set_tooltip_text(Some("Firmware (fwupd)"));
-                    icon.add_css_class("backend-icon");
-                    title_box.append(&icon);
-                }
-                UpdateBackend::Apt => {}
+            UpdateBackend::Fwupd => {
+                let icon = Image::from_icon_name("firmware-symbolic");
+                icon.set_icon_size(gtk4::IconSize::Normal);
+                icon.set_tooltip_text(Some("Firmware (fwupd)"));
+                icon.add_css_class("backend-icon");
+                title_box.append(&icon);
             }
+            UpdateBackend::Apt => {}
+        }
 
-            row.append(&title_box);
+        row.append(&title_box);
 
-            let current = candidate
-                .installed_version
-                .as_deref()
-                .unwrap_or("not installed");
-            let versions = Label::new(Some(&format!(
-                "{} → {}",
-                current, candidate.available_version
-            )));
+        let current = candidate
+            .installed_version
+            .as_deref()
+            .unwrap_or("not installed");
+        let versions = Label::new(Some(&format!(
+            "{} → {}",
+            current, candidate.available_version
+        )));
+        versions.set_halign(gtk4::Align::Start);
+        versions.add_css_class("dim-label");
+        row.append(&versions);
+
+        outer_row.append(&row);
+        self.package_list.append(&outer_row);
+
+        // --- Checkbox toggle handler ---
+        let pkg_name = candidate.name.clone();
+        let selected_ref = self.selected_packages.clone();
+        let replanned_ref = self.selection_replanned.clone();
+        let review_btn = self.review_button.clone();
+        let confirm_btn = self.confirm_button.clone();
+        let everything_toggle = self.everything_toggle.clone();
+        let security_toggle = self.security_toggle.clone();
+        let custom_label = self.custom_selection_label.clone();
+
+        check.connect_toggled(move |btn| {
+            let mut selected = selected_ref.borrow_mut();
+            if btn.is_active() {
+                selected.insert(pkg_name.clone());
+            } else {
+                selected.remove(&pkg_name);
+            }
+            drop(selected);
+
+            // Any manual checkbox toggle invalidates the current re-plan
+            // and switches to Custom mode.
+            *replanned_ref.borrow_mut() = false;
+
+            // Deactivate coarse toggle buttons to indicate Custom mode,
+            // and show the indicator label so the mode change is visible
+            // rather than communicated only by the toggles going blank.
+            everything_toggle.set_active(false);
+            security_toggle.set_active(false);
+            custom_label.set_visible(true);
+
+            // Show Review Selection button, disable Install.
+            review_btn.set_visible(true);
+            confirm_btn.set_sensitive(false);
+        });
+    }
+
+    /// Render a grouped kernel update as one list row with a count badge.
+    ///
+    /// A single checkbox controls all packages in the group: toggling it
+    /// inserts or removes every package name in the group from the selection
+    /// set atomically.
+    fn append_kernel_group_row(&self, group: &super::kernel_grouping::KernelGroup) {
+        let outer_row = GtkBox::new(Orientation::Horizontal, 8);
+        outer_row.set_margin_top(6);
+        outer_row.set_margin_bottom(6);
+        outer_row.set_margin_start(8);
+        outer_row.set_margin_end(8);
+
+        // --- Group checkbox (selects/deselects ALL packages in the group) ---
+        let check = CheckButton::new();
+        check.set_active(true);
+        check.set_valign(gtk4::Align::Center);
+        outer_row.append(&check);
+
+        let row = GtkBox::new(Orientation::Vertical, 4);
+
+        let title_box = GtkBox::new(Orientation::Horizontal, 8);
+        let title_text = format!("Linux kernel {}", group.version);
+        let title = Label::new(Some(&title_text));
+        title.set_halign(gtk4::Align::Start);
+        title.add_css_class("heading");
+        title_box.append(&title);
+
+        let cat_badge = Label::new(Some("Kernel"));
+        cat_badge.add_css_class("maintainer_badge_kernel");
+        title_box.append(&cat_badge);
+
+        // Kernel icon (reuse existing system-run-symbolic convention)
+        let kernel_icon = Image::from_icon_name("system-run-symbolic");
+        kernel_icon.set_icon_size(gtk4::IconSize::Normal);
+        kernel_icon.set_tooltip_text(Some("Kernel update"));
+        kernel_icon.add_css_class("kernel-icon");
+        title_box.append(&kernel_icon);
+
+        // Security icon if any package in the group is a security update
+        if group.is_security {
+            let sec_icon = Image::from_icon_name("security-high-symbolic");
+            sec_icon.set_icon_size(gtk4::IconSize::Normal);
+            sec_icon.set_tooltip_text(Some("Security update"));
+            sec_icon.add_css_class("security-icon");
+            title_box.append(&sec_icon);
+        }
+
+        // Count badge
+        let badge_text = format!("{} packages", group.package_count);
+        let badge = Label::new(Some(&badge_text));
+        badge.add_css_class("dim-label");
+        badge.set_tooltip_text(Some(&group.package_names.join("\n")));
+        title_box.append(&badge);
+
+        row.append(&title_box);
+
+        // Version transition line
+        if let Some(ref transition) = group.version_transition {
+            let versions = Label::new(Some(transition));
             versions.set_halign(gtk4::Align::Start);
             versions.add_css_class("dim-label");
             row.append(&versions);
-
-            outer_row.append(&row);
-            self.package_list.append(&outer_row);
-
-            // --- Checkbox toggle handler ---
-            let pkg_name = candidate.name.clone();
-            let selected_ref = self.selected_packages.clone();
-            let replanned_ref = self.selection_replanned.clone();
-            let review_btn = self.review_button.clone();
-            let confirm_btn = self.confirm_button.clone();
-            let everything_toggle = self.everything_toggle.clone();
-            let security_toggle = self.security_toggle.clone();
-            let custom_label = self.custom_selection_label.clone();
-
-            check.connect_toggled(move |btn| {
-                let mut selected = selected_ref.borrow_mut();
-                if btn.is_active() {
-                    selected.insert(pkg_name.clone());
-                } else {
-                    selected.remove(&pkg_name);
-                }
-                drop(selected);
-
-                // Any manual checkbox toggle invalidates the current re-plan
-                // and switches to Custom mode.
-                *replanned_ref.borrow_mut() = false;
-
-                // Deactivate coarse toggle buttons to indicate Custom mode,
-                // and show the indicator label so the mode change is visible
-                // rather than communicated only by the toggles going blank.
-                // GTK ToggleButton in a group requires at least one active;
-                // we set neither active by temporarily removing from group.
-                // Since we can't truly deactivate both in a linked group
-                // cleanly, we unset both explicitly.
-                everything_toggle.set_active(false);
-                security_toggle.set_active(false);
-                custom_label.set_visible(true);
-
-                // Show Review Selection button, disable Install.
-                review_btn.set_visible(true);
-                confirm_btn.set_sensitive(false);
-            });
         }
+
+        outer_row.append(&row);
+        self.package_list.append(&outer_row);
+
+        // --- Group checkbox toggle handler: select/deselect ALL packages ---
+        let group_packages = group.package_names.clone();
+        let selected_ref = self.selected_packages.clone();
+        let replanned_ref = self.selection_replanned.clone();
+        let review_btn = self.review_button.clone();
+        let confirm_btn = self.confirm_button.clone();
+        let everything_toggle = self.everything_toggle.clone();
+        let security_toggle = self.security_toggle.clone();
+        let custom_label = self.custom_selection_label.clone();
+
+        check.connect_toggled(move |btn| {
+            let mut selected = selected_ref.borrow_mut();
+            if btn.is_active() {
+                // Select ALL packages in the kernel group.
+                for pkg in &group_packages {
+                    selected.insert(pkg.clone());
+                }
+            } else {
+                // Deselect ALL packages in the kernel group.
+                for pkg in &group_packages {
+                    selected.remove(pkg);
+                }
+            }
+            drop(selected);
+
+            // Any manual checkbox toggle invalidates the current re-plan
+            // and switches to Custom mode.
+            *replanned_ref.borrow_mut() = false;
+
+            // Deactivate coarse toggle buttons to indicate Custom mode.
+            everything_toggle.set_active(false);
+            security_toggle.set_active(false);
+            custom_label.set_visible(true);
+
+            // Show Review Selection button, disable Install.
+            review_btn.set_visible(true);
+            confirm_btn.set_sensitive(false);
+        });
     }
 
     /// Update the top action bar summary text (e.g. after mode change).
@@ -613,21 +760,59 @@ impl UpdatesPage {
         self.phase = UpdatePhase::Executing;
         self.action_bar.set_visible(false);
         self.confirm_button.set_sensitive(false);
+        self.review_button.set_sensitive(false);
         self.mode_row.set_visible(false);
         self.reboot_notice.set_visible(false);
+        self.result_label.set_visible(false);
         self.check_button.set_label("Installing Updates…");
         self.check_button.set_sensitive(false);
         self.progress_bar.set_visible(true);
         self.progress_bar.set_fraction(0.0);
+        self.progress_bar.set_text(Some("In progress"));
+        self.progress_bar.set_pulse_step(0.08);
         self.progress_label.set_visible(true);
         self.progress_label.set_text("Preparing…");
         self.cancel_button.set_visible(true);
         self.cancel_button.set_sensitive(true);
+        self.cancel_button.set_tooltip_text(None);
+
+        self.progress_indeterminate.set(true);
+        let generation = self.progress_generation.get().wrapping_add(1);
+        self.progress_generation.set(generation);
+        let progress_bar = self.progress_bar.clone();
+        let indeterminate = self.progress_indeterminate.clone();
+        let current_generation = self.progress_generation.clone();
+        glib::timeout_add_local(Duration::from_millis(100), move || {
+            if current_generation.get() != generation || !progress_bar.is_visible() {
+                return glib::ControlFlow::Break;
+            }
+            if indeterminate.get() {
+                progress_bar.pulse();
+            }
+            glib::ControlFlow::Continue
+        });
     }
 
     /// Update progress display during execution.
-    pub fn set_progress(&self, fraction: f64, message: &str, allow_cancel: bool) {
-        self.progress_bar.set_fraction(fraction);
+    pub fn set_progress(
+        &self,
+        completed: u64,
+        total: Option<u64>,
+        message: &str,
+        allow_cancel: bool,
+    ) {
+        match progress_fraction(completed, total) {
+            Some(fraction) => {
+                self.progress_indeterminate.set(false);
+                self.progress_bar.set_fraction(fraction);
+                self.progress_bar.set_text(None);
+            }
+            None => {
+                self.progress_indeterminate.set(true);
+                self.progress_bar.pulse();
+                self.progress_bar.set_text(Some("In progress"));
+            }
+        }
         self.progress_label.set_text(message);
         self.cancel_button.set_sensitive(allow_cancel);
 
@@ -642,6 +827,9 @@ impl UpdatesPage {
     /// Show the final result.
     pub fn set_result(&mut self, success: bool, message: &str, restart_required: bool) {
         self.phase = UpdatePhase::Result;
+        self.progress_indeterminate.set(false);
+        self.progress_generation
+            .set(self.progress_generation.get().wrapping_add(1));
         self.progress_bar.set_visible(false);
         self.progress_label.set_visible(false);
         self.cancel_button.set_visible(false);
@@ -952,5 +1140,34 @@ mod tests {
         ];
         let filtered = filter_candidates_for_mode(&candidates, SelectionMode::Custom);
         assert_eq!(filtered.len(), 2);
+    }
+}
+
+#[cfg(test)]
+mod progress_tests {
+    use super::{cancellation_allowed_for_progress, progress_fraction};
+
+    #[test]
+    fn unknown_total_is_indeterminate_not_zero_percent() {
+        assert_eq!(progress_fraction(0, None), None);
+        assert_eq!(progress_fraction(50, None), None);
+        assert_eq!(progress_fraction(1, Some(0)), None);
+    }
+
+    #[test]
+    fn known_total_produces_clamped_fraction() {
+        assert_eq!(progress_fraction(25, Some(100)), Some(0.25));
+        assert_eq!(progress_fraction(150, Some(100)), Some(1.0));
+    }
+
+    #[test]
+    fn cancellation_is_allowed_only_during_authentication() {
+        assert!(cancellation_allowed_for_progress(
+            "Waiting for administrator authentication…"
+        ));
+        assert!(!cancellation_allowed_for_progress("Downloading updates…"));
+        assert!(!cancellation_allowed_for_progress(
+            "Verifying installed package versions…"
+        ));
     }
 }

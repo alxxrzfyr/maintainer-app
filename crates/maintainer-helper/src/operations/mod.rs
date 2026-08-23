@@ -8,3 +8,4 @@ pub mod kernel;
 pub mod package_cache;
 pub mod process;
 pub mod smart;
+pub mod updates;

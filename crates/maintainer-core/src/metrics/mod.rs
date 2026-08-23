@@ -4,11 +4,13 @@
 //! with explicit units. Parsers accept a base path parameter so tests can point at
 //! fixture files instead of real system interfaces.
 
+pub mod connection;
 pub mod cpu;
 pub mod disk;
 pub mod memory;
 pub mod network;
 pub mod processes;
+pub mod speed_test;
 pub mod temperature;
 pub mod terminate;
 
@@ -17,6 +19,7 @@ use std::time::Instant;
 use crate::capability::Capability;
 use crate::error::MaintainerError;
 
+pub use crate::metrics::connection::{ConnectionDetails, WifiInfo, read_connection_details};
 pub use crate::metrics::cpu::{
     CpuCounters, CpuSample, CpuSnapshot, compute_cpu_snapshot, read_cpu_sample,
 };
@@ -27,8 +30,12 @@ pub use crate::metrics::disk::{
 pub use crate::metrics::memory::{MemorySnapshot, read_memory};
 pub use crate::metrics::network::{NetCounters, NetworkSnapshot, read_net_dev};
 pub use crate::metrics::processes::{ProcessIdentity, ProcessSnapshot, read_processes};
+pub use crate::metrics::speed_test::{
+    SpeedTestResult, SpeedTestStage, check_curl_available, run_speed_test,
+};
 pub use crate::metrics::temperature::{
-    TemperatureCollector, TemperatureReading, read_temperatures,
+    TemperatureCollector, TemperatureGroup, TemperatureReading, group_temperatures,
+    read_temperatures,
 };
 pub use crate::metrics::terminate::{
     ProcReader, RealProcReader, TerminateResult, terminate_process,

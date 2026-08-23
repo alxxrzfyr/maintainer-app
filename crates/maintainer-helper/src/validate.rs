@@ -25,6 +25,78 @@ const MAX_REQUEST_ID_LEN: usize = 128;
 
 /// Maximum drive ID length.
 const MAX_DRIVE_ID_LEN: usize = 256;
+/// Maximum packages accepted in one selected update request.
+const MAX_UPDATE_PACKAGES: usize = 4096;
+/// Maximum length of one `name=version` package specification.
+const MAX_PACKAGE_SPEC_LEN: usize = 512;
+
+/// Parse the privileged helper's fixed update CLI payload.
+///
+/// The caller may choose only `full` or `selected`. Selected entries must be
+/// exact `name=version` arguments. Character validation prevents APT option
+/// injection while still supporting Debian epochs, revisions, architecture
+/// qualifiers, and common version punctuation.
+pub fn parse_install_updates_cli(
+    args: &[String],
+) -> Result<crate::api::InstallUpdatesRequest, HelperError> {
+    match args {
+        [mode] if mode == "full" => Ok(crate::api::InstallUpdatesRequest::Full),
+        [mode, specs @ ..] if mode == "selected" => {
+            if specs.is_empty() || specs.len() > MAX_UPDATE_PACKAGES {
+                return Err(HelperError::ValidationFailed {
+                    reason: format!(
+                        "selected update count must be between 1 and {MAX_UPDATE_PACKAGES}"
+                    ),
+                });
+            }
+            for spec in specs {
+                validate_package_spec(spec)?;
+            }
+            Ok(crate::api::InstallUpdatesRequest::Selected(specs.to_vec()))
+        }
+        _ => Err(HelperError::ValidationFailed {
+            reason: "update mode must be exactly 'full' or 'selected'".to_string(),
+        }),
+    }
+}
+
+fn validate_package_spec(spec: &str) -> Result<(), HelperError> {
+    if spec.is_empty() || spec.len() > MAX_PACKAGE_SPEC_LEN {
+        return Err(HelperError::ValidationFailed {
+            reason: format!("package specification length must be 1..={MAX_PACKAGE_SPEC_LEN}"),
+        });
+    }
+
+    let Some((name, version)) = spec.split_once('=') else {
+        return Err(HelperError::ValidationFailed {
+            reason: "package specification must use name=version".to_string(),
+        });
+    };
+    if name.is_empty()
+        || !name
+            .chars()
+            .next()
+            .is_some_and(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit())
+        || !name.chars().all(|ch| {
+            ch.is_ascii_lowercase() || ch.is_ascii_digit() || matches!(ch, '+' | '-' | '.' | ':')
+        })
+    {
+        return Err(HelperError::ValidationFailed {
+            reason: "package name contains invalid characters".to_string(),
+        });
+    }
+    if version.is_empty()
+        || !version
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '+' | '-' | '.' | ':' | '~'))
+    {
+        return Err(HelperError::ValidationFailed {
+            reason: "package version contains invalid characters".to_string(),
+        });
+    }
+
+    Ok(())
+}
 
 /// Validate a process termination request.
 pub fn validate_terminate_process(request: &TerminateProcessRequest) -> Result<(), HelperError> {
@@ -543,5 +615,60 @@ mod tests {
         let content = "Linux version 6.8.0-40-generic (buildd@lcy02-amd64-116) (x86_64-linux-gnu-gcc-13 (Ubuntu 13.2.0-23ubuntu4) 13.2.0, GNU ld (GNU Binutils for Ubuntu) 2.42) #40-Ubuntu SMP PREEMPT_DYNAMIC Thu Jun  6 19:43:14 UTC 2024";
         let release = super::parse_proc_version(content);
         assert_eq!(release, Some("6.8.0-40-generic".to_string()));
+    }
+}
+
+#[cfg(test)]
+mod update_cli_tests {
+    use super::*;
+    use crate::api::InstallUpdatesRequest;
+
+    #[test]
+    fn parses_full_update_mode_without_packages() {
+        let request = parse_install_updates_cli(&["full".to_string()]).unwrap();
+        assert_eq!(request, InstallUpdatesRequest::Full);
+    }
+
+    #[test]
+    fn parses_selected_mode_with_exact_versions() {
+        let request = parse_install_updates_cli(&[
+            "selected".to_string(),
+            "curl=8.5.0-2ubuntu10.6".to_string(),
+            "libc6:amd64=2.39-0ubuntu8.4".to_string(),
+        ])
+        .unwrap();
+        assert_eq!(
+            request,
+            InstallUpdatesRequest::Selected(vec![
+                "curl=8.5.0-2ubuntu10.6".to_string(),
+                "libc6:amd64=2.39-0ubuntu8.4".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn rejects_selected_mode_without_packages() {
+        assert!(parse_install_updates_cli(&["selected".to_string()]).is_err());
+    }
+
+    #[test]
+    fn rejects_option_and_shell_injection_package_specs() {
+        for spec in [
+            "--option=APT::Update::Pre-Invoke=/tmp/evil",
+            "curl=2.0;touch /tmp/evil",
+            "curl=$(id)",
+            "../curl=2.0",
+        ] {
+            assert!(
+                parse_install_updates_cli(&["selected".to_string(), spec.to_string()]).is_err(),
+                "accepted unsafe package spec: {spec}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_unknown_mode_and_extra_full_arguments() {
+        assert!(parse_install_updates_cli(&["unknown".to_string()]).is_err());
+        assert!(parse_install_updates_cli(&["full".to_string(), "curl=2.0".to_string()]).is_err());
     }
 }

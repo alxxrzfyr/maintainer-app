@@ -238,3 +238,194 @@ fn ring_buffer_evicts_oldest_at_capacity() {
     assert_eq!(ring.latest(), Some(69.0));
     assert_eq!(*ring.samples().front().unwrap(), 10.0);
 }
+
+#[test]
+fn network_vm_populated_from_snapshot() {
+    use maintainer_core::metrics::NetworkSnapshot;
+
+    let mut state = MonitoringState::default();
+
+    let snapshot = SystemSnapshot {
+        cpu: Capability::Available(CpuSnapshot {
+            total_percent: 10.0,
+            per_core_percent: vec![10.0],
+        }),
+        memory: Capability::Available(MemorySnapshot {
+            total_bytes: 16 * 1024 * 1024 * 1024,
+            available_bytes: 8 * 1024 * 1024 * 1024,
+            used_bytes: 8 * 1024 * 1024 * 1024,
+            buffers_bytes: 0,
+            cached_bytes: 0,
+            swap_total_bytes: 0,
+            swap_free_bytes: 0,
+            swap_used_bytes: 0,
+        }),
+        disks: Capability::Available(vec![]),
+        network: Capability::Available(vec![
+            NetworkSnapshot {
+                interface: "eth0".into(),
+                is_loopback: false,
+                rx_bytes: 1000,
+                tx_bytes: 500,
+                rx_packets: 10,
+                tx_packets: 5,
+                rx_errors: 0,
+                tx_errors: 0,
+                rx_bytes_per_sec: Some(1024.0),
+                tx_bytes_per_sec: Some(512.0),
+            },
+            NetworkSnapshot {
+                interface: "lo".into(),
+                is_loopback: true,
+                rx_bytes: 100,
+                tx_bytes: 100,
+                rx_packets: 1,
+                tx_packets: 1,
+                rx_errors: 0,
+                tx_errors: 0,
+                rx_bytes_per_sec: Some(0.0),
+                tx_bytes_per_sec: Some(0.0),
+            },
+        ]),
+        temperatures: Capability::Available(vec![]),
+        processes: Capability::Available(vec![]),
+    };
+
+    state.reduce(MonitoringMessage::SnapshotReady(Box::new(snapshot)));
+
+    assert!(state.network_vm.available);
+    assert_eq!(state.network_vm.interfaces.len(), 2);
+    assert_eq!(state.network_vm.total_rx_rate, 1024.0);
+    assert_eq!(state.network_vm.total_tx_rate, 512.0);
+    assert_eq!(state.network_vm.rx_rings.len(), 2);
+    assert_eq!(state.network_vm.tx_rings.len(), 2);
+}
+
+#[test]
+fn processes_vm_sorted_by_active_sort() {
+    let mut state = MonitoringState::default();
+
+    let procs = vec![
+        ProcessSnapshot {
+            identity: ProcessIdentity {
+                pid: 1,
+                start_time_ticks: 1,
+            },
+            name: "alpha".into(),
+            state: 'S',
+            ppid: 0,
+            uid: 1000,
+            rss_bytes: 500_000,
+            utime_ticks: 100,
+            stime_ticks: 50,
+            num_threads: 1,
+        },
+        ProcessSnapshot {
+            identity: ProcessIdentity {
+                pid: 2,
+                start_time_ticks: 2,
+            },
+            name: "beta".into(),
+            state: 'R',
+            ppid: 0,
+            uid: 1000,
+            rss_bytes: 2_000_000,
+            utime_ticks: 10,
+            stime_ticks: 5,
+            num_threads: 2,
+        },
+    ];
+
+    let snapshot = SystemSnapshot {
+        cpu: Capability::Available(CpuSnapshot {
+            total_percent: 10.0,
+            per_core_percent: vec![10.0],
+        }),
+        memory: Capability::Available(MemorySnapshot {
+            total_bytes: 4096,
+            available_bytes: 2048,
+            used_bytes: 2048,
+            buffers_bytes: 0,
+            cached_bytes: 0,
+            swap_total_bytes: 0,
+            swap_free_bytes: 0,
+            swap_used_bytes: 0,
+        }),
+        disks: Capability::Available(vec![]),
+        network: Capability::Available(vec![]),
+        temperatures: Capability::Available(vec![]),
+        processes: Capability::Available(procs),
+    };
+
+    state.reduce(MonitoringMessage::SnapshotReady(Box::new(snapshot)));
+
+    assert!(state.processes_vm.available);
+    assert_eq!(state.processes_vm.total_count, 2);
+    // Default sort is CPU (highest ticks first)
+    assert_eq!(state.processes_vm.processes[0].name, "alpha");
+
+    state.reduce(MonitoringMessage::SetProcessSort(ProcessSort::Memory));
+    // After re-sort, processes_vm should reflect new order on next snapshot
+    // (SetProcessSort only re-sorts system.processes, not processes_vm directly,
+    // but processes_vm is populated from the sorted system.processes during snapshot)
+    assert_eq!(state.system.processes[0].name, "beta");
+}
+
+#[test]
+fn temperature_groups_populated() {
+    use maintainer_core::metrics::TemperatureReading;
+
+    let mut state = MonitoringState::default();
+
+    let temps = vec![
+        TemperatureReading {
+            hwmon_name: "coretemp".into(),
+            label: Some("Package id 0".into()),
+            celsius: Capability::Available(50.0),
+        },
+        TemperatureReading {
+            hwmon_name: "coretemp".into(),
+            label: Some("Core 0".into()),
+            celsius: Capability::Available(47.0),
+        },
+        TemperatureReading {
+            hwmon_name: "acpitz".into(),
+            label: None,
+            celsius: Capability::Available(38.0),
+        },
+    ];
+
+    let snapshot = SystemSnapshot {
+        cpu: Capability::Available(CpuSnapshot {
+            total_percent: 10.0,
+            per_core_percent: vec![10.0],
+        }),
+        memory: Capability::Available(MemorySnapshot {
+            total_bytes: 4096,
+            available_bytes: 2048,
+            used_bytes: 2048,
+            buffers_bytes: 0,
+            cached_bytes: 0,
+            swap_total_bytes: 0,
+            swap_free_bytes: 0,
+            swap_used_bytes: 0,
+        }),
+        disks: Capability::Available(vec![]),
+        network: Capability::Available(vec![]),
+        temperatures: Capability::Available(temps),
+        processes: Capability::Available(vec![]),
+    };
+
+    state.reduce(MonitoringMessage::SnapshotReady(Box::new(snapshot)));
+
+    assert_eq!(state.system.temperature_groups.len(), 2);
+    assert_eq!(state.system.temperature_groups[0].chip_name, "acpitz");
+    assert_eq!(state.system.temperature_groups[1].chip_name, "coretemp");
+    assert_eq!(
+        state.system.temperature_groups[1]
+            .representative
+            .label
+            .as_deref(),
+        Some("Package id 0")
+    );
+}

@@ -5,6 +5,44 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-08-23
+
+### Added
+
+- A dedicated Network page with live download and upload activity, connection
+  details, Wi-Fi information, and an optional internet speed test.
+- A dedicated Processes page for viewing, sorting, and safely ending processes.
+
+### Improved
+
+- The System page is easier to scan, with clearer CPU, memory, disk, network,
+  and temperature information.
+- Temperature readings are grouped by hardware source, duplicate and invalid
+  readings are hidden, and sensor names are easier to understand.
+- Navigation icons, spacing, colors, cards, buttons, and status messages are
+  more consistent across the light and dark themes.
+- System updates now show active progress and clearer transaction states.
+
+### Fixed
+
+- Update completion is no longer reported until Maintainer confirms that every
+  reviewed package reached its expected version.
+- Administrator authentication now appears reliably for critical actions and
+  is requested again for each irreversible operation.
+- The installer now detects incomplete authorization setup instead of leaving
+  privileged features partially configured.
+- Internet speed-test uploads, errors, and cancellation now behave reliably.
+- Storage navigation no longer closes the application during certain page
+  transitions.
+- Missing icon-theme entries no longer produce blank placeholder icons.
+- Destructive buttons remain readable in every interaction state.
+
+### Privacy
+
+- Passive network monitoring never contacts an external service.
+- The internet speed test runs only after confirmation, explains that it uses
+  Cloudflare and approximately 10–25 MB of data, and does not save its results.
+
 ## [1.1.3] - 2026-08-23
 
 ### Added

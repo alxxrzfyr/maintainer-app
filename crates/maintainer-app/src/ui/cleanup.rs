@@ -97,7 +97,7 @@ impl CleanupPage {
         container.append(&scrolled);
 
         let execute_button = Button::with_label("Remove Selected Items");
-        execute_button.add_css_class("destructive-action");
+        execute_button.add_css_class("maintainer_destructive");
         execute_button.set_halign(gtk4::Align::Start);
         execute_button.set_visible(false);
         container.append(&execute_button);

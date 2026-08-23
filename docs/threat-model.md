@@ -2,14 +2,14 @@
 
 ## Overview
 
-The Maintainer privileged helper (`maintainer-helper`) runs as root via D-Bus activation and executes a fixed set of system operations on behalf of the unprivileged GUI. This document identifies threats against the helper and maps each to a mitigation or explicit non-goal.
+The Maintainer privileged helper (`maintainer-helper`) runs as root via D-Bus activation for maintenance operations and through a Polkit-described `pkexec` entrypoint for system updates. Both entrypoints expose fixed operation types rather than arbitrary commands. This document identifies threats against the helper and maps each to a mitigation or explicit non-goal.
 
 ## Assets
 
 | Asset | Value |
 |---|---|
 | Process table integrity | Arbitrary signal delivery could kill critical services |
-| Package cache | Corruption or unauthorized clearing disrupts updates |
+| Package cache and database | Corruption or unauthorized mutation disrupts updates or the installed system |
 | Journal data | Unauthorized vacuum destroys diagnostic evidence |
 | SMART subsystem | Unauthorized refresh could mask disk degradation timing |
 | Root execution context | Full system compromise if helper is subverted |
@@ -19,12 +19,12 @@ The Maintainer privileged helper (`maintainer-helper`) runs as root via D-Bus ac
 ```text
 Unprivileged GUI process (UID 1000)
   │
-  │  D-Bus system bus (bus policy permits delivery, credential lookup)
+  ├─ D-Bus system bus ─ Polkit ─ D-Bus-activated helper operations
   │
-Privileged helper (UID 0, D-Bus activated)
-  │
-  │  Polkit authority (decides, and prompts for a password when required)
-  │
+  └─ pkexec ─ install-updates Polkit action ─ validated helper CLI mode
+                                              │
+                                              └─ exec /usr/bin/apt-get
+
 Linux kernel / system services
 ```
 
@@ -66,7 +66,7 @@ Linux kernel / system services
 
 **Threat:** If the helper constructs shell command strings from caller input, metacharacters enable arbitrary command execution.
 
-**Mitigation:** No shell is ever invoked. All external programs are called via `Command::new()` with explicit argument arrays. Parameters that reach command arguments are validated against strict patterns (digits-only for sizes, alphanumeric with underscores for device identifiers).
+**Mitigation:** No shell is ever invoked. All external programs are called with explicit argument arrays. The update CLI accepts only `full` or `selected`; selected entries must be bounded `name=version` values with strict Debian-safe character sets. A `--` option terminator precedes every selected package. The helper then replaces itself with the fixed `/usr/bin/apt-get` executable, so no privileged child is orphaned.
 
 **Test:** Structural — no `shell=true`, no string concatenation into commands.
 
@@ -76,7 +76,7 @@ Linux kernel / system services
 
 **Mitigation:** Each D-Bus method call triggers a fresh Polkit `CheckAuthorization` with the caller's current subject (system-bus-name). The helper caches no authorization results.
 
-The policy also declines to retain them. Irreversible actions (terminating a process, vacuuming the journal) use `auth_admin` rather than `auth_admin_keep`, so the password is requested on every attempt and an authorization obtained for one action cannot carry a later one. Reversible or read-only actions (cleaning the APT cache, reading SMART data) resolve to `yes` for an active local session and are not prompted at all, matching `org.freedesktop.udisks2.ata-smart-update`.
+The policy also declines to retain them. Irreversible actions (terminating a process, vacuuming the journal, removing a kernel, and installing system updates) use `auth_admin` rather than `auth_admin_keep`, so the password is requested on every attempt and an authorization obtained for one action cannot carry a later one. Reversible or read-only actions (cleaning the APT cache, reading SMART data) resolve to `yes` for an active local session and are not prompted at all, matching `org.freedesktop.udisks2.ata-smart-update`. The update action is bound by `org.freedesktop.policykit.exec.path` to `/usr/libexec/maintainer-helper`; under `PKEXEC_UID`, every helper mode except the validated update operation is rejected.
 
 **Test:** `test_polkit_denial_rejected`
 
@@ -84,7 +84,7 @@ The policy also declines to retain them. Irreversible actions (terminating a pro
 
 **Threat:** The helper performs a privileged action that benefits an attacker because it trusts the wrong identity or grants the wrong action.
 
-**Mitigation:** Polkit action IDs are specific per operation (`io.github.maintainerapp.terminate-process`, `io.github.maintainerapp.clean-package-cache`, etc.). Each method checks its own specific action. A user authorized for package cache cannot terminate processes.
+**Mitigation:** Polkit action IDs are specific per operation (`io.github.maintainerapp.terminate-process`, `io.github.maintainerapp.clean-package-cache`, `io.github.maintainerapp.install-updates`, etc.). Each D-Bus method checks its own action, and the update action maps only to the helper executable whose pkexec mode accepts one fixed operation. A user authorized for package cache cannot terminate processes or install updates.
 
 **Test:** `test_wrong_action_id_rejected`
 
@@ -116,9 +116,9 @@ The policy also declines to retain them. Irreversible actions (terminating a pro
 
 **Threat:** The helper crashes mid-operation, leaving the system in an inconsistent state.
 
-**Mitigation:** Each operation is atomic from the caller's perspective. `apt-get clean` and `journalctl --vacuum-*` are inherently atomic. Process termination is a single syscall. SMART refresh is a single D-Bus call. No operation has multi-step commit semantics that could leave partial state.
+**Mitigation:** Single-step helper operations remain atomic from the caller's perspective. System updates are intentionally different: APT/dpkg transactions are multi-step and cannot be rolled back by Maintainer. The authenticated helper uses `exec` so APT replaces the helper process, preserves progress pipes, and cannot be orphaned as a hidden privileged child. APT and dpkg provide their normal lock, journal, and recovery behavior.
 
-**Non-goal:** Rollback of completed operations (apt-get clean cannot be un-cleaned).
+**Non-goal:** Rollback of completed package changes. As with every APT frontend, interruption by cancellation, process failure, or power loss may require the administrator to run dpkg/APT recovery before another transaction.
 
 ### T12: Audit Data Leakage
 
@@ -135,7 +135,7 @@ The policy also declines to retain them. Irreversible actions (terminating a pro
 
 ## Systemd Hardening
 
-The helper is D-Bus activated through `maintainer-helper.service`, which has no
+The helper's maintenance API is D-Bus activated through `maintainer-helper.service`, which has no
 `[Install]` section, so it never runs at boot and never becomes a permanent
 daemon. The unit applies:
 
@@ -153,6 +153,8 @@ daemon. The unit applies:
 `ProtectProc` is deliberately left at its default. Terminating a process
 revalidates the target by reading `/proc/<pid>/stat`, so hiding other processes
 would break the PID-reuse guard described in T2.
+
+The update CLI does not run inside this systemd unit. Its separate boundary is Polkit's exact executable-path action, strict argument validation, a cleared environment, and immediate `exec` into fixed `/usr/bin/apt-get`.
 
 `CapabilityBoundingSet` and `SystemCallFilter` are not yet applied. Both would
 narrow a root service usefully, but a wrong set fails as a silent refusal inside

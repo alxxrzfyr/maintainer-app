@@ -62,7 +62,7 @@ pub fn build_history_page(
     header.append(&title);
 
     let delete_selected_btn = Button::with_label("Delete selected");
-    delete_selected_btn.add_css_class("destructive-action");
+    delete_selected_btn.add_css_class("maintainer_destructive");
     delete_selected_btn.set_sensitive(false);
 
     if !entries.is_empty() {
@@ -100,7 +100,7 @@ pub fn build_history_page(
 
         let on_intent_all = on_intent.clone();
         let delete_all_btn = Button::with_label("Delete all");
-        delete_all_btn.add_css_class("destructive-action");
+        delete_all_btn.add_css_class("maintainer_destructive");
         delete_all_btn.set_tooltip_text(Some("Delete all history entries"));
         delete_all_btn.update_property(&[gtk4::accessible::Property::Label("Delete all history")]);
         delete_all_btn.connect_clicked(move |btn| {

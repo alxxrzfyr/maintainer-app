@@ -17,3 +17,8 @@ fi
 if command -v update-desktop-database >/dev/null 2>&1; then
     update-desktop-database /usr/share/applications || true
 fi
+
+# Reload PolicyKit so new action definitions are recognized without reboot.
+if systemctl is-active --quiet polkit.service 2>/dev/null; then
+    systemctl restart polkit.service || true
+fi

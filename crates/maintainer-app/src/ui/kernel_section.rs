@@ -295,7 +295,7 @@ impl KernelSection {
         // removability for the running kernel cannot lead to accidental removal.
         if kernel.is_removable {
             let delete_btn = Button::with_label("Remove");
-            delete_btn.add_css_class("destructive-action");
+            delete_btn.add_css_class("maintainer_destructive");
             delete_btn.set_valign(Align::Center);
             delete_btn.set_tooltip_text(Some(&format!("Remove {}", kernel.package_name)));
 
@@ -344,7 +344,7 @@ fn show_kernel_removal_dialog(
 
     // Mark the destructive button
     if let Some(btn) = dialog.widget_for_response(ResponseType::Accept) {
-        btn.add_css_class("destructive-action");
+        btn.add_css_class("maintainer_destructive");
     }
 
     let content = dialog.content_area();
@@ -431,7 +431,7 @@ fn find_delete_button_in_row(row: &GtkBox) -> Option<Button> {
     let mut child = row.first_child();
     while let Some(widget) = child {
         if let Some(btn) = widget.downcast_ref::<Button>() {
-            if btn.has_css_class("destructive-action") {
+            if btn.has_css_class("maintainer_destructive") {
                 return Some(btn.clone());
             }
         }
