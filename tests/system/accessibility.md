@@ -1,116 +1,40 @@
-# Accessibility Review Checklist
+# Accessibility validation procedure
 
-Status: Template — complete before v1 release.
+Status: reusable procedure; accessibility has not been certified by this review. Revised 2026-10-30. Follow the [roadmap](../../docs/plans/development-roadmap.md) and [compatibility procedure](compatibility.md).
 
-## Test environment
+Record app/package version and checksum, distribution, desktop, GTK version, display backend, monitor resolution, 100%/200% display scale, enlarged text setting, both themes and assistive-technology/version. Record keyboard-only and screen-reader observations separately. A code-level accessible-name assertion does not prove the spoken result.
 
-- Distribution: ___
-- Desktop: ___
-- GTK version: ___
-- Display scale: 100% and 200%
-- Theme: light and dark
-- Assistive technology: ___
+## Keyboard and assistive technology
 
-## Keyboard navigation (all pages, no pointer)
+Exercise Overview, System, Network, Processes, Storage overview/browser/large-files/duplicates, Cleanup/history, Updates, Diagnostics, Reports and Settings. Check navigation, drawer/menu and modal dialogs at each supported window size.
 
-| Page / Area | Tab order logical | All controls reachable | No keyboard traps | Focus visible | Notes |
-|---|:---:|:---:|:---:|:---:|---|
-| Overview | [ ] | [ ] | [ ] | [ ] | |
-| System — CPU | [ ] | [ ] | [ ] | [ ] | |
-| System — Memory | [ ] | [ ] | [ ] | [ ] | |
-| System — Storage | [ ] | [ ] | [ ] | [ ] | |
-| System — Network | [ ] | [ ] | [ ] | [ ] | |
-| System — Processes | [ ] | [ ] | [ ] | [ ] | |
-| Storage analysis | [ ] | [ ] | [ ] | [ ] | |
-| Large files | [ ] | [ ] | [ ] | [ ] | |
-| Duplicates | [ ] | [ ] | [ ] | [ ] | |
-| Cleanup | [ ] | [ ] | [ ] | [ ] | |
-| History | [ ] | [ ] | [ ] | [ ] | |
-| Updates | [ ] | [ ] | [ ] | [ ] | |
-| Diagnostics — Services | [ ] | [ ] | [ ] | [ ] | |
-| Diagnostics — Journal | [ ] | [ ] | [ ] | [ ] | |
-| Diagnostics — SMART | [ ] | [ ] | [ ] | [ ] | |
-| Reports | [ ] | [ ] | [ ] | [ ] | |
-| Settings | [ ] | [ ] | [ ] | [ ] | |
+| Check | Expected observation |
+|---|---|
+| Reachability | Every exposed action is reachable without a pointer, in reading order; no keyboard trap |
+| Navigation | Active destination is both visible and announced; collapsed navigation remains usable |
+| Process refresh/sort | Focus/selection stays on the intended process or a predictable replacement; termination confirmation retains PID/start-time identity |
+| Scans/results | Start, cancel, select and review work with keyboard; empty, unavailable and partial results are understandable |
+| Confirmation | Title, affected target, irreversible consequences and button meanings are announced; dismiss/confirm returns focus to the trigger |
+| Update progress | Authorization, download, configuration, verification and recovery states are distinguishable; disabled cancellation has an understandable reason |
+| Native Polkit dialog | Agent is accessible and focus returns after allow/deny/dismiss; distinguish an agent issue from an application issue |
+| Reports/settings | Inputs have labels; preview/copy/save, theme/interval controls and supported history deletion work without a pointer |
+| Names and status | Icon buttons, metric cards, progress and capability states have meaningful names/descriptions; chart values have text equivalents |
+| Live announcements | Significant state changes are announced without speaking every 2 s metric refresh; errors do not silently disappear |
 
-## Keyboard operations
+## Appearance and scaling
 
-| Operation | Works with keyboard | Notes |
-|---|:---:|---|
-| Navigate between pages (sidebar) | [ ] | |
-| Sort table/list columns | [ ] | |
-| Select items in lists | [ ] | |
-| Start a scan | [ ] | |
-| Cancel a scan | [ ] | |
-| Open confirmation dialogs | [ ] | |
-| Confirm/deny in dialogs | [ ] | |
-| Review updates | [ ] | |
-| Copy/save report | [ ] | |
-| Toggle settings | [ ] | |
-| Delete history items | [ ] | |
-| Terminate a process | [ ] | |
+| Check | Review target |
+|---|---|
+| Focus | Visible on every interactive control in both themes; returns predictably after dialogs |
+| Text | No clipping/lost labels at 200% scale and enlarged text; keyboard can reach all content |
+| Layout | Minimum supported width, large font and translated/long labels retain usable controls and readable confirmation text |
+| Contrast | Normal text >=4.5:1; large text >=3:1; relevant controls/focus >=3:1 against adjacent colors; measure both themes and disabled/destructive states |
+| Target size | Record actual logical-pixel dimensions and keyboard alternatives for small controls; the former 44 CSS-pixel rule was not an established native GTK contract |
+| Non-color meaning | Severity, SMART, service/update state, scan progress, capability and operation result remain understandable without color |
+| Charts/motion | Labels/text explain graphs; animation does not obscure status or move focus; record any reduced-motion limitation |
 
-## Focus visibility
+Contrast figures are review targets from the existing checklist, not evidence of compliance with an entire accessibility standard. Record failed elements and measurements rather than declaring a general pass.
 
-| Criterion | Pass | Notes |
-|---|:---:|---|
-| Focus ring visible on all interactive elements | [ ] | |
-| Focus ring has sufficient contrast (≥ 3:1) against backgrounds | [ ] | |
-| Focus moves predictably (logical reading order) | [ ] | |
-| Focus returns to trigger after modal/dialog close | [ ] | |
-| No invisible focus states (element focused but ring absent) | [ ] | |
+## Retain results
 
-## Accessible names and descriptions
-
-| Criterion | Pass | Notes |
-|---|:---:|---|
-| All buttons have accessible names (label or aria-label equivalent) | [ ] | |
-| Icon-only buttons have tooltip and accessible name | [ ] | |
-| Form inputs have associated labels | [ ] | |
-| Graphs/charts have text equivalents or descriptions | [ ] | |
-| Progress indicators have accessible value text | [ ] | |
-| Status indicators have accessible descriptions | [ ] | |
-| Dialogs have accessible titles | [ ] | |
-| Navigation landmarks are properly labeled | [ ] | |
-
-## Text scaling (200%)
-
-| Criterion | Pass | Notes |
-|---|:---:|---|
-| All text remains readable at 200% system scale | [ ] | |
-| No text clipping or overflow hidden | [ ] | |
-| Layout adapts without horizontal scrolling on primary content | [ ] | |
-| Interactive targets remain minimum 44×44 CSS px equivalent | [ ] | |
-| Line spacing remains adequate | [ ] | |
-
-## Color and contrast
-
-| Criterion | Pass | Notes |
-|---|:---:|---|
-| Text contrast ≥ 4.5:1 (normal text) in light theme | [ ] | |
-| Text contrast ≥ 4.5:1 (normal text) in dark theme | [ ] | |
-| Large text contrast ≥ 3:1 in both themes | [ ] | |
-| UI component contrast ≥ 3:1 against adjacent colors | [ ] | |
-| Focus indicator contrast ≥ 3:1 | [ ] | |
-| Status not conveyed by color alone (icons, text, patterns) | [ ] | |
-| Attention items use icon + text, not just color | [ ] | |
-| Chart data distinguishable without color (pattern/label) | [ ] | |
-| Error states use icon + text, not just red | [ ] | |
-
-## Non-color status indicators
-
-| Status type | Has non-color indicator | Type (icon/text/pattern) | Notes |
-|---|:---:|---|---|
-| Attention severity (critical/warning/info) | [ ] | | |
-| SMART health (healthy/warning/failing) | [ ] | | |
-| Service status (running/failed/inactive) | [ ] | | |
-| Update classification (security/regular) | [ ] | | |
-| Scan progress (running/complete/cancelled) | [ ] | | |
-| Capability state (available/unavailable/permission) | [ ] | | |
-| Operation result (success/partial/failure) | [ ] | | |
-
-## Sign-off
-
-| Reviewer | Date | Result |
-|---|---|---|
-| ___ | ___ | ___ |
+After testing, save a dated report under `docs/validation/` with case/page, input sequence, expected/actual behavior, screenshots or spoken observations where useful, sanitized evidence, defect ID, operator and reviewer. Use pass/fail/unverified/not-applicable with reasons. Do not invent results or delete failing cases to obtain sign-off.

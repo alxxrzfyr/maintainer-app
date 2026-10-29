@@ -5,6 +5,22 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Documentation
+
+- Correct the threat model and security, compatibility, and accessibility
+  procedures to distinguish current controls, open gaps, and unverified results.
+- Consolidate development plans and research; align README performance ceilings
+  with repository instructions and remove unsupported security guarantees.
+- Add concrete safety decisions, resource limits proposed for validation, and
+  work packages for duplicate-scan integration, report privacy and persistence.
+  Record dependency-overlay uncertainty and preserve installed-test evidence gates.
+- Retain fast, lightweight, native GTK4 GUI as explicit product values; set the
+  next memory milestone below 100 MB combined idle PSS, with profiling experiments
+  and lower exploratory targets. Attainment remains unverified.
+  These documentation changes do not implement the planned runtime fixes.
+
 ## [1.2.0] - 2026-08-23
 
 ### Added

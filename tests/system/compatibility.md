@@ -1,83 +1,45 @@
-# Compatibility Test Matrix
+# Compatibility validation procedure
 
-Status: Template — complete before v1 release.
+Status: reusable procedure, not a completed support matrix. Revised 2026-10-30. Use the [roadmap](../../docs/plans/development-roadmap.md) for release gates and [security procedure](security.md) for privileged cases.
 
-## Supported environments
+## Select and record environments
 
-| # | Distribution | Version | Desktop | Display | GTK4 version | Kernel | Notes |
-|---|---|---|---|---|---|---|---|
-| 1 | Ubuntu | 22.04 LTS (Jammy) | GNOME on Wayland | Wayland | 4.6.x | 5.15+ | Compatibility floor |
-| 2 | Ubuntu | 22.04 LTS (Jammy) | GNOME on X11 | X11 | 4.6.x | 5.15+ | X11 fallback |
-| 3 | Ubuntu | 24.04 LTS (Noble) | GNOME on Wayland | Wayland | 4.14.x | 6.8+ | Current LTS |
-| 4 | Ubuntu | 24.04 LTS (Noble) | GNOME on X11 | X11 | 4.14.x | 6.8+ | |
-| 5 | Linux Mint | 22 (current) | Cinnamon on X11 | X11 | 4.x | 6.x | Primary derivative |
-| 6 | Pop!_OS | 22.04 (current) | COSMIC/GNOME | X11/Wayland | 4.x | 6.x | Additional derivative |
+| Candidate environment | Purpose |
+|---|---|
+| Ubuntu 22.04 amd64, GTK 4.6, Wayland | Compatibility floor |
+| Ubuntu 22.04 amd64, X11 | Floor with alternate display backend |
+| Ubuntu 24.04; latest Ubuntu LTS selected for support | Test each exact release and session advertised; avoid a stale "current LTS" label |
+| Linux Mint Cinnamon; supported Pop!_OS release | Verify derivative packaging, desktop authentication and unavailable integrations |
+| Ubuntu arm64 | Native artifact installation, GUI and authorization |
+| Named 4 GB hardware device with a working GPU | Under-100-MB combined idle PSS, CPU, usable startup and GUI responsiveness; normal and 200% scale |
+| Xvfb/software rendering | Headless regressions; cannot certify hardware performance |
 
-## Test procedure per environment
+These rows are test candidates, not pass results. Record exact distribution, version, kernel, GTK/GLib, architecture, desktop, display, renderer and optional tool/service versions. Do not assume that all derivatives share package names, firmware access or an authentication agent.
 
-1. Clean install or clean VM snapshot
-2. Install `.deb` package with `sudo apt install ./maintainer_*.deb`
-3. Verify runtime dependencies resolve
-4. Launch from application menu
-5. Complete smoke test sequence (below)
-6. Verify clean uninstall with `sudo apt remove maintainer`
+## Execute against the installed artifact
 
-## Smoke test sequence
+Start from a clean VM snapshot where privileged/destructive actions are needed. Record commit and .deb checksum. Install as administrator; run the GUI as a normal desktop user. Use `pass`, `fail`, `unverified`, or `not applicable` with a reason for every case.
 
-| Step | Action | Expected | Env 1 | Env 2 | Env 3 | Env 4 | Env 5 | Env 6 |
-|---|---|---|:---:|:---:|:---:|:---:|:---:|:---:|
-| 1 | Launch application | Window appears within 2s | [ ] | [ ] | [ ] | [ ] | [ ] | [ ] |
-| 2 | Overview loads | Metrics visible, no crash | [ ] | [ ] | [ ] | [ ] | [ ] | [ ] |
-| 3 | Navigate all pages | Each page renders | [ ] | [ ] | [ ] | [ ] | [ ] | [ ] |
-| 4 | CPU/memory metrics | Values update every 2s | [ ] | [ ] | [ ] | [ ] | [ ] | [ ] |
-| 5 | Storage capacity | Mounts listed correctly | [ ] | [ ] | [ ] | [ ] | [ ] | [ ] |
-| 6 | Process list | Processes visible, sortable | [ ] | [ ] | [ ] | [ ] | [ ] | [ ] |
-| 7 | Start storage scan | Progress shown, cancellable | [ ] | [ ] | [ ] | [ ] | [ ] | [ ] |
-| 8 | Cleanup preview | Categories shown | [ ] | [ ] | [ ] | [ ] | [ ] | [ ] |
-| 9 | Check updates | APT state shown | [ ] | [ ] | [ ] | [ ] | [ ] | [ ] |
-| 10 | Diagnostics — services | Failed services or "none" | [ ] | [ ] | [ ] | [ ] | [ ] | [ ] |
-| 11 | Diagnostics — SMART | Health or "unavailable" | [ ] | [ ] | [ ] | [ ] | [ ] | [ ] |
-| 12 | Generate report | Report preview shown | [ ] | [ ] | [ ] | [ ] | [ ] | [ ] |
-| 13 | Copy report | Clipboard works | [ ] | [ ] | [ ] | [ ] | [ ] | [ ] |
-| 14 | Settings | All controls function | [ ] | [ ] | [ ] | [ ] | [ ] | [ ] |
-| 15 | Theme switch | Light/dark applied | [ ] | [ ] | [ ] | [ ] | [ ] | [ ] |
-| 16 | Graceful exit | No crash on close | [ ] | [ ] | [ ] | [ ] | [ ] | [ ] |
+| Case | Expected behavior / evidence |
+|---|---|
+| Fresh install and upgrade from previous supported version | Dependencies, schemas, desktop entry, icons, CSS, bus policy, service and Polkit files load; running old app is handled explicitly |
+| Launch | Normal-user usable shell/navigation appears within D10's clock; loading states remain explicit. Record window map/first live data separately; process survival is insufficient |
+| Navigation | Overview, System, Network, Processes, Storage subpages, Cleanup/history, Updates, Diagnostics, Reports and Settings render without crash |
+| Monitoring | Rates/units are credible; default visible/hidden sampling is 2 s/10 s; saved settings apply; resumed views show current status |
+| Dynamic devices/processes | Interface reorder, sensor removal, PID reuse and permission loss do not show another identity's history or stale values as live |
+| Storage/duplicates | Known duplicates appear through the app, including beyond the largest 200 files; limits/inaccessible paths remain visibly partial. Progress/cancel/empty/failure are distinct; no automatic deletion |
+| Cleanup | Explicit preview/confirmation, Trash and permanent fallback rules; accurate result/history including partial failures |
+| Updates/kernel | Discovery matches recorded APT fixtures/state; chosen intent is preserved; installed allow/deny/cancel/recovery tests follow security procedure |
+| Optional integrations | Missing SMART/sensors/udisks2/Flatpak/fwupd/curl/iw yield an explained unavailable or permission state; missing is not zero or success |
+| Reports | Generate/preview/copy/save shares one revision; seeded free-text/private data is redacted, capped reports disclose omissions, saved files remain private |
+| Settings/DB | Theme and intervals persist in order under saturation; invalid XDG and unavailable/corrupt/locked/newer DB do not prevent monitoring or silently reset data; tested backup/restore works |
+| Accessibility | Complete the separate keyboard, scaling, contrast and assistive-technology procedure |
+| Exit/reopen | No crash, stray scan or uncontrolled package transaction; in-progress package behavior follows its reviewed ownership policy |
+| Remove/purge | Binaries/system integration disappear; settings preservation/removal matches documented behavior; do not assume dpkg can purge every user's home directory |
+| Downgrade | Test old-binary/schema compatibility or reviewed backup restore; otherwise record downgrade as unsupported |
 
-## Capability availability per environment
+Do not call an intentionally unavailable capability a product failure when that state is expected. Do fail unexplained loss of a claimed capability or fabricated values. If a required environment remains unverified, narrow the published support claim instead of marking it green.
 
-| Capability | Env 1 | Env 2 | Env 3 | Env 4 | Env 5 | Env 6 |
-|---|:---:|:---:|:---:|:---:|:---:|:---:|
-| CPU temperature | | | | | | |
-| Battery | | | | | | |
-| SMART via UDisks2 | | | | | | |
-| PackageKit (APT) | | | | | | |
-| Flatpak updates | | | | | | |
-| Firmware (fwupd) | | | | | | |
-| systemd journal | | | | | | |
-| systemd services | | | | | | |
+## Retain results
 
-Legend: ✓ = available, ✗ = unavailable (expected), P = permission required, N/A = not applicable
-
-## Package installation notes
-
-| Environment | Dependencies resolve | Post-install hooks | Schema compile | Icons appear | Desktop entry | Notes |
-|---|:---:|:---:|:---:|:---:|:---:|---|
-| Env 1 | [ ] | [ ] | [ ] | [ ] | [ ] | |
-| Env 2 | [ ] | [ ] | [ ] | [ ] | [ ] | |
-| Env 3 | [ ] | [ ] | [ ] | [ ] | [ ] | |
-| Env 4 | [ ] | [ ] | [ ] | [ ] | [ ] | |
-| Env 5 | [ ] | [ ] | [ ] | [ ] | [ ] | |
-| Env 6 | [ ] | [ ] | [ ] | [ ] | [ ] | |
-
-## Known limitations
-
-| Environment | Limitation | Workaround |
-|---|---|---|
-| Ubuntu 22.04 | GTK 4.6 — some newer widget APIs unavailable | Compile-time feature gates |
-| ___ | ___ | ___ |
-
-## Sign-off
-
-| Reviewer | Date | Environments tested | Result |
-|---|---|---|---|
-| ___ | ___ | ___ | ___ |
+Save a dated report under `docs/validation/` after the run, with environment IDs, package checksum, actions/commands, expected/actual behavior, sanitized evidence, issue links, operator and reviewer. Record D10/M0-M6 results with whole-app PSS, renderer, scaling, all-pages-visited and after-job idle states; a short Xvfb survival test is insufficient. This file remains a reusable procedure and must not accumulate undated checkmarks.
