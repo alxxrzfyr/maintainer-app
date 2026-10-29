@@ -7,7 +7,7 @@ license.workspace = true
 
 [dependencies]
 blake3 = { workspace = true }
-libc = "=0.2.172"
+libc = "=0.2.191"
 rusqlite = "=0.32.1"
 serde = { workspace = true }
 thiserror = { workspace = true }
