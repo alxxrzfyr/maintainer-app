@@ -4,7 +4,7 @@
 
 # Maintainer
 
-**Fast, lightweight, native system monitor and maintenance center for Linux.**
+**Fast, lightweight, native GTK4 GUI — the product goals for Maintainer.**
 
 [![CI](https://github.com/alxxrzfyr/maintainer-app/actions/workflows/ci.yml/badge.svg)](https://github.com/alxxrzfyr/maintainer-app/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/alxxrzfyr/maintainer-app)](https://github.com/alxxrzfyr/maintainer-app/releases)
@@ -14,9 +14,9 @@
 
 </div>
 
-Maintainer is a native GTK4 application for monitoring, maintaining, diagnosing, and understanding Ubuntu-based Linux systems. Built in Rust, Maintainer pairs low resource usage with strict privilege separation to provide deep system visibility and safe maintenance workflows.
+Maintainer is a native GTK4 application for monitoring, maintaining, diagnosing, and understanding Ubuntu-based Linux systems. Built in Rust, it brings local monitoring and reviewed maintenance workflows into one desktop interface. Resource budgets and remaining safety work are documented below.
 
-Maintainer contains no background daemons, collects no telemetry, and executes zero opaque optimizations.
+Maintainer starts no permanent background daemon, collects no telemetry, and performs maintenance through explicit user actions.
 
 ---
 
@@ -43,7 +43,7 @@ To remove the package:
 # Remove package binaries and preserve user configuration
 sudo apt remove maintainer
 
-# Remove package and purge all associated configuration
+# Remove package and system configuration; user-home data remains
 sudo apt purge maintainer
 ```
 
@@ -53,84 +53,78 @@ sudo apt purge maintainer
 
 | Capability | Description |
 |---|---|
-| **System Telemetry** | Real-time tracking of CPU, memory, storage, sensors, network I/O, and processes with historical sparklines. Adaptive 2s active and 10s idle refresh rates. |
-| **Storage Inspection** | Asynchronous scanning for large files and content-hash verified duplicate groups with zero unsolicited scans. |
-| **Safe Cleanup** | Mandatory operation preview, structured SQLite audit history, and FreeDesktop Trash integration before any permanent deletion. |
+| **Live Monitoring** | CPU, memory, storage, sensors, network I/O and processes with in-memory sparklines. Default 2s visible and 10s hidden sampling. |
+| **Storage Inspection** | On-demand large-file scans. Duplicate discovery has known app-to-scanner defects tracked in roadmap D12; current empty results are not reliable proof of no duplicates. |
+| **Cleanup** | Operation preview, local history and FreeDesktop Trash support. Filesystem identity, partial-result and reporting gaps are tracked in D7. |
 | **Update Management** | Unified inspection and execution of APT upgrades, with optional review for Flatpak packages and fwupd device firmware. |
 | **Diagnostics & Health** | Analysis of failed systemd units, aggregated journal logs, and SMART disk telemetry via UDisks2. |
-| **Privacy-First Reports** | One-click diagnostic reports with automatic redaction of usernames, hostnames, IP addresses, serial numbers, and process arguments. |
+| **Diagnostic Reports** | Redacted preview, clipboard and file export. Free-text redaction and private-storage gaps are tracked in D13; preview remains necessary before sharing. |
 
 ---
 
 ## Architecture & Security
 
-Maintainer separates presentation from privileged system management. The
-boundary is structural: the interface has no code path to root, so a defect in
-it cannot escalate.
+Maintainer separates desktop presentation, core services, and privileged
+operations. The intended boundary and its current limitations are:
 
-```text
-┌────────────────────────────────────────────────────────────────────┐
-│                           maintainer-app                           │
-├────────────────────────────────────────────────────────────────────┤
-│  GTK4 windows, widgets and presentation state.                     │
-│  Runs as the logged-in user. Holds no privilege, reads no          │
-│  system interface directly, executes no commands.                  │
-└────────────────────────────────────────────────────────────────────┘
-                                  │                                   
-                         typed service calls                          
-                                  ▼                                   
-┌────────────────────────────────────────────────────────────────────┐
-│                          maintainer-core                           │
-├────────────────────────────────────────────────────────────────────┤
-│  Collectors for /proc, /sys and D-Bus. Capability adapters,        │
-│  cancellable jobs, SQLite settings and operation history.          │
-│  Reports each capability as available, unavailable with a          │
-│  reason, or permission required.                                   │
-└────────────────────────────────────────────────────────────────────┘
-                                  │                                   
-                     D-Bus, authorized by Polkit                      
-                                  ▼                                   
-┌────────────────────────────────────────────────────────────────────┐
-│                         maintainer-helper                          │
-├────────────────────────────────────────────────────────────────────┤
-│  The only component that runs as root. D-Bus activated.            │
-│  Fixed operation types with allowlisted, validated                 │
-│  parameters. Arbitrary command execution is impossible by          │
-│  construction, not by policy.                                      │
-└────────────────────────────────────────────────────────────────────┘
-```
+| Component | Current behavior | Work still required |
+|---|---|---|
+| Desktop app | Intended to run as the normal user; performs user-owned cleanup and report saving | Enforce root refusal and remove remaining blocking system/database work from GTK callbacks |
+| Core | Typed collectors, adapters, jobs, settings/history and redaction | Enforce a shared job limit, bounded command output and safe reviewed filesystem operations |
+| D-Bus maintenance helper | Validates fixed operation parameters and checks each operation through Polkit | Close process-identity races, test installed sandbox behavior and correct kernel-removal restrictions |
+| Authenticated update CLI | pkexec launches the fixed helper, which validates arguments and replaces itself with APT | Bind execution to the reviewed plan and verify privileged operation ownership, cancellation and recovery |
 
-| Boundary | Guarantee |
-|---|---|
-| Unprivileged interface | The GUI process never runs as root, never stores administrator credentials, and cannot modify system files |
-| Audited helper | Privileged work is delegated to `maintainer-helper`, which accepts fixed operation types with validated parameters and is gated by PolicyKit authentication |
-| No shell interpretation | External programs are invoked with explicit argument arrays, never assembled into shell strings, so command injection has no surface |
-| Honest capabilities | A missing service or unsupported device yields an explicit unavailable state with a reason, never a fabricated value |
+The shipped policy avoids retained authorization for irreversible operations.
+Cache cleaning and SMART refresh are allowed for an active local session;
+other action/session combinations require administrator authorization by default.
+Host rules and the desktop authentication agent affect actual prompts.
 
-Threat analysis and the full helper API surface are documented in
-[`docs/threat-model.md`](docs/threat-model.md).
+Helper operations use fixed executables and explicit argument arrays. This
+reduces command-injection risk; it does not establish atomic transactions,
+race-free file operations or a completed security audit. The update CLI runs
+outside the maintenance helper's systemd sandbox.
+
+See the [threat model](docs/threat-model.md) for implemented controls, open risks
+and evidence requirements. The [documentation index](docs/README.md) links the
+development roadmap and supporting research. Planned protections are not
+shipped guarantees.
+
 ---
 
 ## Platform Requirements
 
 - **Target Operating System:** Ubuntu 22.04 LTS (Jammy Jellyfish) or newer, and compatible Ubuntu-based distributions (Linux Mint, Pop!_OS).
 - **Display Server:** Native Wayland and X11 support via GTK4.
-- **System Libraries:** GTK4 (>= 4.6), GLib (>= 2.72), SQLite3, PolicyKit, PackageKit, UDisks2, systemd.
-- **Optional Integrations:** `flatpak` (Flatpak application updates), `fwupd` (firmware updates).
+- **Runtime Libraries and Services:** GTK4 (>= 4.6), GLib (>= 2.72), SQLite3, D-Bus, PolicyKit, systemd; APT/dpkg for Ubuntu package operations.
+- **Recommended Services:** PackageKit and UDisks2. Missing integrations must produce an explained unavailable state.
+- **Optional Tools:** `flatpak` and `fwupd` for update inspection, `curl` for the confirmed speed test, and `iw` for detailed Wi-Fi information.
 
 ---
 
 ## Performance Budgets
 
-Engineered for resource-constrained hardware and responsive desktop performance:
+These are development goals and existing guardrails, not benchmark results.
+The next milestone is below 100 MB of combined idle PSS for all Maintainer-owned
+processes, preserving the native GUI, startup, CPU, safety and accessibility
+requirements. Current compliance is unverified. Passing the legacy 220 MB
+ceiling alone does not complete the new milestone.
 
 | Metric | Target | Hard Ceiling | Notes |
 |---|---|---|---|
-| **Idle Memory (PSS)** | <= 150 MB | 220 MB | Baseline dominated by GTK4 runtime |
-| **Private Dirty Memory** | <= 130 MB | 150 MB | Under 4% of total RAM on a 4 GB system |
-| **Idle CPU Utilization** | <= 0.5% | 1.0% | Measured on hardware-accelerated sessions |
-| **Cold Start Time** | <= 2.0s | 2.5s | Measured from process exec to initial window map |
-| **UI Responsiveness** | 60 FPS | Non-blocking | Heavy scans execute in background workers |
+| **Idle Memory (PSS)** | < 100 MB combined | 220 MB legacy ceiling | New milestone requires <100,000,000 bytes; replaces the former 150 MB goal |
+| **Private Dirty Memory** | <= 130 MB | 130 MB | Separate from RSS and PSS |
+| **Idle CPU Utilization** | <= 0.5% | 1.0% | Hardware rendering; software-rendered ceiling is 2.0% |
+| **Cold Start Time** | <= 2.0s | 2.0s | Measure to a usable shell; record map and first live data separately |
+| **UI Responsiveness** | Smooth interaction, 60 FPS aspiration | Non-blocking | No continuous idle repaint requirement; measure main-loop delay |
+
+Maintainer's PSS increment over a matched minimal GTK baseline has a 40 MB
+target; that comparison is a diagnostic delta, not exact memory attribution.
+Software-rendered memory remains separately reported under the existing policy;
+it cannot certify a universal under-100-MB claim. The new goal uses decimal MB;
+retain raw bytes/MiB and resolve older budget-unit ambiguity in D0.
+See the [roadmap](docs/plans/development-roadmap.md) and
+[memory investigation](docs/research/2026-10-30-memory-under-100mb.md) for the
+feasibility tests, whole-app accounting and lower exploratory checkpoints.
 
 ---
 
