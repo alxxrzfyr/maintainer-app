@@ -1,6 +1,6 @@
 # Evidence supporting the development roadmap
 
-Research date: 2026-10-30. Repository: `07f7b9a096c3a84b57b329fca5e4d4d2d93289c1`.
+Research date: 2026-10-30. Source baseline: `07f7b9a096c3a84b57b329fca5e4d4d2d93289c1`; reconciled with `main` at `79b42ac27c9ba7f1e591304305aee1966288a0b2`.
 Companions: [implementation roadmap](../plans/development-roadmap.md), [under-100-MB research](2026-10-30-memory-under-100mb.md) and [safety decisions](../plans/safety-design-decisions.md). Navigation: [documentation index](../README.md).
 
 ## Method and limits
@@ -9,7 +9,9 @@ Inspected source paths, tests, CI, packaging, threat model, release notes, and h
 
 This machine is Windows; Rust/cargo are absent from PATH and WSL reports no installed Linux environment. No new builds, tests, privileged operations, hardware benchmarks, independent penetration test, or dependency advisory audit were performed. Source inspection establishes control flow/configuration, not measured frequency or exploitability. No competitor was benchmarked. Online documentation is current at access time; newer API flags must not be assumed to exist on Ubuntu 22.04.
 
-The deeper review rechecked source-to-UI paths, not only individual modules. The working tree also already contained libc `0.2.172 -> 0.2.191`, Tokio `1.45.1 -> 1.54.1` and corresponding lockfile changes. Those were not made by this documentation review and were left intact. Observed Cargo.lock SHA-256: `3a56d29c8936b65830ecd38ec5f29f78c170c2b17d9d8ef179c4a67bf520a238`. Compatibility with Rust 1.85 and advisory status remain unverified; a new version number is not evidence of improvement. Source findings below reference the unchanged Rust source at the baseline, not a tested build of that dependency overlay.
+At `79b42ac`, Rust source still matches the source baseline; main now includes the dependency updates from `c0edad2`. Current pins are libc `0.2.191` and Tokio `1.54.1`. Current Cargo.lock SHA-256: `3a56d29c8936b65830ecd38ec5f29f78c170c2b17d9d8ef179c4a67bf520a238`. These are committed dependencies, not a dirty overlay. No fresh runtime/compiler validation or advisory audit was performed here; the findings describe source, not a tested build.
+
+The focused plan recheck retraced E1/E2/E5/E17 and checked the primary documentation for Linux memory accounting, GTK threading, APT simulation, systemd sandboxing, file/process handles, PackageKit and SQLite backup. Contrary evidence remains decisive: PSS is not all system/GPU memory; simulation does not lock an APT transaction; no-replace rename protects the destination, not a previously reviewed source identity; PackageKit lifecycle support does not prove exact-plan binding. These limits remain explicit design/test requirements, not assumed fixes.
 
 ## Local findings, including corrections to the retrospective
 
@@ -18,12 +20,12 @@ F = directly observed in source/configuration; I = inference requiring runtime v
 | ID / class | Evidence and consequence | Roadmap |
 |---|---|---|
 | E1 / F | App `src/main.rs` and `application.rs` initialize normally without a root identity guard. This proves missing app enforcement, not that every desktop permits a root GUI session. | D2 |
-| E2 / F+I | Helper `server.rs::do_remove_kernel` calls `operations/kernel.rs` inside the maintenance service. `ProtectSystem=strict` permits writes only to cache/journal. Kernel purge is expected to fail on required dpkg/boot writes; reproduce with the installed unit. | D5 |
+| E2 / F+I | Helper `server.rs::do_remove_kernel` calls `operations/kernel.rs` inside the maintenance service. The unit sets `ProtectSystem=strict` and explicitly allowlists `/var/cache/apt` and `/var/log/journal`; required dpkg/boot paths are not allowlisted. Kernel purge is expected to fail on those writes; reproduce with the installed unit. | D5 |
 | E3 / F+I | Core `command.rs::SystemCommandRunner::run` polls exit before draining pipes. Pipe saturation can stall a verbose child until timeout. `run_streaming` improves draining but retains unbounded stderr/line allocations, and waits without deadline checks after stdout EOF. | D1 |
 | E4 / F | Core `jobs.rs::execute` creates tokens and dispatcher threads per call. The tested four-worker limit is per batch, not across callers. | D3 |
 | E5 / F | App `monitoring.rs::apply_network` calls core `read_connection_details()`, which executes `ip`/`iw` via blocking `.output()`. The shell invokes the reducer on GTK. `DeviceInfo::default()` also collects system data synchronously. A worker for other metrics does not remove these main-thread paths. | D4 |
 | E6 / F | Process rows are recreated (maximum 100 displayed) in `ui/processes.rs::update`; disks/temperature widgets also rebuild. Contrary evidence: `ui/system.rs::update_cpu_detail` already reuses core bars when topology matches. Optimize remaining churn rather than replacing all UI code. | D9 |
-| E7 / F | Script measures RSS, declares startup when RSS exceeds 1 MB, and does not read PSS/private-dirty. Performance CI is nonblocking and packaging depends only on `check`, not smoke/performance. | D10-D11 |
+| E7 / F | Script measures RSS, declares startup when RSS exceeds 1 MiB, and does not read PSS/private-dirty. Performance CI is nonblocking and packaging depends only on `check`, not smoke/performance. | D10-D11 |
 | E8 / F+I | Helper `operations/process.rs` and exported core `metrics/terminate.rs` both check start time then call numeric `kill`. The actual GUI invokes the helper; no app callsite uses the core function. Core `read_stat().ok()` also collapses read failures into absence. Cleanup and Trash have separate path/name race windows. Fix retained implementations without claiming two wired GUI routes. | D7-D8 |
 | E9 / F | App `dispatch.rs` revalidates using full-upgrade discovery even for selected plans; execution chooses full/selected by candidate count. Core `UpdatePlan` already models removals and hashes them: the gap is intent/execution correspondence, not absence of removal modeling. | D6 |
 | E10 / F+I | Updates use pkexec->helper->exec APT. Streaming cancellation ignores kill errors then waits. Preserving PID through exec does not grant the normal user permission to signal root. UI already restricts transaction controls; cancellation guarantees need testing by phase, not an assumption that Cancel is always exposed. | D6 |
@@ -67,6 +69,7 @@ Each link supports the adjacent narrow claim. Design recommendations remain prop
 | [Rust process documentation](https://doc.rust-lang.org/std/process/) | Pipe buffers can cause deadlock if output is not consumed. D1 must drain while running; simply increasing timeouts does not repair it. |
 | [Ubuntu 22.04 systemd.exec](https://manpages.ubuntu.com/manpages/jammy/man5/systemd.exec.5.html) | Strict filesystem protection makes the hierarchy read-only except documented exceptions/allowlisted paths. Supports E2; a package operation needs a separately reviewed boundary. |
 | [Linux proc documentation](https://docs.kernel.org/filesystems/proc.html) | PSS apportions shared pages; smaps_rollup aggregates mapping statistics. RSS/PSS/private-dirty are different metrics. Supports separate reporting, not a universal GTK memory floor. |
+| [GTK threading](https://docs.gtk.org/gtk4/section-threading.html) | Widgets generally belong on the main thread; asynchronous I/O or workers keep blocking work away from it. Some immutable objects are thread-safe; this does not make widget mutation from workers safe. |
 | [GTK list architecture](https://docs.gtk.org/gtk4/section-list-widget.html) | Views recycle a limited number of list items. This is an available optimization route; benchmark it against keyed row reuse rather than assuming it automatically fixes all update costs. |
 | [Ubuntu 22.04 APT manual](https://manpages.ubuntu.com/manpages/jammy/man8/apt-get.8.html) | dist-upgrade can remove packages; simulation disables locking and nonroot configuration access may differ. Review hashes alone do not guarantee an atomic reviewed transaction. APT's no-remove option can reject removals, but cannot implement every exact-plan guarantee. |
 | [pkexec manual](https://www.freedesktop.org/software/polkit/docs/latest/pkexec.1.html), [kill syscall](https://man7.org/linux/man-pages/man2/kill.2.html) | pkexec normally elevates to root; signal delivery is permission-checked. Neither PID continuity nor parenthood proves the GUI can cancel elevated work. |
@@ -107,7 +110,7 @@ After hardening, test the integration hypothesis with three matched tasks: expla
 | Race-resistant cleanup implementation | D7 threat review and deterministic substitution fixtures; refuse unsupported cases |
 | Duplicate discovery beyond module tests / large-tree limits | D12 app-path fixture, below-top-200 pair, declared coverage and measured retained memory |
 | Default privacy across free text and persistence | D13 seeded whole-report/error cases and private-directory/DB recovery tests |
-| Dirty dependency overlay and toolchain support | D0/D11 locked metadata/builds on Rust 1.85, manifest/lock hashes and dated advisory review |
+| Locked dependencies and toolchain support | D0/D11 locked metadata/builds on Rust 1.85, manifest/lock hashes and dated advisory review |
 | MB versus MiB | D0 written decision. README ceilings have now been aligned to AGENTS; numeric unit normalization remains unresolved |
 | Supported distro versions, absent tools, hardware/driver failures | D11 matrix with exact versions, capability states, and operator sign-off |
 | Whether users value the integrated workflow enough to switch | Later task-based comparison with consenting users; evaluate completion/error rates before expanding feature scope |

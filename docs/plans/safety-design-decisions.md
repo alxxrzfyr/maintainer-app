@@ -2,7 +2,7 @@
 
 Status: proposed, 2026-10-30. Companion to the [roadmap](development-roadmap.md); this is the decision record for D5-D8, not a second work queue. No helper API, Polkit, sandbox or product-scope change is approved by this document.
 
-Each decision closes with a named owner/reviewer, selected design, supported environments, failing adversarial case, passing proof, residual risks and approval reference where required. A source citation is evidence about an API; it is not proof that our integration is correct.
+Each decision records a named owner/reviewer, candidate design, prototype scope, supported environments and required approval before boundary changes. Close it only after adversarial tests pass, with residual risks and approval references recorded, before production acceptance. A source citation is evidence about an API; it is not proof that our integration is correct.
 
 ## A1. Package ownership and reviewed execution — D5/D6
 
@@ -15,7 +15,7 @@ Two separate problems must close: **who owns work after the GUI disconnects**, a
 | Dedicated short-lived package owner | Explicit lifetime, bounded status, reconnect/recovery policy; leaves other maintenance operations sandboxed | Must use a reviewed mechanism that binds resolution to execution. Wrapping apt-get and re-running simulation still leaves the gap. Additional IPC, state and privileged code increase review cost. |
 | Discovery-only capability | Keeps inspection useful while preventing unproved mutations | Recommended fallback if neither executable design passes. Disabling an advertised capability requires explicit scope approval and release-note/UI changes; no silent fallback to unsafe execution. |
 
-The [APT manual](https://manpages.debian.org/bookworm/apt/apt-get.8.en.html) documents unlocked simulation and dependency-changing upgrades. This is corroboration from Debian APT, not a substitute for the Ubuntu-floor test. [PackageKit's transaction interface](https://www.freedesktop.org/software/PackageKit/doc/dbus-org.freedesktop.packagekit1.Transaction.html) exposes `AllowCancel` and caller/transaction state. Neither source establishes an immutable preview-to-execution guarantee for Maintainer. Current PackageKit documentation describes version 1.99.0; do not copy new signatures into a floor implementation.
+The [Ubuntu 22.04 APT manual](https://manpages.ubuntu.com/manpages/jammy/man8/apt-get.8.html) documents unlocked simulation and dependency-changing upgrades. [PackageKit's transaction interface](https://www.freedesktop.org/software/PackageKit/doc/dbus-org.freedesktop.packagekit1.Transaction.html) exposes `AllowCancel` and caller/transaction state. Neither proves immutable preview-to-execution binding for Maintainer. Current PackageKit docs describe version 1.99.0; verify installed floor-version behavior before adopting its APIs.
 
 The selected design must specify:
 
@@ -25,7 +25,7 @@ The selected design must specify:
 4. **Lifecycle:** backend-confirmed stages determine cancellation. Before mutation, a successful stop can be cancelled. After mutation begins, timeout/disconnect means work may continue or require recovery; it cannot become success/cancelled on the GUI's guess. Bound wait-for-lock and authorization states without killing an active dpkg transaction.
 5. **Recovery:** retain a minimal private receipt: operation identity, origin, reviewed-plan identifier, phase, completion/postconditions. Specify storage location, schema, size/retention, expiry and restart reconciliation; no credentials/raw utility output. Handle GUI close, logout, helper restart, shutdown and interrupted configuration. [systemd 249 inhibitors](https://www.freedesktop.org/software/systemd/man/249/systemd-inhibit.html) can coordinate sleep/shutdown but privileged overrides and power loss remain possible.
 
-**Proof before selection:** disposable VM/local package fixtures; selected and full plans; dependency/removal change between preview and execution; multiarch/holds; invalid repository signature; lock contention; denied/dismissed authorization; duplicate request; disconnect/reconnect; interrupted configuration/reboot. Compare actual changed packages and configured states with the approved plan. No unreviewed mutation is acceptable. Record backend version and the failed alternatives as well as the passing design.
+**Proof before production acceptance:** disposable VM/local package fixtures; selected and full plans; dependency/removal change between preview and execution; multiarch/holds; invalid repository signature; lock contention; denied/dismissed authorization; duplicate request; disconnect/reconnect; interrupted configuration/reboot. Compare actual changed packages and configured states with the approved plan. No unreviewed mutation is acceptable. Record backend version and the failed alternatives as well as the passing design.
 
 ## A2. File identity and concurrent writers — D7/D12
 
