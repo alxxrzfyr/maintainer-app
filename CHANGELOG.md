@@ -7,8 +7,72 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Changed
+
+- Target 0.35% average idle CPU, with the user-approved fallback strictly below
+  0.5%. Enforce full precision; exactly 0.5% is a failure.
+- Skip redundant network labels and storage style changes. Preallocate growing
+  proc-text buffers while preserving complete input and contextual errors.
+
+- Bound shared background work, retained results and child output; report
+  saturation, cancellation and unavailable integrations explicitly.
+- Load secondary pages on demand, reuse process/disk/sensor widgets, coalesce
+  metrics, and save settings off the GTK thread with close-time draining.
+- Discover duplicates using real file identity with bounded traversal and clear
+  partial-coverage warnings. Store settings/history privately and support bounded
+  backup-to-new-file recovery without overwriting existing databases.
+- Bind process confirmation and Polkit authorization to a retained pidfd. Send
+  SIGTERM through that handle; report delivery acceptance separately from exit.
+- Export previews through anonymous private files and no-replace publication.
+  Existing files and symlinks are preserved; choose a new filename to save again.
+- Retain the native APT resolver cache and locks through authoritative review and
+  commit. A separate short-lived owner provides scoped authorization, durable
+  receipts, Resume, safe cancellation boundaries and read-only recovery audit.
+  Protect held/essential/running-kernel/tracking packages and prevent self-update
+  deadlocks. Same-name package selections remain distinct by architecture.
+  Hold a verified shutdown/sleep inhibitor through package mutation and
+  postcondition checks; refuse mutation if it cannot be acquired.
+- Clean reviewed regular files through protected quarantine, with one approval
+  bound to each batch. Raced replacements are restored or retained, never deleted.
+  Trash and recovery never overwrite; explicit Restore elsewhere handles missing
+  original folders. Postcommit durability failures do not offer unsafe retries.
+  Folders, unsupported filesystems and cross-filesystem operations stay explicit;
+  physical reclaimed bytes are conservatively not claimed. Trash follows custom
+  XDG data-home settings, and directory review responds to cancellation.
+- Make the same-machine release gate authoritative: three complete native/Python
+  test passes, native builds and exact package/source/lock/runtime hashes. No
+  second system or hosted CI is required. CI remains optional; untested platforms
+  and installed upgrades remain unverified. No release has been published.
+
+### Build and verification
+
+- Build release artifacts through a locked Cargo wrapper that remaps local source,
+  Cargo and home paths while preserving existing compiler flags.
+- Run CI on release branches, use the system Python APT binding, and pin Actions
+  by commit. Add redacted history scans, current dependency advisories and workflow
+  validation with checksum-pinned audit tools.
+- Remove duplicate Debian install/compatibility declarations, correct toolchain
+  prerequisites and repository links, and verify installed root-launch refusal.
+
+### Privacy
+
+- Default diagnostic reports omit unrestricted service descriptions, journal
+  text, and capability failure details that may contain private system data.
+  Failed previews show a generic message and cannot be copied or saved.
+- Default SQLite storage resolves empty XDG values through HOME, rejects
+  relative paths and symlinked components, and verifies the owned private
+  directory and database inode before migrations. Newer schemas are preserved
+  and rejected rather than silently treated as current.
+
 ### Documentation
 
+- Consolidate 15 superseded validation notes and profiler outputs into one dated
+  summary. Preserve failed measurements and the historical archive; repair links
+  in reusable system validation procedures.
+
+- Archive superseded PRDs, implementation plans, designs and research with Git
+  provenance. Repository instructions treat them as historical records; current
+  release status retains unfinished work and validation limits.
 - Correct the threat model and security, compatibility, and accessibility
   procedures to distinguish current controls, open gaps, and unverified results.
 - Consolidate development plans and research; align README performance ceilings
@@ -19,7 +83,7 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - Retain fast, lightweight, native GTK4 GUI as explicit product values; set the
   next memory milestone below 100 MB combined idle PSS, with profiling experiments
   and lower exploratory targets. Attainment remains unverified.
-  These documentation changes do not implement the planned runtime fixes.
+  Runtime privacy and persistence hardening has started; D13 remains incomplete.
 
 ## [1.2.0] - 2026-08-23
 

@@ -1,6 +1,6 @@
 # Security validation procedure
 
-Status: reusable procedure; no tests are marked passed. Revised 2026-10-30 for the [current threat model](../../docs/threat-model.md) and [roadmap](../../docs/plans/development-roadmap.md).
+Status: reusable procedure; no tests are marked passed. Revised 2026-10-30 for the [current threat model](../../docs/threat-model.md) and [release status](../../docs/release-status.md).
 
 Run privileged/destructive cases only in a disposable VM with a recoverable snapshot, a nonroot desktop account and a real system bus/Polkit agent. Install the exact candidate .deb. Use owned test files/processes. Ordinary unit tests must use injected adapters and must not contact the developer host's live helper.
 
@@ -17,7 +17,7 @@ Create a dated result under `docs/validation/` only after testing. Record packag
 | Sender identity | No request payload can impersonate another bus caller. Disconnected/unresolvable callers are refused before mutation. A different valid UID is judged by policy, not assumed automatically unauthorized. |
 | Each protected action | Separately exercise terminate, vacuum, kernel removal and install-updates: allow, deny, dismissed prompt, missing agent/authority and repeated invocation. Record host policy overrides. |
 | Active-session exceptions | Cache clean/SMART use their shipped active-session policy; no password prompt may be expected there. Test inactive/other-session behavior separately. |
-| Installed upgrade | Matching unit/bus/Polkit files load after package upgrade; exact helper path/action mapping is checked. Exercise both D-Bus maintenance and pkexec update entrypoints. |
+| Installed upgrade | Matching unit/bus/Polkit files load after package upgrade; exact helper path/action mapping is checked. Exercise both D-Bus maintenance and PackageOwner transaction entrypoints. |
 
 ## Parameters, lifetime and data integrity
 

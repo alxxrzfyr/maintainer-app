@@ -112,7 +112,7 @@ After scaffolding, Cargo is the only Rust package manager. Never install a depen
 
 - Idle memory target is 150 MB PSS or less; 220 MB PSS is the hard ceiling. Absolute figures are dominated by GTK4 itself (a window with one label already costs ~167 MB RSS / ~135 MB PSS), so Maintainer's own share above that baseline is budgeted separately at 40 MB PSS or less, and that is the figure application changes can move.
 - Private/dirty idle memory stays at or below 130 MB so a 4 GB system stays near 4% of total RAM without swapping.
-- Average idle CPU stays at or below 0.5% as a target, with a 1.0% hard ceiling on hardware-accelerated sessions and 2.0% under a software rasterizer, where sparkline repaints cannot be offloaded to a GPU. Memory ceilings are not enforced under software rendering because no GTK4 program can meet them there.
+- Average idle CPU targets 0.35%. The user-approved fallback acceptance requires strictly below 0.5% on hardware-accelerated sessions; exactly 0.5% fails. The older 1.0% hardware and 2.0% software guardrails remain diagnostic ceilings and do not satisfy acceptance. Under a software rasterizer, sparkline repaints cannot be offloaded to a GPU. Memory ceilings are not enforced under software rendering because no GTK4 program can meet them there.
 - Cold start must remain at or below 2 seconds.
 - Default monitoring refresh is 2 seconds and slows when the window is hidden.
 - No permanent daemon and no unsolicited filesystem scans.
@@ -142,6 +142,18 @@ Code is the source of truth for UI structure and styling; the CSS in
 `data/styles/` defines the semantic tokens. If a change alters a product,
 security, performance, or platform contract, update `README.md` and
 `CHANGELOG.md` in the same change.
+
+### Historical documents
+
+`docs/archive/` contains historical plans, PRDs, specifications, research, and
+release drafts. It is not current policy, instructions, requirements, a task
+queue, or a source of truth. Treat its contents as read-only unless the user
+explicitly requests a historical update. Archived status labels and checklists
+are preserved records, not claims about the current implementation.
+
+Archiving does not complete or waive unfinished work. Use
+`docs/release-status.md` for remaining work and validation evidence, current code
+for behavior, and this file for repository instructions.
 
 ## Definition of done
 

@@ -24,7 +24,7 @@ Maintainer starts no permanent background daemon, collects no telemetry, and per
 
 ### Debian Package (.deb)
 
-Maintainer provides official `.deb` packages for `amd64` and `arm64` architectures on the [Releases](https://github.com/alxxrzfyr/maintainer-app/releases) page.
+Published `.deb` packages for `amd64` and `arm64` are available on the [Releases](https://github.com/alxxrzfyr/maintainer-app/releases) page. Version 1.3.0 is an unpublished development candidate; see [release status](docs/release-status.md) before treating it as release-ready.
 
 ```bash
 # Install the package and all required dependencies
@@ -53,12 +53,12 @@ sudo apt purge maintainer
 
 | Capability | Description |
 |---|---|
-| **Live Monitoring** | CPU, memory, storage, sensors, network I/O and processes with in-memory sparklines. Default 2s visible and 10s hidden sampling. |
-| **Storage Inspection** | On-demand large-file scans. Duplicate discovery has known app-to-scanner defects tracked in roadmap D12; current empty results are not reliable proof of no duplicates. |
-| **Cleanup** | Operation preview, local history and FreeDesktop Trash support. Filesystem identity, partial-result and reporting gaps are tracked in D7. |
-| **Update Management** | Unified inspection and execution of APT upgrades, with optional review for Flatpak packages and fwupd device firmware. |
+| **Live Monitoring** | CPU, memory, storage, sensors, network I/O and processes with in-memory sparklines. Default 2s visible and 10s hidden sampling; sensor descriptors are retained while values stay fresh. Unchanged labels and storage styles are skipped. |
+| **Storage Inspection** | On-demand large-file scans. Bounded duplicate discovery uses real file identities independently of the large-file shortlist; incomplete coverage is labelled. |
+| **Cleanup** | Bounded regular-file review, one administrator approval per batch, protected quarantine, Trash and explicit permanent deletion. Recovery preserves raced or colliding entries; folders stay intact. Review supports cancellation, and Trash follows XDG data-home settings. |
+| **Update Management** | APT inspection and native locked-plan installation/removal with explicit final review, cancellation boundaries, durable receipts and Resume. Approved package mutation blocks shutdown/sleep through postcondition verification; administrator overrides and power loss remain possible. Held, essential, running-kernel and kernel-tracking packages are protected. Flatpak/firmware inspection remains optional. |
 | **Diagnostics & Health** | Analysis of failed systemd units, aggregated journal logs, and SMART disk telemetry via UDisks2. |
-| **Diagnostic Reports** | Redacted preview, clipboard and file export. Free-text redaction and private-storage gaps are tracked in D13; preview remains necessary before sharing. |
+| **Diagnostic Reports** | Redacted preview, clipboard and file export. Default exports omit unrestricted diagnostic descriptions, journal text and capability failure details; exports create a new private file without overwriting an existing name; unsupported filesystems report failure. Preview remains necessary before sharing. |
 
 ---
 
@@ -69,10 +69,10 @@ operations. The intended boundary and its current limitations are:
 
 | Component | Current behavior | Work still required |
 |---|---|---|
-| Desktop app | Intended to run as the normal user; performs user-owned cleanup and report saving | Enforce root refusal and remove remaining blocking system/database work from GTK callbacks |
-| Core | Typed collectors, adapters, jobs, settings/history and redaction | Enforce a shared job limit, bounded command output and safe reviewed filesystem operations |
-| D-Bus maintenance helper | Validates fixed operation parameters and checks each operation through Polkit | Close process-identity races, test installed sandbox behavior and correct kernel-removal restrictions |
-| Authenticated update CLI | pkexec launches the fixed helper, which validates arguments and replaces itself with APT | Bind execution to the reviewed plan and verify privileged operation ownership, cancellation and recovery |
+| Desktop app | Refuses root launch, keeps blocking work off GTK, and reviews exact authoritative package changes before Apply | Local checks establish this machine's behavior; other platforms remain unverified |
+| Core | Bounded jobs/commands/scans, descriptor-pinned file reviews, private SQLite backup/recovery and redaction | Cleanup reviews cap at 256 files and 4096 visited paths; partial coverage stays explicit |
+| Maintenance helper | SIGTERM through retained pidfd; fixed cache/journal/SMART operations; reviewed file batches and recovery | File mutation supports caller-owned single-link regular files on the quarantine filesystem, ext4/xfs/btrfs/tmpfs; no content snapshot or physical-space guarantee |
+| Package owner | Separate short-lived service, retained native APT cache/locks, authenticated scoped control and private durable receipts | No automatic replay/rollback; interrupted work is audited read-only after external repair. Maintainer self-updates use the normal system package manager |
 
 The shipped policy avoids retained authorization for irreversible operations.
 Cache cleaning and SMART refresh are allowed for an active local session;
@@ -81,12 +81,11 @@ Host rules and the desktop authentication agent affect actual prompts.
 
 Helper operations use fixed executables and explicit argument arrays. This
 reduces command-injection risk; it does not establish atomic transactions,
-race-free file operations or a completed security audit. The update CLI runs
-outside the maintenance helper's systemd sandbox.
+race-free file operations or a completed security audit. Legacy unbound CLI execution remains refused; package operations use the dedicated owner.
 
 See the [threat model](docs/threat-model.md) for implemented controls, open risks
 and evidence requirements. The [documentation index](docs/README.md) links the
-development roadmap and supporting research. Planned protections are not
+current validation and historical research. Planned protections are not
 shipped guarantees.
 
 ---
@@ -111,9 +110,9 @@ ceiling alone does not complete the new milestone.
 
 | Metric | Target | Hard Ceiling | Notes |
 |---|---|---|---|
-| **Idle Memory (PSS)** | < 100 MB combined | 220 MB legacy ceiling | New milestone requires <100,000,000 bytes; replaces the former 150 MB goal |
+| **Idle Memory (PSS)** | < 100 MB combined | < 100 MB release milestone | Strictly below 100,000,000 bytes; passing the older 220 MB ceiling is insufficient |
 | **Private Dirty Memory** | <= 130 MB | 130 MB | Separate from RSS and PSS |
-| **Idle CPU Utilization** | <= 0.5% | 1.0% | Hardware rendering; software-rendered ceiling is 2.0% |
+| **Idle CPU Utilization** | <= 0.35% preferred | Strictly < 0.5% accepted fallback | User-approved fallback; exactly 0.5% fails. Older 1% hardware / 2% software diagnostic ceilings do not satisfy acceptance |
 | **Cold Start Time** | <= 2.0s | 2.0s | Measure to a usable shell; record map and first live data separately |
 | **UI Responsiveness** | Smooth interaction, 60 FPS aspiration | Non-blocking | No continuous idle repaint requirement; measure main-loop delay |
 
@@ -122,9 +121,10 @@ target; that comparison is a diagnostic delta, not exact memory attribution.
 Software-rendered memory remains separately reported under the existing policy;
 it cannot certify a universal under-100-MB claim. The new goal uses decimal MB;
 retain raw bytes/MiB and resolve older budget-unit ambiguity in D0.
-See the [roadmap](docs/plans/development-roadmap.md) and
-[memory investigation](docs/research/2026-10-30-memory-under-100mb.md) for the
-feasibility tests, whole-app accounting and lower exploratory checkpoints.
+See [current release status](docs/release-status.md) for remaining validation.
+The [archived roadmap](docs/archive/plans/development-roadmap.md) and
+[archived memory investigation](docs/archive/research/2026-10-30-memory-under-100mb.md)
+preserve the original experiment design and proposed checkpoints.
 
 ---
 
@@ -136,7 +136,7 @@ Install the required build dependencies and development headers:
 
 ```bash
 sudo apt update
-sudo apt install -y libgtk-4-dev libsqlite3-dev libpolkit-gobject-1-dev pkg-config
+sudo apt install -y libgtk-4-dev libsqlite3-dev libpolkit-gobject-1-dev pkg-config python3-apt xvfb dbus-x11 fakeroot dpkg-dev
 ```
 
 Maintainer requires Rust 1.85.0 or newer. When using `rustup`, the pinned toolchain from `rust-toolchain.toml` is used automatically.
@@ -144,8 +144,8 @@ Maintainer requires Rust 1.85.0 or newer. When using `rustup`, the pinned toolch
 ### Compilation
 
 ```bash
-# Build optimized release binaries for the workspace
-cargo build --workspace --release
+# Build locked release binaries with local build paths remapped
+python3 scripts/build-release.py
 
 # Run the GUI application in development mode
 cargo run -p maintainer-app
@@ -159,8 +159,9 @@ cargo run -p maintainer-helper
 All commits must satisfy formatting, linting, and test suites:
 
 ```bash
-# Run unit and integration tests
-cargo test --workspace --all-features
+# Run every unit, host and native GTK test, including display fixtures
+# Requires dbus-run-session and Xvfb; native GTK tests run in separate processes.
+scripts/test-native.sh
 
 # Verify formatting
 cargo fmt --all -- --check
@@ -168,9 +169,26 @@ cargo fmt --all -- --check
 # Static analysis and lints
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 
-# Validate against performance budgets
-scripts/measure-performance.sh target/release/maintainer-app
+# Collect hardware diagnostics in a real unprivileged desktop session
+PERF_SKIP_XVFB=1 scripts/measure-performance.sh target/release/maintainer-app --matrix
+# This diagnostic alone does not certify the full release protocol.
 ```
+
+The authoritative release check runs on this machine and needs no hosted runner,
+second computer, or third-party verification service:
+
+```bash
+python3 scripts/check-release-local.py build /tmp/maintainer-candidate-new
+python3 scripts/check-release-local.py verify /tmp/maintainer-candidate-new
+```
+
+Use a new output directory outside the source tree. The gate runs all native and
+Python tests three times, checks formatting/lint/builds/metadata, and inspects the
+exact package and helper integration. Its manifest binds source, lockfile,
+package and runtime payload hashes. It does not install packages on the host.
+CI is optional additional automation and is not a release prerequisite. No
+untested architecture, installed-upgrade behavior or hardware certification is
+claimed. This is the unpublished 1.3.0 development candidate.
 
 ---
 
@@ -178,7 +196,7 @@ scripts/measure-performance.sh target/release/maintainer-app
 
 ### PolicyKit Authentication and D-Bus Activation
 
-Privileged actions (such as package updates and process termination) require an active PolicyKit authentication agent in your desktop session.
+Package changes, process termination and file cleanup use the desktop PolicyKit agent. A missing installed owner/helper produces an unavailable state; no unbound fallback is executed. A reviewed cleanup batch authenticates once, and its grant is tied to the same live connection and exact file manifest.
 
 If privileged actions fail with authorization errors:
 1. Verify that a Polkit agent is running in your session (standard in GNOME, KDE, and XFCE; standalone window managers may require launching `lxqt-policykit` or `polkit-gnome-authentication-agent-1`).

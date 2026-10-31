@@ -1,6 +1,6 @@
 # Accessibility validation procedure
 
-Status: reusable procedure; accessibility has not been certified by this review. Revised 2026-10-30. Follow the [roadmap](../../docs/plans/development-roadmap.md) and [compatibility procedure](compatibility.md).
+Status: reusable procedure; accessibility has not been certified by this review. Revised 2026-10-30. Follow the [release status](../../docs/release-status.md) and [compatibility procedure](compatibility.md).
 
 Record app/package version and checksum, distribution, desktop, GTK version, display backend, monitor resolution, 100%/200% display scale, enlarged text setting, both themes and assistive-technology/version. Record keyboard-only and screen-reader observations separately. A code-level accessible-name assertion does not prove the spoken result.
 

@@ -1,6 +1,6 @@
 # Compatibility validation procedure
 
-Status: reusable procedure, not a completed support matrix. Revised 2026-10-30. Use the [roadmap](../../docs/plans/development-roadmap.md) for release gates and [security procedure](security.md) for privileged cases.
+Status: reusable procedure, not a completed support matrix. Revised 2026-10-30. Use the [release status](../../docs/release-status.md) for release gates and [security procedure](security.md) for privileged cases.
 
 ## Select and record environments
 
