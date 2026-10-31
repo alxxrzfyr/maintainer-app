@@ -6,7 +6,6 @@ import io
 import json
 import os
 from pathlib import Path
-import shutil
 import subprocess
 import tarfile
 import tempfile
@@ -129,21 +128,20 @@ def build(directory):
     run('appstreamcli', 'validate', '--no-net', 'data/io.github.maintainerapp.Maintainer.metainfo.xml')
     run('glib-compile-schemas', '--strict', '--dry-run', 'data/')
     architecture = subprocess.check_output(['dpkg', '--print-architecture'], text=True).strip()
-    run('bash', 'scripts/build-package.sh', env=dict(os.environ, EXPECTED_DEB_ARCH=architecture))
     version = json.loads(subprocess.check_output(['cargo', 'metadata', '--locked', '--no-deps', '--format-version', '1'], cwd=ROOT))
     version = next(package['version'] for package in version['packages'] if package['name'] == 'maintainer-app')
-    package = ROOT / f'maintainer_{version}-1_{architecture}.deb'
-    payload = inspect_package(package)
-    if before != source_digest():
-        raise ValueError('Source changed during validation; rerun')
-    manifest = dict(schema_version=1, scope='native-machine-static-package', architecture=architecture,
-                    source_sha256=before, lock_sha256=digest(ROOT / 'Cargo.lock'), package=package.name,
-                    package_sha256=digest(package), payload_sha256=payload, checks=checks())
     directory.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=directory.parent) as temporary:
         stage = Path(temporary) / 'candidate'
         stage.mkdir()
-        shutil.copyfile(package, stage / package.name)
+        run('bash', 'scripts/build-package.sh', str(stage), env=dict(os.environ, EXPECTED_DEB_ARCH=architecture))
+        package = stage / f'maintainer_{version}-1_{architecture}.deb'
+        payload = inspect_package(package)
+        if before != source_digest():
+            raise ValueError('Source changed during validation; rerun')
+        manifest = dict(schema_version=1, scope='native-machine-static-package', architecture=architecture,
+                        source_sha256=before, lock_sha256=digest(ROOT / 'Cargo.lock'), package=package.name,
+                        package_sha256=digest(package), payload_sha256=payload, checks=checks())
         (stage / 'LOCAL-CANDIDATE.json').write_text(json.dumps(manifest, indent=2) + '\n')
         stage.rename(directory)
     verify(directory)

@@ -184,7 +184,9 @@ python3 scripts/check-release-local.py build /tmp/maintainer-candidate-new
 python3 scripts/check-release-local.py verify /tmp/maintainer-candidate-new
 ```
 
-Use a new output directory outside the source tree. The gate runs all native and
+Use a new output directory outside the source tree. Package staging and output
+also stay outside the checkout; direct package builds accept an external directory
+or create a private directory under `/tmp`. The gate runs all native and
 Python tests three times, checks formatting/lint/builds/metadata, and inspects the
 exact package and helper integration. Its manifest binds source, lockfile,
 package and runtime payload hashes. It does not install packages on the host.

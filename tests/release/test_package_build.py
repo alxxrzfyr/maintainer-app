@@ -13,8 +13,9 @@ import unittest
 class FreshPackageStaging(unittest.TestCase):
     def test_stale_payload_cannot_enter_package_and_stage_is_removed(self):
         root = Path(__file__).resolve().parents[2]
-        with tempfile.TemporaryDirectory() as temporary:
+        with tempfile.TemporaryDirectory() as temporary, tempfile.TemporaryDirectory() as artifacts:
             work = Path(temporary)
+            output = Path(artifacts)
             for directory in ('data', 'packaging', 'scripts'):
                 shutil.copytree(root / directory, work / directory)
             binaries = work / 'target/release'
@@ -32,9 +33,10 @@ class FreshPackageStaging(unittest.TestCase):
             (stale / 'stale-payload').write_text('must never ship')
             environment = dict(os.environ, PATH=str(tools) + os.pathsep + os.environ['PATH'],
                                EXPECTED_DEB_ARCH=architecture, TMPDIR=str(work))
-            subprocess.run(['bash', str(root / 'scripts/build-package.sh')], cwd=work,
+            subprocess.run(['bash', str(root / 'scripts/build-package.sh'), str(output)], cwd=work,
                            env=environment, check=True, capture_output=True, text=True, umask=0o002)
-            package = work / f'maintainer_0.0.1-1_{architecture}.deb'
+            package = output / f'maintainer_0.0.1-1_{architecture}.deb'
+            self.assertEqual(list(work.glob('*.deb')), [])
             listing = subprocess.check_output(['dpkg-deb', '--contents', str(package)], text=True)
             spec = importlib.util.spec_from_file_location('local_gate', root / 'scripts/check-release-local.py')
             local_gate = importlib.util.module_from_spec(spec)
@@ -54,6 +56,14 @@ class FreshPackageStaging(unittest.TestCase):
                         self.assertEqual(member.mode, 0o755, member.name)
                     elif member.isfile():
                         self.assertEqual(member.mode & 0o022, 0, member.name)
+            # Reject direct and symlinked output paths inside the source tree.
+            link = output / 'source-link'
+            link.symlink_to(work, target_is_directory=True)
+            for forbidden in (work / 'artifacts', link / 'artifacts'):
+                result = subprocess.run(['bash', str(root / 'scripts/build-package.sh'), str(forbidden)],
+                                        cwd=work, env=environment, capture_output=True, text=True)
+                self.assertNotEqual(result.returncode, 0)
+            self.assertFalse((work / 'artifacts').exists())
             self.assertTrue((stale / 'stale-payload').is_file())
             self.assertEqual(list(work.glob('maintainer-package.*')), [])
             extracted = work / 'extracted'

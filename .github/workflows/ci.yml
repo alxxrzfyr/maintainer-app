@@ -63,22 +63,26 @@ jobs:
       - name: Package once for this architecture
         env:
           EXPECTED_DEB_ARCH: ${{ matrix.deb_arch }}
-        run: bash scripts/build-package.sh
+        run: bash scripts/build-package.sh "$RUNNER_TEMP/candidate"
       - name: Record candidate checksums
-        run: sha256sum maintainer_*.deb > SHA256SUMS-${{ matrix.deb_arch }}
+        run: |
+          cd "$RUNNER_TEMP/candidate"
+          sha256sum maintainer_*.deb > SHA256SUMS-${{ matrix.deb_arch }}
       - name: Bind source and immutable candidate
         env:
           DEB_ARCH: ${{ matrix.deb_arch }}
-        run: python3 scripts/validate-candidate.py manifest . "$DEB_ARCH"
+        run: |
+          cp Cargo.lock "$RUNNER_TEMP/candidate/Cargo.lock"
+          python3 scripts/validate-candidate.py manifest "$RUNNER_TEMP/candidate" "$DEB_ARCH"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: maintainer-deb-${{ matrix.deb_arch }}
           if-no-files-found: error
           path: |
-            maintainer_*.deb
-            SHA256SUMS-${{ matrix.deb_arch }}
-            SOURCE-${{ matrix.deb_arch }}.json
-            Cargo.lock
+            ${{ runner.temp }}/candidate/maintainer_*.deb
+            ${{ runner.temp }}/candidate/SHA256SUMS-${{ matrix.deb_arch }}
+            ${{ runner.temp }}/candidate/SOURCE-${{ matrix.deb_arch }}.json
+            ${{ runner.temp }}/candidate/Cargo.lock
 
   installed-artifact:
     name: installed-${{ matrix.deb_arch }}
@@ -97,17 +101,17 @@ jobs:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: maintainer-deb-${{ matrix.deb_arch }}
-          path: candidate
+          path: ${{ runner.temp }}/candidate
       - name: Download mandatory previous release artifact
         env:
           GH_TOKEN: ${{ github.token }}
           DEB_ARCH: ${{ matrix.deb_arch }}
         run: |
-          mkdir previous
+          mkdir "$RUNNER_TEMP/previous"
           # Latest published release must predate this candidate. The installed
           # test rejects equal/newer versions and requires a real upgrade.
-          gh release download --repo "$GITHUB_REPOSITORY" --pattern "maintainer_*_${DEB_ARCH}.deb" --dir previous
-          test "$(find previous -name '*.deb' | wc -l)" -eq 1
+          gh release download --repo "$GITHUB_REPOSITORY" --pattern "maintainer_*_${DEB_ARCH}.deb" --dir "$RUNNER_TEMP/previous"
+          test "$(find "$RUNNER_TEMP/previous" -name '*.deb' | wc -l)" -eq 1
       - name: Install disposable runner test dependencies
         run: |
           test "$RUNNER_ENVIRONMENT" = github-hosted
@@ -118,13 +122,13 @@ jobs:
         env:
           DEB_ARCH: ${{ matrix.deb_arch }}
         run: |
-          (cd candidate && sha256sum --check "SHA256SUMS-${DEB_ARCH}")
-          test "$(find candidate -name '*.deb' | wc -l)" -eq 1
-          sudo env MAINTAINER_PACKAGE_TEST_DISPOSABLE=1 bash scripts/test-package.sh candidate/*.deb --previous-deb previous/*.deb
-          (cd candidate && sha256sum --check "SHA256SUMS-${DEB_ARCH}")
+          (cd "$RUNNER_TEMP/candidate" && sha256sum --check "SHA256SUMS-${DEB_ARCH}")
+          test "$(find "$RUNNER_TEMP/candidate" -name '*.deb' | wc -l)" -eq 1
+          sudo env MAINTAINER_PACKAGE_TEST_DISPOSABLE=1 bash scripts/test-package.sh "$RUNNER_TEMP"/candidate/*.deb --previous-deb "$RUNNER_TEMP"/previous/*.deb
+          (cd "$RUNNER_TEMP/candidate" && sha256sum --check "SHA256SUMS-${DEB_ARCH}")
       - name: Preserve installed-validated bytes and source manifest
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: maintainer-validated-${{ matrix.deb_arch }}
           if-no-files-found: error
-          path: candidate/*
+          path: ${{ runner.temp }}/candidate/*

@@ -54,6 +54,14 @@ pushed commit; [the Actions page](https://github.com/alxxrzfyr/maintainer-app/ac
 contains those independent results. Green hosted tests do not certify hardware
 performance or interactive authorization.
 
+## Latest local hardware result
+
+The [November hardware sample](validation/2026-11-01-hardware.json) recorded
+0.62968% CPU over 300 seconds, failing the 0.35% preferred target and the strictly
+below 0.5% fallback. Usable startup was 1,870 ms, peak PSS 74,650,624 bytes and
+private dirty 33,456,128 bytes. Those limits passed in this one hardware sample;
+cold boot, other pages and the wider protocol remain unverified.
+
 ## Remaining release work
 
 - Meet CPU/startup acceptance in valid measurements; repeat cold-boot, full-page,

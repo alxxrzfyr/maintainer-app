@@ -146,3 +146,22 @@ the multiarch fixture with `dpkg --add-architecture`. The tested transaction had
 not started. Fixture setup now writes the private temporary dpkg architecture
 file directly. The test still resolves, approves, installs and verifies both
 architectures through native APT/dpkg. No test is skipped or marked optional.
+
+Package-output follow-up: validation originally left an ignored `.deb` in the
+checkout root. It was moved outside the project. The package builder now creates
+external output by default and rejects direct/symlinked source-tree destinations.
+Local gates and hosted packaging/downloads also use external staging directories;
+archive tests cover the output boundary as well as ownership and exact contents.
+
+## Final local hardware sample
+
+The [final 300-second hardware run](2026-11-01-hardware.json) measured GUI
+`a1517af496dd38b5db8f095208faad072642417572f36b256f711ed8b9c6b277` after
+30 seconds settling, without concurrent local builds or tests. Average CPU was
+0.6296772984%, failing both the preferred 0.35% target and the strictly-below-0.5%
+fallback. Usable startup was 1,870.11 ms, peak PSS 74,650,624 bytes and private
+dirty 33,456,128 bytes; these passed their numerical limits in this sample.
+Swap was zero. Subsequent packaging/test-only edits do not change this runtime.
+A preceding diagnostic recorded 0.45644% CPU but included short fixture probes;
+it is not substituted for the clean failed run. Full performance acceptance
+and release readiness remain unresolved.

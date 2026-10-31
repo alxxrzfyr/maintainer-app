@@ -11,7 +11,18 @@ if [ "$PKG_ARCH" != "${EXPECTED_DEB_ARCH:?Expected architecture required}" ]; th
   echo "Runner architecture $PKG_ARCH does not match expected ${EXPECTED_DEB_ARCH:?Expected architecture required}" >&2
   exit 1
 fi
-PKG_OUTPUT="$PWD/${PKG_NAME}_${PKG_VERSION}-1_${PKG_ARCH}.deb"
+[[ $# -le 1 ]] || { echo 'Usage: build-package.sh [external-output-directory]' >&2; exit 1; }
+PKG_SOURCE_DIR=$(pwd -P)
+if [[ $# == 1 ]]; then
+  PKG_OUTPUT_DIR=$(realpath -m -- "$1")
+else
+  PKG_OUTPUT_DIR=$(mktemp -d /tmp/maintainer-artifacts.XXXXXXXX)
+fi
+case "$PKG_OUTPUT_DIR/" in
+  "$PKG_SOURCE_DIR/"*) echo 'Package output must be outside the source tree' >&2; exit 1 ;;
+esac
+mkdir -p -- "$PKG_OUTPUT_DIR"
+PKG_OUTPUT="$PKG_OUTPUT_DIR/${PKG_NAME}_${PKG_VERSION}-1_${PKG_ARCH}.deb"
 PKG_STAGE=$(mktemp -d "${TMPDIR:-/tmp}/maintainer-package.XXXXXXXX")
 cleanup() { rm -rf -- "$PKG_STAGE"; }
 trap cleanup EXIT

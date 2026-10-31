@@ -46,6 +46,9 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Build and verification
 
+- Keep generated Debian packages and validation artifacts outside the checkout;
+  reject direct or symlinked output paths inside the source tree.
+
 - Keep multiarch transaction fixtures independent of host dpkg administration
   defaults while still executing and verifying both native package installs.
 
