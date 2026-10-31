@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use glib::ControlFlow;
 
-use maintainer_core::jobs::{CancellationToken, JobExecutor, JobMessage, ProgressSink};
-use maintainer_core::storage::{DuplicateCandidate, DuplicateScanner, ScanPolicy, StorageScanner};
+use maintainer_core::jobs::{CancellationToken, JobExecutor, JobMessage};
+use maintainer_core::storage::{DuplicateScanner, ScanPolicy, StorageScanner};
 
 use crate::progress::SharedProgress;
 use crate::state::ScanJobId;
@@ -68,8 +68,10 @@ pub fn dispatch_storage_scan(
         }
     };
 
-    let rx = executor.execute(vec![job]);
-    install_progress_poller(rx, progress.clone(), on_progress, on_done);
+    let rx = executor.execute_scan_sized(vec![job], token.clone(), storage_bytes);
+    install_progress_poller(rx, progress.clone(), on_progress, on_done, move |message| {
+        StorageScanResult::Failed { job_id, message }
+    });
 
     (token, progress)
 }
@@ -104,7 +106,8 @@ pub fn dispatch_duplicate_scan(
     let progress_for_worker = progress.clone();
 
     let job = move || -> maintainer_core::error::Result<DuplicateScanJobResult> {
-        let scanner = StorageScanner::new(&policy, &token_for_worker, &progress_for_worker);
+        let scanner = StorageScanner::new(&policy, &token_for_worker, &progress_for_worker)
+            .with_duplicate_candidates();
         let scan_result = match scanner.run() {
             Ok(summary) => {
                 if summary.was_cancelled {
@@ -123,38 +126,48 @@ pub fn dispatch_duplicate_scan(
             }
         };
 
-        let candidates: Vec<DuplicateCandidate> = scan_result
-            .large_files
-            .iter()
-            .map(|f| DuplicateCandidate {
-                path: f.path.clone(),
-                size_bytes: f.size_bytes,
-                identity: maintainer_core::storage::DeviceInode {
-                    device: 0,
-                    inode: 0,
-                },
-                modified: std::time::SystemTime::now(),
+        let candidates = scan_result.duplicate_candidates;
+        let metadata_issues = scan_result
+            .issues
+            .into_iter()
+            .map(|issue| maintainer_core::storage::DuplicateIssue {
+                path: issue.path,
+                message: issue.message,
             })
-            .collect();
+            .collect::<Vec<_>>();
 
         if candidates.is_empty() {
             return Ok(DuplicateScanJobResult::Completed {
                 job_id,
                 groups: Vec::new(),
-                issues: Vec::new(),
+                issues: metadata_issues,
             });
         }
 
         let dup_scanner = DuplicateScanner::new(&token_for_worker, &progress_for_worker);
         match dup_scanner.scan(candidates) {
-            Ok(dup_result) => {
+            Ok(mut dup_result) => {
                 if dup_result.was_cancelled {
                     Ok(DuplicateScanJobResult::Cancelled { job_id })
                 } else {
+                    if dup_result.omitted_issues > 0 {
+                        dup_result
+                            .issues
+                            .push(maintainer_core::storage::DuplicateIssue {
+                                path: PathBuf::new(),
+                                message: format!(
+                                    "{} additional file issues omitted",
+                                    dup_result.omitted_issues
+                                ),
+                            });
+                    }
                     Ok(DuplicateScanJobResult::Completed {
                         job_id,
                         groups: dup_result.groups,
-                        issues: dup_result.issues,
+                        issues: metadata_issues
+                            .into_iter()
+                            .chain(dup_result.issues)
+                            .collect(),
                     })
                 }
             }
@@ -168,8 +181,10 @@ pub fn dispatch_duplicate_scan(
         }
     };
 
-    let rx = executor.execute(vec![job]);
-    install_progress_poller(rx, progress.clone(), on_progress, on_done);
+    let rx = executor.execute_scan_sized(vec![job], token.clone(), duplicate_bytes);
+    install_progress_poller(rx, progress.clone(), on_progress, on_done, move |message| {
+        DuplicateScanJobResult::Failed { job_id, message }
+    });
 
     (token, progress)
 }
@@ -177,8 +192,9 @@ pub fn dispatch_duplicate_scan(
 /// Result of a cleanup scan.
 pub enum CleanupScanOutcome {
     Completed {
-        targets: Vec<maintainer_core::cleanup::CleanupTarget>,
+        plan: maintainer_core::cleanup::CleanupPlan,
     },
+    Cancelled,
     Failed {
         message: String,
     },
@@ -202,19 +218,28 @@ pub fn dispatch_cleanup_scan(
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from("/tmp"));
 
-        let analyzer = CleanupAnalyzer::new(home_dir);
+        let analyzer = CleanupAnalyzer::new(home_dir.clone());
 
         match analyzer.scan_all(&token_for_worker, &progress_for_worker) {
             Ok(mut targets) => {
                 targets.retain(|target| {
                     target.privilege == maintainer_core::cleanup::PrivilegeRequirement::None
                 });
-                Ok(CleanupScanOutcome::Completed { targets })
+                let plan = match maintainer_core::cleanup::CleanupPlan::from_targets_cancellable(
+                    targets,
+                    &home_dir,
+                    &token_for_worker,
+                ) {
+                    Ok(plan) => plan,
+                    Err(maintainer_core::error::MaintainerError::Cancelled) => {
+                        return Ok(CleanupScanOutcome::Cancelled);
+                    }
+                    Err(error) => return Err(error),
+                };
+                Ok(CleanupScanOutcome::Completed { plan })
             }
             Err(maintainer_core::error::MaintainerError::Cancelled) => {
-                Ok(CleanupScanOutcome::Failed {
-                    message: "Scan cancelled".to_string(),
-                })
+                Ok(CleanupScanOutcome::Cancelled)
             }
             Err(e) => Ok(CleanupScanOutcome::Failed {
                 message: e.to_string(),
@@ -222,8 +247,10 @@ pub fn dispatch_cleanup_scan(
         }
     };
 
-    let rx = executor.execute(vec![job]);
-    install_progress_poller(rx, progress.clone(), on_progress, on_done);
+    let rx = executor.execute_scan_sized(vec![job], token.clone(), cleanup_scan_bytes);
+    install_progress_poller(rx, progress.clone(), on_progress, on_done, |message| {
+        CleanupScanOutcome::Failed { message }
+    });
 
     (token, progress)
 }
@@ -274,9 +301,62 @@ pub fn dispatch_cleanup_execution(
         }
     };
 
-    let receiver = executor.execute(vec![job]);
-    install_progress_poller(receiver, progress.clone(), on_progress, on_done);
+    let receiver = executor.execute_sized(vec![job], token.clone(), cleanup_execution_bytes);
+    install_progress_poller(
+        receiver,
+        progress.clone(),
+        on_progress,
+        on_done,
+        |message| CleanupExecutionOutcome::Failed { message },
+    );
     (token, progress)
+}
+
+/// On-demand recovery list or single-entry restoration result.
+pub enum CleanupRecoveryOutcome {
+    Listed(Vec<maintainer_core::cleanup::quarantine::Recovery>),
+    Restored { notice: Option<String> },
+    Failed(String),
+}
+
+pub fn dispatch_cleanup_recovery(
+    executor: &Arc<JobExecutor>,
+    restore: Option<(
+        maintainer_core::cleanup::quarantine::Recovery,
+        Option<PathBuf>,
+    )>,
+    on_done: impl FnOnce(CleanupRecoveryOutcome) + 'static,
+) {
+    let job = move || -> maintainer_core::error::Result<CleanupRecoveryOutcome> {
+        let result = if let Some((item, elsewhere)) = restore {
+            maintainer_core::cleanup::recovery::restore(&item, elsewhere.as_deref())
+                .map(|notice| CleanupRecoveryOutcome::Restored { notice })
+        } else {
+            maintainer_core::cleanup::recovery::list().map(CleanupRecoveryOutcome::Listed)
+        };
+        Ok(result.unwrap_or_else(CleanupRecoveryOutcome::Failed))
+    };
+    let token = CancellationToken::new();
+    let progress = SharedProgress::new();
+    let rx = executor.execute_sized(vec![job], token, |outcome| {
+        std::mem::size_of_val(outcome)
+            + match outcome {
+                CleanupRecoveryOutcome::Listed(rows) => vector_bytes(rows, |row| {
+                    row.id.capacity() + row.basename.capacity() + row.parent_path.capacity()
+                }),
+                CleanupRecoveryOutcome::Failed(message) => message.capacity(),
+                CleanupRecoveryOutcome::Restored { notice } => {
+                    notice.as_ref().map_or(0, String::capacity)
+                }
+            }
+    });
+    install_progress_poller(
+        rx,
+        progress,
+        |_| {},
+        on_done,
+        CleanupRecoveryOutcome::Failed,
+    );
 }
 
 /// Diagnostics scan result.
@@ -326,8 +406,10 @@ pub fn dispatch_diagnostics_scan(
         Ok(DiagnosticsScanOutcome::Completed { findings })
     };
 
-    let rx = executor.execute(vec![job]);
-    install_progress_poller(rx, progress.clone(), on_progress, on_done);
+    let rx = executor.execute_sized(vec![job], token.clone(), diagnostics_bytes);
+    install_progress_poller(rx, progress.clone(), on_progress, on_done, |message| {
+        DiagnosticsScanOutcome::Failed { message }
+    });
 
     (token, progress)
 }
@@ -413,8 +495,10 @@ pub fn dispatch_updates_check(
         Ok(outcome)
     };
 
-    let rx = executor.execute(vec![job]);
-    install_progress_poller(rx, progress.clone(), on_progress, on_done);
+    let rx = executor.execute_sized(vec![job], token.clone(), updates_bytes);
+    install_progress_poller(rx, progress.clone(), on_progress, on_done, |message| {
+        UpdatesCheckOutcome::Failed { message }
+    });
 
     (token, progress)
 }
@@ -484,306 +568,80 @@ pub fn dispatch_replan_selection(
         Ok(outcome)
     };
 
-    let rx = executor.execute(vec![job]);
-    install_progress_poller(rx, progress.clone(), on_progress, on_done);
+    let rx = executor.execute_sized(vec![job], token.clone(), updates_bytes);
+    install_progress_poller(rx, progress.clone(), on_progress, on_done, |message| {
+        UpdatesCheckOutcome::Failed { message }
+    });
 
     (token, progress)
 }
 
-/// Progress text used while pkexec may still be safely cancelled before APT starts.
-pub const UPDATE_AUTHENTICATION_PROGRESS: &str = "Waiting for administrator authentication…";
-
-/// Result of executing a reviewed update plan.
-pub enum UpdateExecutionOutcome {
-    Completed {
-        message: String,
-        restart_required: bool,
-    },
-    Failed {
-        message: String,
-    },
-}
-
-fn current_plan_candidate_count(
-    current: &maintainer_core::capability::Capability<maintainer_core::updates::DiscoveryResult>,
-) -> usize {
-    match current {
-        maintainer_core::capability::Capability::Available(
-            maintainer_core::updates::DiscoveryResult::Available(p),
-        ) => p.candidates.len(),
-        _ => 0,
-    }
-}
-
-fn build_apt_update_command(
+/// A filtered list is executable only after the selection resolver returns a plan.
+pub fn update_selection_reviewed(
+    mode: crate::ui::updates::SelectionMode,
+    replanned: bool,
+    selected: &std::collections::HashSet<String>,
     plan: &maintainer_core::updates::UpdatePlan,
-    current_candidate_count: usize,
-) -> Result<maintainer_core::command::CommandSpec, maintainer_core::error::CommandSpecError> {
-    let mut arguments = vec![
-        "/usr/libexec/maintainer-helper".to_string(),
-        "install-updates".to_string(),
-    ];
-    if !plan.candidates.is_empty() && plan.candidates.len() < current_candidate_count {
-        arguments.push("selected".to_string());
-        arguments.extend(
-            plan.candidates
-                .iter()
-                .map(|candidate| format!("{}={}", candidate.name, candidate.available_version)),
-        );
-    } else {
-        arguments.push("full".to_string());
-    }
-
-    maintainer_core::command::CommandSpec::new("/usr/bin/pkexec", arguments)
-        .map(|command| command.with_timeout(Duration::from_secs(6 * 60 * 60)))
+) -> bool {
+    use crate::ui::updates::SelectionMode;
+    use maintainer_core::updates::UpdateIntent;
+    let intent_matches = matches!(
+        (mode, &plan.intent),
+        (SelectionMode::Everything, UpdateIntent::FullUpgrade)
+            | (SelectionMode::Custom, UpdateIntent::Selected(_))
+    );
+    intent_matches
+        && replanned
+        && selected.len() == plan.candidates.len()
+        && plan
+            .candidates
+            .iter()
+            .all(|candidate| selected.contains(&candidate.selection_key()))
 }
 
-fn verify_installed_versions(
-    runner: &dyn maintainer_core::command::CommandRunner,
-    cancel: &dyn maintainer_core::jobs::Cancellation,
-    candidates: &[maintainer_core::updates::UpdateCandidate],
-) -> Result<(), String> {
-    let mut mismatches = Vec::new();
+/// Local action failures include scheduler rejection and worker termination.
+pub trait LocalActionError: Send + 'static {
+    fn from_job_failure(message: String) -> Self;
+    fn retained_bytes(&self) -> usize;
+}
 
-    for candidate in candidates {
-        let command = maintainer_core::command::CommandSpec::new(
-            "/usr/bin/dpkg-query",
-            [
-                "-W".to_string(),
-                "-f=${Version}".to_string(),
-                "--".to_string(),
-                candidate.name.clone(),
-            ],
-        )
-        .map_err(|error| {
-            format!(
-                "cannot construct dpkg-query for {}: {error}",
-                candidate.name
-            )
-        })?
-        .with_timeout(Duration::from_secs(30));
-
-        let output = runner.run(&command, cancel).map_err(|error| {
-            format!(
-                "cannot query installed version of {}: {error}",
-                candidate.name
-            )
-        })?;
-        if !output.success() {
-            let detail = output
-                .stderr
-                .lines()
-                .find(|line| !line.trim().is_empty())
-                .unwrap_or("dpkg-query returned a non-zero exit code");
-            mismatches.push(format!("{}: {detail}", candidate.name));
-            continue;
-        }
-
-        let installed = output.stdout.trim();
-        if installed != candidate.available_version {
-            let found = if installed.is_empty() {
-                "not installed"
-            } else {
-                installed
-            };
-            mismatches.push(format!(
-                "{} expected {}, found {found}",
-                candidate.name, candidate.available_version
-            ));
-        }
+impl LocalActionError for String {
+    fn from_job_failure(message: String) -> Self {
+        message
     }
-
-    if mismatches.is_empty() {
-        Ok(())
-    } else {
-        Err(mismatches.join("; "))
+    fn retained_bytes(&self) -> usize {
+        self.capacity()
     }
 }
-/// Revalidate and execute an immutable update plan.
-pub fn dispatch_update_execution(
+
+impl LocalActionError for std::io::Error {
+    fn from_job_failure(message: String) -> Self {
+        Self::other(message)
+    }
+    fn retained_bytes(&self) -> usize {
+        // io::Error hides its allocation; only bounded local filesystem errors are used here.
+        4096
+    }
+}
+
+/// Run a local blocking action and deliver its typed result on the GTK main thread.
+pub fn dispatch_local_action<T: Send + 'static, E: LocalActionError>(
     executor: &Arc<JobExecutor>,
-
-    plan: maintainer_core::updates::UpdatePlan,
-    on_progress: impl Fn(&maintainer_core::jobs::JobProgress) + 'static,
-    on_done: impl FnOnce(UpdateExecutionOutcome) + 'static,
-) -> (CancellationToken, SharedProgress) {
-    let token = CancellationToken::new();
-    let worker_token = token.clone();
-    let progress = SharedProgress::new();
-    let worker_progress = progress.clone();
-
-    let job = move || -> maintainer_core::error::Result<UpdateExecutionOutcome> {
-        use maintainer_core::capability::Capability;
-        use maintainer_core::command::SystemCommandRunner;
-        use maintainer_core::updates::{AptDiscovery, DiscoveryResult};
-
-        let runner = SystemCommandRunner;
-        // Must use the same discovery mode as the plan being verified
-        // (check_full_upgrade), or content_hash will never match and every
-        // install would be rejected as "changed since review".
-        let current = AptDiscovery::check_full_upgrade(&runner, &worker_token);
-        match &current {
-            Capability::Available(DiscoveryResult::Available(current_plan))
-                if current_plan.content_hash == plan.content_hash => {}
-            Capability::Available(DiscoveryResult::UpToDate) => {
-                return Ok(UpdateExecutionOutcome::Completed {
-                    message: "The system is already up to date.".to_string(),
-                    restart_required: false,
-                });
-            }
-            Capability::Available(DiscoveryResult::Available(_)) => {
-                return Ok(UpdateExecutionOutcome::Failed {
-                    message: "Available updates changed. Check again before installing."
-                        .to_string(),
-                });
-            }
-            Capability::Available(DiscoveryResult::Failed(error)) => {
-                return Ok(UpdateExecutionOutcome::Failed {
-                    message: error.to_string(),
-                });
-            }
-            Capability::Unavailable(reason) => {
-                return Ok(UpdateExecutionOutcome::Failed {
-                    message: reason.message.clone(),
-                });
-            }
-            Capability::PermissionRequired(request) => {
-                return Ok(UpdateExecutionOutcome::Failed {
-                    message: request.explanation.clone(),
-                });
-            }
-        }
-
-        if plan.candidates.iter().any(|candidate| {
-            candidate.name.is_empty()
-                || !candidate
-                    .name
-                    .chars()
-                    .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '+' | '-' | '.' | ':'))
-        }) {
-            return Ok(UpdateExecutionOutcome::Failed {
-                message: "The reviewed plan contains an invalid package name.".to_string(),
-            });
-        }
-
-        worker_progress.report(&maintainer_core::jobs::JobProgress {
-            completed: 0,
-            total: None,
-            message: UPDATE_AUTHENTICATION_PROGRESS.to_string(),
-        });
-
-        use maintainer_core::command::run_streaming;
-        use maintainer_core::updates::apt_parser::parse_apt_progress_line;
-
-        let command = build_apt_update_command(&plan, current_plan_candidate_count(&current))
-            .map_err(
-                |error| maintainer_core::error::MaintainerError::CommandFailed {
-                    message: error.to_string(),
-                },
-            )?;
-
-        let mut current_status_msg = "Installing updates…".to_string();
-        let stream_result = run_streaming(&command, &worker_token, |line| {
-            if let Some(parsed) = parse_apt_progress_line(line) {
-                let percentage = parsed.percentage();
-                current_status_msg = parsed.display_message();
-                worker_progress.report(&maintainer_core::jobs::JobProgress {
-                    completed: percentage.unwrap_or(0),
-                    total: percentage.map(|_| 100),
-                    message: current_status_msg.clone(),
-                });
-            }
-        });
-
-        match stream_result {
-            Ok(output) if output.success() => {
-                worker_progress.report(&maintainer_core::jobs::JobProgress {
-                    completed: 1,
-                    total: Some(1),
-                    message: "Verifying installed package versions…".to_string(),
-                });
-
-                // Once APT has exited successfully, verification must complete
-                // even if the user pressed Cancel at the end of the transaction.
-                // Otherwise cancellation could suppress the only check that
-                // prevents a false success result.
-                let verification_cancel = CancellationToken::new();
-                if let Err(error) =
-                    verify_installed_versions(&runner, &verification_cancel, &plan.candidates)
-                {
-                    return Ok(UpdateExecutionOutcome::Failed {
-                        message: format!(
-                            "APT exited successfully, but installed package verification failed: \
-                             {error}. No success was recorded."
-                        ),
-                    });
-                }
-
-                let combined = format!("{}\n{}", output.stdout, output.stderr);
-                let restart_required = combined.to_ascii_lowercase().contains("restart")
-                    || maintainer_core::updates::reboot_required(std::path::Path::new("/var/run"));
-                Ok(UpdateExecutionOutcome::Completed {
-                    message: "Updates installed and verified successfully.".to_string(),
-                    restart_required,
-                })
-            }
-            Ok(output) => {
-                let err_combined = format!("{}\n{}", output.stderr, output.stdout);
-                if err_combined.contains("dismissed")
-                    || err_combined.contains("not authorized")
-                    || err_combined.contains("Authentication cancelled")
-                    || output.exit_code == Some(126)
-                    || output.exit_code == Some(127)
-                {
-                    return Ok(UpdateExecutionOutcome::Failed {
-                        message: "Authentication was cancelled.".to_string(),
-                    });
-                }
-                if err_combined.contains("Could not get lock")
-                    || err_combined.contains("Resource temporarily unavailable")
-                {
-                    return Ok(UpdateExecutionOutcome::Failed {
-                        message: "Another package manager is currently running. Try again later."
-                            .to_string(),
-                    });
-                }
-                let message = output
-                    .stderr
-                    .lines()
-                    .chain(output.stdout.lines())
-                    .find(|line| !line.trim().is_empty())
-                    .unwrap_or("Failed to install updates")
-                    .to_string();
-                Ok(UpdateExecutionOutcome::Failed { message })
-            }
-            Err(maintainer_core::error::MaintainerError::Cancelled) => {
-                Ok(UpdateExecutionOutcome::Failed {
-                    message: "Update cancelled.".to_string(),
-                })
-            }
-            Err(error) => Ok(UpdateExecutionOutcome::Failed {
-                message: error.to_string(),
-            }),
-        }
-    };
-
-    let receiver = executor.execute(vec![job]);
-    install_progress_poller(receiver, progress.clone(), on_progress, on_done);
-    (token, progress)
-}
-
-/// Run a blocking privileged-helper call on the bounded worker pool.
-/// Run a local blocking action on the bounded worker pool and deliver its
-/// typed result on the GTK main thread.
-pub fn dispatch_local_action<T: Send + 'static>(
-    executor: &Arc<JobExecutor>,
-    operation: impl FnOnce() -> T + Send + 'static,
-    on_done: impl FnOnce(T) + 'static,
+    operation: impl FnOnce() -> Result<T, E> + Send + 'static,
+    on_done: impl FnOnce(Result<T, E>) + 'static,
 ) -> CancellationToken {
     let token = CancellationToken::new();
-    let job = move || -> maintainer_core::error::Result<T> { Ok(operation()) };
-    let receiver = executor.execute(vec![job]);
-    install_result_poller(receiver, on_done);
+    let job = move || -> maintainer_core::error::Result<Result<T, E>> { Ok(operation()) };
+    let receiver = executor.execute_sized(vec![job], token.clone(), |value| {
+        std::mem::size_of_val(value)
+            + value
+                .as_ref()
+                .err()
+                .map_or(0, LocalActionError::retained_bytes)
+    });
+    install_result_poller(receiver, on_done, |message| {
+        Err(E::from_job_failure(message))
+    });
     token
 }
 
@@ -796,8 +654,8 @@ pub fn dispatch_helper_call(
     let job = move || -> maintainer_core::error::Result<crate::helper_client::HelperResult> {
         Ok(operation())
     };
-    let receiver = executor.execute(vec![job]);
-    install_result_poller(receiver, on_done);
+    let receiver = executor.execute_sized(vec![job], token.clone(), helper_bytes);
+    install_result_poller(receiver, on_done, helper_failure);
     token
 }
 
@@ -855,8 +713,8 @@ pub fn dispatch_smart_refresh(
             Capability::PermissionRequired(_) => Ok(SmartRefreshOutcome::PermissionRequired),
         }
     };
-    let receiver = executor.execute(vec![job]);
-    install_result_poller(receiver, on_done);
+    let receiver = executor.execute_sized(vec![job], token.clone(), smart_bytes);
+    install_result_poller(receiver, on_done, SmartRefreshOutcome::Unavailable);
     token
 }
 
@@ -1005,78 +863,298 @@ pub fn dispatch_report_generation(
         Ok(ReportOutcome::Completed { text })
     };
 
-    let receiver = executor.execute(vec![job]);
-    install_result_poller(receiver, on_done);
+    let receiver = executor.execute_sized(vec![job], token.clone(), report_bytes);
+    install_result_poller(receiver, on_done, |message| ReportOutcome::Failed {
+        message,
+    });
     token
 }
 
-/// Installs a short-interval timer that polls the receiver for a single result
-/// and delivers it to the on_done callback on the main thread.
-fn install_result_poller<T: 'static>(
-    rx: std::sync::mpsc::Receiver<JobMessage<T>>,
-    on_done: impl FnOnce(T) + 'static,
-) {
-    let mut on_done = Some(on_done);
-    glib::timeout_add_local(Duration::from_millis(50), move || match rx.try_recv() {
-        Ok(JobMessage::Completed(value)) => {
-            if let Some(cb) = on_done.take() {
-                cb(value);
-            }
-            ControlFlow::Break
-        }
-        Ok(JobMessage::Failed(e)) => {
-            eprintln!("job failed: {e}");
-            ControlFlow::Break
-        }
-        Ok(JobMessage::Panicked(msg)) => {
-            eprintln!("job panicked: {msg}");
-            ControlFlow::Break
-        }
-        Err(std::sync::mpsc::TryRecvError::Empty) => ControlFlow::Continue,
-        Err(std::sync::mpsc::TryRecvError::Disconnected) => ControlFlow::Break,
-    });
+/// Convert every terminal transport state into one domain result.
+fn terminal_result<T>(
+    message: Result<JobMessage<T>, std::sync::mpsc::TryRecvError>,
+    on_error: &impl Fn(String) -> T,
+) -> Option<T> {
+    match message {
+        Ok(JobMessage::Completed(value)) => Some(value),
+        Ok(JobMessage::Failed(error)) => Some(on_error(error.to_string())),
+        Ok(JobMessage::Panicked(_)) => Some(on_error(
+            "The background operation stopped unexpectedly. Try again.".into(),
+        )),
+        Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(on_error(
+            "The background operation ended without a result. Try again.".into(),
+        )),
+        Err(std::sync::mpsc::TryRecvError::Empty) => None,
+    }
 }
 
-/// Installs a timer that both polls progress (via `SharedProgress`) and
-/// checks for job completion. Progress callbacks are invoked on the main
-/// thread at the polling interval, independent of cancel responsiveness.
+fn install_result_poller<T: 'static>(
+    rx: maintainer_core::jobs::JobReceiver<T>,
+    on_done: impl FnOnce(T) + 'static,
+    on_error: impl Fn(String) -> T + 'static,
+) {
+    install_progress_poller(rx, SharedProgress::new(), |_| {}, on_done, on_error);
+}
+
 fn install_progress_poller<T: 'static>(
-    rx: std::sync::mpsc::Receiver<JobMessage<T>>,
+    rx: maintainer_core::jobs::JobReceiver<T>,
     progress: SharedProgress,
     on_progress: impl Fn(&maintainer_core::jobs::JobProgress) + 'static,
     on_done: impl FnOnce(T) + 'static,
+    on_error: impl Fn(String) -> T + 'static,
 ) {
     let mut on_done = Some(on_done);
     glib::timeout_add_local(Duration::from_millis(50), move || {
-        // Poll progress every tick — cheap because SharedProgress throttles internally.
         if let Some(p) = progress.take_latest() {
             on_progress(&p);
         }
-
-        match rx.try_recv() {
-            Ok(JobMessage::Completed(value)) => {
-                if let Some(p) = progress.take_latest() {
-                    on_progress(&p);
-                }
-                if let Some(cb) = on_done.take() {
-                    cb(value);
-                }
-                ControlFlow::Break
+        if let Some(value) = terminal_result(rx.try_recv(), &on_error) {
+            if let Some(p) = progress.take_latest() {
+                on_progress(&p);
             }
-            Ok(JobMessage::Failed(e)) => {
-                eprintln!("job failed: {e}");
-                ControlFlow::Break
+            if let Some(callback) = on_done.take() {
+                callback(value);
             }
-            Ok(JobMessage::Panicked(msg)) => {
-                eprintln!("job panicked: {msg}");
-                ControlFlow::Break
-            }
-            Err(std::sync::mpsc::TryRecvError::Empty) => ControlFlow::Continue,
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => ControlFlow::Break,
+            ControlFlow::Break
+        } else {
+            ControlFlow::Continue
         }
     });
 }
 
+// Count reserved container storage, including unused capacity, plus nested allocations.
+fn vector_bytes<T>(values: &Vec<T>, heap: impl Fn(&T) -> usize) -> usize {
+    values
+        .capacity()
+        .saturating_mul(std::mem::size_of::<T>())
+        .saturating_add(values.iter().map(heap).fold(0usize, usize::saturating_add))
+}
+
+fn storage_bytes(value: &StorageScanResult) -> usize {
+    std::mem::size_of_val(value)
+        + match value {
+            StorageScanResult::Completed {
+                large_files,
+                issues,
+                ..
+            } => {
+                vector_bytes(large_files, |f| f.path.capacity())
+                    + vector_bytes(issues, |i| i.path.capacity() + i.message.capacity())
+            }
+            StorageScanResult::Failed { message, .. } => message.capacity(),
+            StorageScanResult::Cancelled { .. } => 0,
+        }
+}
+
+fn duplicate_bytes(value: &DuplicateScanJobResult) -> usize {
+    std::mem::size_of_val(value)
+        + match value {
+            DuplicateScanJobResult::Completed { groups, issues, .. } => {
+                vector_bytes(groups, |g| vector_bytes(&g.files, |f| f.path.capacity()))
+                    + vector_bytes(issues, |i| i.path.capacity() + i.message.capacity())
+            }
+            DuplicateScanJobResult::Failed { message, .. } => message.capacity(),
+            DuplicateScanJobResult::Cancelled { .. } => 0,
+        }
+}
+
+fn cleanup_scan_bytes(value: &CleanupScanOutcome) -> usize {
+    std::mem::size_of_val(value)
+        + match value {
+            CleanupScanOutcome::Completed { plan } => vector_bytes(&plan.items, |t| {
+                t.path.capacity() + t.display_path.capacity()
+            }),
+            CleanupScanOutcome::Cancelled => 0,
+            CleanupScanOutcome::Failed { message } => message.capacity(),
+        }
+}
+
+fn cleanup_execution_bytes(value: &CleanupExecutionOutcome) -> usize {
+    std::mem::size_of_val(value)
+        + match value {
+            CleanupExecutionOutcome::Completed(result) => {
+                vector_bytes(&result.item_results, |item| match item {
+                    maintainer_core::jobs::ItemResult::Ok(item) => {
+                        item.notice.as_ref().map_or(0, String::capacity)
+                    }
+                    maintainer_core::jobs::ItemResult::Failed { item, message } => {
+                        item.capacity() + message.capacity()
+                    }
+                    maintainer_core::jobs::ItemResult::Skipped { item, reason } => {
+                        item.capacity() + reason.capacity()
+                    }
+                })
+            }
+            CleanupExecutionOutcome::Failed { message } => message.capacity(),
+        }
+}
+
+fn diagnostics_bytes(value: &DiagnosticsScanOutcome) -> usize {
+    std::mem::size_of_val(value)
+        + match value {
+            DiagnosticsScanOutcome::Completed { findings } => vector_bytes(findings, |f| {
+                f.detected.capacity()
+                    + vector_bytes(&f.evidence, |e| e.observation.capacity())
+                    + vector_bytes(&f.possible_causes, String::capacity)
+                    + f.recommendation.as_ref().map_or(0, String::capacity)
+            }),
+            DiagnosticsScanOutcome::Failed { message } => message.capacity(),
+        }
+}
+
+fn candidate_heap(candidate: &maintainer_core::updates::UpdateCandidate) -> usize {
+    candidate.name.capacity()
+        + candidate.architecture.as_ref().map_or(0, String::capacity)
+        + candidate.available_version.capacity()
+        + candidate
+            .installed_version
+            .as_ref()
+            .map_or(0, String::capacity)
+}
+
+fn updates_bytes(value: &UpdatesCheckOutcome) -> usize {
+    std::mem::size_of_val(value)
+        + match value {
+            UpdatesCheckOutcome::Available { summary, plan, .. } => {
+                summary.capacity()
+                    + match &plan.intent {
+                        maintainer_core::updates::UpdateIntent::FullUpgrade => 0,
+                        maintainer_core::updates::UpdateIntent::Selected(requests) => {
+                            vector_bytes(requests, |request| {
+                                request.name.capacity()
+                                    + request.version.capacity()
+                                    + request.architecture.as_ref().map_or(0, String::capacity)
+                            })
+                        }
+                    }
+                    + plan.plan_id.capacity()
+                    + plan.content_hash.capacity()
+                    + vector_bytes(&plan.candidates, candidate_heap)
+                    + vector_bytes(&plan.held, candidate_heap)
+                    + vector_bytes(&plan.removals, |r| {
+                        r.name.capacity() + r.installed_version.capacity()
+                    })
+            }
+            UpdatesCheckOutcome::Failed { message } => message.capacity(),
+            UpdatesCheckOutcome::UpToDate => 0,
+        }
+}
+
+fn helper_failure(message: String) -> crate::helper_client::HelperResult {
+    maintainer_core::capability::Capability::Unavailable(
+        maintainer_core::capability::UnavailableReason {
+            code: "background-operation-failed",
+            message,
+            remediation: None,
+        },
+    )
+}
+
+fn helper_bytes(value: &crate::helper_client::HelperResult) -> usize {
+    use maintainer_core::capability::Capability;
+    std::mem::size_of_val(value)
+        + match value {
+            Capability::Available(response) => response.message.capacity(),
+            Capability::Unavailable(reason) => {
+                reason.message.capacity() + reason.remediation.as_ref().map_or(0, String::capacity)
+            }
+            Capability::PermissionRequired(request) => {
+                request.action_id.capacity() + request.explanation.capacity()
+            }
+        }
+}
+
+fn smart_bytes(value: &SmartRefreshOutcome) -> usize {
+    std::mem::size_of_val(value)
+        + match value {
+            SmartRefreshOutcome::Loaded(drives) => vector_bytes(drives, |d| {
+                d.object_path.capacity()
+                    + d.model.capacity()
+                    + d.firmware.capacity()
+                    + d.serial.capacity()
+                    + vector_bytes(&d.attributes, |a| a.name.capacity())
+            }),
+            SmartRefreshOutcome::Unavailable(message) => message.capacity(),
+            SmartRefreshOutcome::PermissionRequired => 0,
+        }
+}
+
+fn report_bytes(value: &ReportOutcome) -> usize {
+    std::mem::size_of_val(value)
+        + match value {
+            ReportOutcome::Completed { text } => text.capacity(),
+            ReportOutcome::Failed { message } => message.capacity(),
+        }
+}
+
+#[cfg(test)]
+mod terminal_tests {
+    use super::*;
+
+    #[test]
+    fn failures_hide_panic_payloads_and_handle_disconnect() {
+        let outcome = terminal_result::<ReportOutcome>(
+            Ok(JobMessage::Panicked("private path".into())),
+            &|message| ReportOutcome::Failed { message },
+        );
+        let Some(ReportOutcome::Failed { message }) = outcome else {
+            panic!("missing terminal failure")
+        };
+        assert!(!message.contains("private path"));
+        assert!(
+            terminal_result::<String>(Err(std::sync::mpsc::TryRecvError::Empty), &|s| s).is_none()
+        );
+        assert!(
+            terminal_result::<String>(Err(std::sync::mpsc::TryRecvError::Disconnected), &|s| s)
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn scan_failure_retains_job_identity() {
+        let result = terminal_result(Ok(JobMessage::Panicked("private".into())), &|message| {
+            StorageScanResult::Failed {
+                job_id: ScanJobId(42),
+                message,
+            }
+        });
+        assert!(matches!(
+            result,
+            Some(StorageScanResult::Failed {
+                job_id: ScanJobId(42),
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn scheduler_failure_becomes_domain_failure() {
+        let result = terminal_result(
+            Ok(JobMessage::Failed(
+                maintainer_core::error::MaintainerError::CommandFailed {
+                    message: "Busy".into(),
+                },
+            )),
+            &|message| ReportOutcome::Failed { message },
+        );
+        assert!(matches!(result, Some(ReportOutcome::Failed { .. })));
+    }
+
+    #[test]
+    fn retained_storage_counts_reserved_capacity() {
+        let mut text = String::with_capacity(4096);
+        text.push('x');
+        assert!(report_bytes(&ReportOutcome::Completed { text }) >= 4096);
+        let groups = Vec::with_capacity(100);
+        assert!(
+            duplicate_bytes(&DuplicateScanJobResult::Completed {
+                job_id: ScanJobId(1),
+                groups,
+                issues: Vec::new()
+            }) >= 100 * std::mem::size_of::<maintainer_core::storage::DuplicateGroup>()
+        );
+    }
+}
 fn chrono_like_now() -> String {
     use std::time::SystemTime;
     let duration = SystemTime::now()
@@ -1160,7 +1238,6 @@ fn build_os_section() -> maintainer_core::reports::model::OsSection {
 
 #[cfg(test)]
 mod update_execution_tests {
-    use super::build_apt_update_command;
     use maintainer_core::updates::{
         HoldState, UpdateBackend, UpdateCandidate, UpdateClassification, UpdatePlan,
     };
@@ -1168,6 +1245,7 @@ mod update_execution_tests {
 
     fn candidate(name: &str, available_version: &str) -> UpdateCandidate {
         UpdateCandidate {
+            architecture: None,
             name: name.to_string(),
             installed_version: Some("1.0".to_string()),
             available_version: available_version.to_string(),
@@ -1182,6 +1260,7 @@ mod update_execution_tests {
 
     fn plan(candidates: Vec<UpdateCandidate>) -> UpdatePlan {
         UpdatePlan {
+            intent: maintainer_core::updates::UpdateIntent::FullUpgrade,
             plan_id: "test-plan".to_string(),
             created_at: SystemTime::UNIX_EPOCH,
             candidates,
@@ -1194,132 +1273,53 @@ mod update_execution_tests {
     }
 
     #[test]
-    fn full_plan_uses_pkexec_with_fixed_helper_operation() {
-        let plan = plan(vec![candidate("curl", "2.0"), candidate("wget", "3.0")]);
-        let command = build_apt_update_command(&plan, 2).unwrap();
-
-        assert_eq!(command.program(), "/usr/bin/pkexec");
-        assert_eq!(
-            command.args(),
-            ["/usr/libexec/maintainer-helper", "install-updates", "full"]
-        );
-        assert!(!command.args().iter().any(|arg| arg.contains("apt-get")));
-    }
-
-    #[test]
-    fn selected_plan_passes_only_exact_reviewed_versions_to_helper() {
+    fn security_filter_requires_resolver_review_even_with_matching_counts() {
+        use crate::ui::updates::SelectionMode;
         let plan = plan(vec![candidate("curl", "2.0")]);
-        let command = build_apt_update_command(&plan, 2).unwrap();
-
-        assert_eq!(command.program(), "/usr/bin/pkexec");
-        assert_eq!(
-            command.args(),
-            [
-                "/usr/libexec/maintainer-helper",
-                "install-updates",
-                "selected",
-                "curl=2.0"
-            ]
-        );
-        assert!(!command.args().iter().any(|arg| arg.contains("apt-get")));
-    }
-}
-
-#[cfg(test)]
-mod installed_version_verification_tests {
-    use std::sync::Mutex;
-
-    use maintainer_core::command::{CommandOutput, CommandRunner, CommandSpec};
-    use maintainer_core::jobs::Cancellation;
-    use maintainer_core::updates::{
-        HoldState, UpdateBackend, UpdateCandidate, UpdateClassification,
-    };
-
-    use super::verify_installed_versions;
-
-    struct FixedRunner {
-        output: CommandOutput,
-        calls: Mutex<Vec<Vec<String>>>,
-    }
-
-    impl CommandRunner for FixedRunner {
-        fn run(
-            &self,
-            spec: &CommandSpec,
-            _cancel: &dyn Cancellation,
-        ) -> maintainer_core::error::Result<CommandOutput> {
-            self.calls.lock().unwrap().push(spec.args().to_vec());
-            Ok(self.output.clone())
-        }
-    }
-
-    fn candidate(name: &str, target: &str) -> UpdateCandidate {
-        UpdateCandidate {
-            name: name.to_string(),
-            installed_version: Some("1.0".to_string()),
-            available_version: target.to_string(),
-            classification: UpdateClassification::Standard,
-            download_bytes: None,
-            hold_state: HoldState::None,
-            backend: UpdateBackend::Apt,
-            is_new: false,
-            is_kernel: false,
-        }
-    }
-
-    fn output(stdout: &str, exit_code: i32) -> CommandOutput {
-        CommandOutput {
-            exit_code: Some(exit_code),
-            stdout: stdout.to_string(),
-            stderr: String::new(),
-            stdout_truncated: false,
-            stderr_truncated: false,
-        }
-    }
-
-    #[test]
-    fn exact_installed_version_is_verified() {
-        let runner = FixedRunner {
-            output: output("2.0", 0),
-            calls: Mutex::new(Vec::new()),
-        };
-        let cancel = maintainer_core::jobs::CancellationToken::new();
-
-        assert!(verify_installed_versions(&runner, &cancel, &[candidate("wget", "2.0")]).is_ok());
-        assert_eq!(
-            runner.calls.lock().unwrap().as_slice(),
-            &[vec![
-                "-W".to_string(),
-                "-f=${Version}".to_string(),
-                "--".to_string(),
-                "wget".to_string(),
-            ]]
-        );
-    }
-
-    #[test]
-    fn unchanged_version_rejects_false_success() {
-        let runner = FixedRunner {
-            output: output("1.0", 0),
-            calls: Mutex::new(Vec::new()),
-        };
-        let cancel = maintainer_core::jobs::CancellationToken::new();
-
-        let error = verify_installed_versions(&runner, &cancel, &[candidate("wget", "2.0")])
-            .expect_err("unchanged package must reject success");
-        assert!(error.contains("wget"));
-        assert!(error.contains("expected 2.0"));
-        assert!(error.contains("found 1.0"));
-    }
-
-    #[test]
-    fn dpkg_query_failure_rejects_success() {
-        let runner = FixedRunner {
-            output: output("", 1),
-            calls: Mutex::new(Vec::new()),
-        };
-        let cancel = maintainer_core::jobs::CancellationToken::new();
-
-        assert!(verify_installed_versions(&runner, &cancel, &[candidate("wget", "2.0")]).is_err());
+        let selected = ["curl".to_string()].into_iter().collect();
+        assert!(super::update_selection_reviewed(
+            SelectionMode::Everything,
+            true,
+            &selected,
+            &plan
+        ));
+        assert!(!super::update_selection_reviewed(
+            SelectionMode::SecurityOnly,
+            true,
+            &selected,
+            &plan
+        ));
+        assert!(!super::update_selection_reviewed(
+            SelectionMode::Custom,
+            true,
+            &selected,
+            &plan
+        ));
+        let mut selected_plan = plan.clone();
+        selected_plan.intent = maintainer_core::updates::UpdateIntent::Selected(vec![
+            maintainer_core::updates::UpdateRequest {
+                architecture: None,
+                name: "curl".into(),
+                version: "2.0".into(),
+            },
+        ]);
+        assert!(!super::update_selection_reviewed(
+            SelectionMode::Everything,
+            true,
+            &selected,
+            &selected_plan
+        ));
+        assert!(super::update_selection_reviewed(
+            SelectionMode::Custom,
+            true,
+            &selected,
+            &selected_plan
+        ));
+        assert!(!super::update_selection_reviewed(
+            SelectionMode::Custom,
+            false,
+            &selected,
+            &selected_plan
+        ));
     }
 }
