@@ -1,0 +1,34 @@
+{
+  "artifact_sha256": "977d5b2bf4e2098d43694ab270ab8f79a092163752f14d75e15b276298ada09b",
+  "gpu_devices": [
+    {
+      "device": "/dev/dri/card1",
+      "drm_fields": [
+        "drm-driver:\ti915",
+        "drm-engine-render:\t53182499 ns"
+      ]
+    },
+    {
+      "device": "/dev/dri/card1",
+      "drm_fields": [
+        "drm-driver:\ti915",
+        "drm-engine-render:\t53182499 ns"
+      ]
+    },
+    {
+      "device": "/dev/dri/card1",
+      "drm_fields": [
+        "drm-driver:\ti915",
+        "drm-engine-render:\t53182499 ns"
+      ]
+    },
+    {
+      "device": "/dev/dri/card1",
+      "drm_fields": [
+        "drm-driver:\ti915",
+        "drm-engine-render:\t53182499 ns"
+      ]
+    }
+  ],
+  "llvmpipe_threads": []
+}

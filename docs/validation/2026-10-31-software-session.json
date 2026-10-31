@@ -1,0 +1,548 @@
+{
+  "category": "unverified",
+  "artifact_sha256": "080174031439992fc9ce1f6f1e55bdd956f4686646026679fef0dd2a3fe84ca5",
+  "protocol_unverified": [
+    "cold-boot startup repetitions and cache state",
+    "extended soak and leak trend",
+    "hidden-window refresh and CPU behavior",
+    "physical 4 GB hardware profile",
+    "compositor and distribution matrix",
+    "application-only memory above measured GTK baseline",
+    "short-lived descendant CPU attribution is approximate",
+    "three runs on each required page"
+  ],
+  "release_acceptance": false,
+  "runs": [
+    {
+      "page": "Overview",
+      "category": "unverified",
+      "renderer_class": "GskGLRenderer",
+      "renderer_mode": "unknown",
+      "startup_ms": {
+        "process-start": 42.389949,
+        "mapped": 1362.061752,
+        "usable": 2023.195787,
+        "first-data": 2776.23511
+      },
+      "spawn_overhead_ms": 1.652769,
+      "duration_seconds": 300.12762727799964,
+      "settle_seconds": 30.0,
+      "cpu_percent": 1.9624984388872206,
+      "memory_family": {
+        "Pss": {
+          "median_bytes": 153308160.0,
+          "max_bytes": 168774656
+        },
+        "Private_Dirty": {
+          "median_bytes": 110301184.0,
+          "max_bytes": 116338688
+        },
+        "Rss": {
+          "median_bytes": 215199744.0,
+          "max_bytes": 224600064
+        },
+        "Swap": {
+          "median_bytes": 0.0,
+          "max_bytes": 0
+        },
+        "SwapPss": {
+          "median_bytes": 0.0,
+          "max_bytes": 0
+        }
+      },
+      "memory_samples": 60,
+      "raw_samples": [
+        {
+          "elapsed_seconds": 0.0,
+          "Pss": 153074688,
+          "Private_Dirty": 110010368,
+          "Rss": 214949888,
+          "Swap": 0,
+          "SwapPss": 0
+        },
+        {
+          "elapsed_seconds": 5.205933594001181,
+          "Pss": 153074688,
+          "Private_Dirty": 110010368,
+          "Rss": 214949888,
+          "Swap": 0,
+          "SwapPss": 0
+        },
+        {
+          "elapsed_seconds": 10.356753660000322,
+          "Pss": 153095168,
+          "Private_Dirty": 110030848,
+          "Rss": 214970368,
+          "Swap": 0,
+          "SwapPss": 0
+        },
+        {
+          "elapsed_seconds": 15.508922170000005,
+          "Pss": 153046016,
+          "Private_Dirty": 110030848,
+          "Rss": 214921216,
+          "Swap": 0,
+          "SwapPss": 0
+        },
+        {
+          "elapsed_seconds": 20.66093974999967,
+          "Pss": 153226240,
+          "Private_Dirty": 110211072,
+          "Rss": 215101440,
+          "Swap": 0,
+          "SwapPss": 0
+        },
+        {
+          "elapsed_seconds": 25.817843471000742,
+          "Pss": 153226240,
+          "Private_Dirty": 110211072,
+          "Rss": 215101440,
+          "Swap": 0,
+          "SwapPss": 0
+        },
+        {
+          "elapsed_seconds": 30.967206463001276,
+          "Pss": 153230336,
+          "Private_Dirty": 110215168,
+          "Rss": 215105536,
+          "Swap": 0,
+          "SwapPss": 0
+        },
+        {
+          "elapsed_seconds": 36.11896175500078,
+          "Pss": 153230336,
+          "Private_Dirty": 110215168,
+          "Rss": 215105536,
+          "Swap": 0,
+          "SwapPss": 0
+        },
+        {
+          "elapsed_seconds": 41.27060126000106,
+          "Pss": 153230336,
+          "Private_Dirty": 110215168,
+          "Rss": 215105536,
+          "Swap": 0,
+          "SwapPss": 0
+        },
+        {
+          "elapsed_seconds": 46.41654009100057,
+          "Pss": 153230336,
+          "Private_Dirty": 110215168,
+          "Rss": 215105536,
+          "Swap": 0,
+          "SwapPss": 0
+        },
+        {
+          "elapsed_seconds": 51.56663487300102,
+          "Pss": 153230336,
+          "Private_Dirty": 110215168,
+          "Rss": 215105536,
+          "Swap": 0,
+          "SwapPss": 0
+        },
+        {
+          "elapsed_seconds": 56.707014117000654,
+          "Pss": 153230336,
+          "Private_Dirty": 110215168,
+          "Rss": 215105536,
+          "Swap": 0,
+          "SwapPss": 0
+        },
+        {
+          "elapsed_seconds": 61.86087600300016,
+          "Pss": 153230336,
+          "Private_Dirty": 110215168,
+          "Rss": 215105536,
+          "Swap": 0,
+          "SwapPss": 0
+        },
+        {
+          "elapsed_seconds": 67.01704684099968,
+          "Pss": 153230336,
+          "Private_Dirty": 110215168,
+          "Rss": 215105536,
+          "Swap": 0,
+          "SwapPss": 0
+        },
+        {
+          "elapsed_seconds": 72.16967927800033,
+          "Pss": 153230336,
+          "Private_Dirty": 110215168,
+          "Rss": 215105536,
+          "Swap": 0,
+          "SwapPss": 0
+        },
+        {
+          "elapsed_seconds": 77.3242258420014,
+          "Pss": 153316352,
+          "Private_Dirty": 110301184,
+          "Rss": 215191552,
+          "Swap": 0,
+          "SwapPss": 0
+        },
+        {
+          "elapsed_seconds": 82.47213712300072,
+          "Pss": 153299968,
+          "Private_Dirty": 110301184,
+          "Rss": 215175168,
+          "Swap": 0,
+          "SwapPss": 0
+        },
+        {
+          "elapsed_seconds": 87.62979173700114,
+          "Pss": 153299968,
+          "Private_Dirty": 110301184,
+          "Rss": 215175168,
+          "Swap": 0,
+          "SwapPss": 0
+        },
+        {
+          "elapsed_seconds": 92.77995419699982,
+          "Pss": 153299968,
+          "Private_Dirty": 110301184,
+          "Rss": 215175168,
+          "Swap": 0,
+          "SwapPss": 0
+        },
+        {
+          "elapsed_seconds": 97.93654215700008,
+          "Pss": 153332736,
+          "Private_Dirty": 110333952,
+          "Rss": 215207936,
+          "Swap": 0,
+          "SwapPss": 0
+        },
+        {
+          "elapsed_seconds": 103.09225943800084,
+          "Pss": 151763968,
+          "Private_Dirty": 107151360,
+          "Rss": 215252992,
+          "Swap": 0,
+          "SwapPss": 0
+        },
+        {
+          "elapsed_seconds": 108.24082345700117,
+          "Pss": 153377792,
+          "Private_Dirty": 110379008,
+          "Rss": 215252992,
+          "Swap": 0,
+          "SwapPss": 0
+        },
+        {
+          "elapsed_seconds": 113.38061482200101,
+          "Pss": 153377792,
+          "Private_Dirty": 110379008,
+          "Rss": 215252992,
+          "Swap": 0,
+          "SwapPss": 0
+        },
+        {
+          "elapsed_seconds": 118.52177910000137,
+          "Pss": 153377792,
+          "Private_Dirty": 110379008,
+          "Rss": 215252992,
+          "Swap": 0,
+          "SwapPss": 0
+        },
+        {
+          "elapsed_seconds": 123.66853651699967,
+          "Pss": 153377792,
+          "Private_Dirty": 110379008,
+          "Rss": 215252992,
+          "Swap": 0,
+          "SwapPss": 0
+        },
+        {
+          "elapsed_seconds": 128.81012593000014,
+          "Pss": 153377792,
+          "Private_Dirty": 110379008,
+          "Rss": 215252992,
+          "Swap": 0,
+          "SwapPss": 0
+        },
+        {
+          "elapsed_seconds": 133.95695519200126,
+          "Pss": 153377792,
+          "Private_Dirty": 110379008,
+          "Rss": 215252992,
+          "Swap": 0,
+          "SwapPss": 0
+        },
+        {
+          "elapsed_seconds": 139.10528197500025,
+          "Pss": 153377792,
+          "Private_Dirty": 110379008,
+          "Rss": 215252992,
+          "Swap": 0,
+          "SwapPss": 0
+        },
+        {
+          "elapsed_seconds": 144.25536624900087,
+          "Pss": 153598976,
+          "Private_Dirty": 110641152,
+          "Rss": 215515136,
+          "Swap": 0,
+          "SwapPss": 0
+        },
+        {
+          "elapsed_seconds": 149.42090532899965,
+          "Pss": 153652224,
+          "Private_Dirty": 110694400,
+          "Rss": 215568384,
+          "Swap": 0,
+          "SwapPss": 0
+        },
+        {
+          "elapsed_seconds": 154.58424411800115,
+          "Pss": 153652224,
+          "Private_Dirty": 110694400,
+          "Rss": 215568384,
+          "Swap": 0,
+          "SwapPss": 0
+        },
+        {
+          "elapsed_seconds": 159.74914317600087,
+          "Pss": 153652224,
+          "Private_Dirty": 110694400,
+          "Rss": 215568384,
+          "Swap": 0,
+          "SwapPss": 0
+        },
+        {
+          "elapsed_seconds": 164.91332434499964,
+          "Pss": 153652224,
+          "Private_Dirty": 110694400,
+          "Rss": 215568384,
+          "Swap": 0,
+          "SwapPss": 0
+        },
+        {
+          "elapsed_seconds": 170.07784651400107,
+          "Pss": 153652224,
+          "Private_Dirty": 110694400,
+          "Rss": 215568384,
+          "Swap": 0,
+          "SwapPss": 0
+        },
+        {
+          "elapsed_seconds": 175.24234068199985,
+          "Pss": 153652224,
+          "Private_Dirty": 110694400,
+          "Rss": 215568384,
+          "Swap": 0,
+          "SwapPss": 0
+        },
+        {
+          "elapsed_seconds": 180.41282133700042,
+          "Pss": 153693184,
+          "Private_Dirty": 110694400,
+          "Rss": 215568384,
+          "Swap": 0,
+          "SwapPss": 0
+        },
+        {
+          "elapsed_seconds": 185.56228162800107,
+          "Pss": 153693184,
+          "Private_Dirty": 110694400,
+          "Rss": 215568384,
+          "Swap": 0,
+          "SwapPss": 0
+        },
+        {
+          "elapsed_seconds": 190.7131561160004,
+          "Pss": 153693184,
+          "Private_Dirty": 110694400,
+          "Rss": 215568384,
+          "Swap": 0,
+          "SwapPss": 0
+        },
+        {
+          "elapsed_seconds": 195.86271296000086,
+          "Pss": 153693184,
+          "Private_Dirty": 110694400,
+          "Rss": 215568384,
+          "Swap": 0,
+          "SwapPss": 0
+        },
+        {
+          "elapsed_seconds": 201.01313573900006,
+          "Pss": 153693184,
+          "Private_Dirty": 110694400,
+          "Rss": 215568384,
+          "Swap": 0,
+          "SwapPss": 0
+        },
+        {
+          "elapsed_seconds": 206.1615470380002,
+          "Pss": 153693184,
+          "Private_Dirty": 110694400,
+          "Rss": 215568384,
+          "Swap": 0,
+          "SwapPss": 0
+        },
+        {
+          "elapsed_seconds": 211.31594893800138,
+          "Pss": 153693184,
+          "Private_Dirty": 110694400,
+          "Rss": 215568384,
+          "Swap": 0,
+          "SwapPss": 0
+        },
+        {
+          "elapsed_seconds": 216.46747111700097,
+          "Pss": 153693184,
+          "Private_Dirty": 110694400,
+          "Rss": 215568384,
+          "Swap": 0,
+          "SwapPss": 0
+        },
+        {
+          "elapsed_seconds": 221.61861642500116,
+          "Pss": 153066496,
+          "Private_Dirty": 110067712,
+          "Rss": 214941696,
+          "Swap": 0,
+          "SwapPss": 0
+        },
+        {
+          "elapsed_seconds": 226.7560872440008,
+          "Pss": 153148416,
+          "Private_Dirty": 110149632,
+          "Rss": 215023616,
+          "Swap": 0,
+          "SwapPss": 0
+        },
+        {
+          "elapsed_seconds": 231.90530541200133,
+          "Pss": 153230336,
+          "Private_Dirty": 110231552,
+          "Rss": 215105536,
+          "Swap": 0,
+          "SwapPss": 0
+        },
+        {
+          "elapsed_seconds": 237.05240317199969,
+          "Pss": 153230336,
+          "Private_Dirty": 110231552,
+          "Rss": 215105536,
+          "Swap": 0,
+          "SwapPss": 0
+        },
+        {
+          "elapsed_seconds": 242.1970917939998,
+          "Pss": 153230336,
+          "Private_Dirty": 110231552,
+          "Rss": 215105536,
+          "Swap": 0,
+          "SwapPss": 0
+        },
+        {
+          "elapsed_seconds": 247.34240973899978,
+          "Pss": 153230336,
+          "Private_Dirty": 110231552,
+          "Rss": 215105536,
+          "Swap": 0,
+          "SwapPss": 0
+        },
+        {
+          "elapsed_seconds": 252.4857146430004,
+          "Pss": 153230336,
+          "Private_Dirty": 110231552,
+          "Rss": 215105536,
+          "Swap": 0,
+          "SwapPss": 0
+        },
+        {
+          "elapsed_seconds": 257.63404548400104,
+          "Pss": 153230336,
+          "Private_Dirty": 110231552,
+          "Rss": 215105536,
+          "Swap": 0,
+          "SwapPss": 0
+        },
+        {
+          "elapsed_seconds": 262.7802652120008,
+          "Pss": 153295872,
+          "Private_Dirty": 110297088,
+          "Rss": 215171072,
+          "Swap": 0,
+          "SwapPss": 0
+        },
+        {
+          "elapsed_seconds": 267.9336776070013,
+          "Pss": 153295872,
+          "Private_Dirty": 110297088,
+          "Rss": 215171072,
+          "Swap": 0,
+          "SwapPss": 0
+        },
+        {
+          "elapsed_seconds": 273.07727054099996,
+          "Pss": 153295872,
+          "Private_Dirty": 110297088,
+          "Rss": 215171072,
+          "Swap": 0,
+          "SwapPss": 0
+        },
+        {
+          "elapsed_seconds": 278.2253724430011,
+          "Pss": 153345024,
+          "Private_Dirty": 110346240,
+          "Rss": 215220224,
+          "Swap": 0,
+          "SwapPss": 0
+        },
+        {
+          "elapsed_seconds": 283.403226208,
+          "Pss": 165811200,
+          "Private_Dirty": 113594368,
+          "Rss": 221855744,
+          "Swap": 0,
+          "SwapPss": 0
+        },
+        {
+          "elapsed_seconds": 288.56737808100115,
+          "Pss": 168555520,
+          "Private_Dirty": 116338688,
+          "Rss": 224600064,
+          "Swap": 0,
+          "SwapPss": 0
+        },
+        {
+          "elapsed_seconds": 293.70193963600104,
+          "Pss": 168774656,
+          "Private_Dirty": 116338688,
+          "Rss": 224600064,
+          "Swap": 0,
+          "SwapPss": 0
+        },
+        {
+          "elapsed_seconds": 298.8084825250007,
+          "Pss": 168774656,
+          "Private_Dirty": 116338688,
+          "Rss": 224600064,
+          "Swap": 0,
+          "SwapPss": 0
+        },
+        {
+          "elapsed_seconds": 300.0180624430013,
+          "Pss": 168774656,
+          "Private_Dirty": 116338688,
+          "Rss": 224600064,
+          "Swap": 0,
+          "SwapPss": 0
+        }
+      ],
+      "lifecycle_events": [],
+      "cpu_counters": {
+        "observed_identity_own_ticks": 588,
+        "root_own_ticks": 589,
+        "root_reaped_child_ticks": 0,
+        "clock_ticks_per_second": 100
+      },
+      "descendant_disappearance_observed": false,
+      "cpu_attribution": "maximum of observed identity CPU deltas and root own plus reaped-child deltas; nested and unseen descendant attribution remains approximate",
+      "run": 1
+    }
+  ]
+}
