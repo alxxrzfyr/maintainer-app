@@ -1,7 +1,9 @@
 # Release audit: 2026-11-01
 
-Branch: `release/1.3.0-readiness`. Version 1.3.0 remains unpublished and is not
-release-ready: the clean hardware sample fails CPU acceptance. See
+Historical baseline audit on `release/1.3.0-readiness`; later code changes and
+test results are recorded in the [review follow-up](review-followup.md).
+Version 1.3.0 remains unpublished and is not release-ready: the clean hardware
+sample fails CPU acceptance. See
 [release status](../../release-status.md) for remaining manual checks.
 
 ## Changes
@@ -48,7 +50,8 @@ real transaction. No dependency was added and Cargo.lock was not regenerated.
 rendering, normal Overview window, 30-second settling and 300.15-second sample.
 No concurrent local builds or tests ran. Runtime SHA256:
 `a1517af496dd38b5db8f095208faad072642417572f36b256f711ed8b9c6b277`.
-Subsequent packaging/test/document edits do not change this runtime.
+This identifies the pre-review runtime. Later hardware/UI code changes require
+fresh measurements; this sample does not certify them.
 
 | Metric | Result | Assessment |
 |---|---|---|

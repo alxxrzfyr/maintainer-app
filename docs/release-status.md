@@ -15,22 +15,26 @@ The review follow-up addresses hardware command validation, evidence-based
 hardware values, background Diagnostics collection, feature-specific shell wiring,
 and behavioral tests. Subsequent cleanup checks duplicate-row lifecycles, defers
 speed-test capability probes, and groups state/dispatch by feature. The
-[review follow-up](validation/2026-11-01/review-followup.md) records local results. Commands and layout are described in [README](../README.md);
+[review follow-up](validation/2026-11-01/review-followup.md) records local results.
+Commands and layout are described in [README](../README.md);
 contributor rules and numerical acceptance live in [AGENTS.md](../AGENTS.md).
 
 ## Verification evidence
 
-The previous verified source `b2e62d8` passed all seven hosted checks:
+The latest recorded implementation revision, `3b61032`, passed all seven
+push-triggered hosted checks:
 
-- [CI](https://github.com/alxxrzfyr/maintainer-app/actions/runs/41233258365):
+- [CI](https://github.com/alxxrzfyr/maintainer-app/actions/runs/41236056206):
   three complete test passes, release build, native amd64/arm64 packages, and
   disposable installed upgrade/readiness/root-refusal/removal/purge.
-- [Native candidate gate](https://github.com/alxxrzfyr/maintainer-app/actions/runs/41233258340):
+- [Native candidate gate](https://github.com/alxxrzfyr/maintainer-app/actions/runs/41236056201):
   three full passes, debug/release builds, metadata, and exact source/package binding.
-- [Security audit](https://github.com/alxxrzfyr/maintainer-app/actions/runs/41233258396):
+- [Security audit](https://github.com/alxxrzfyr/maintainer-app/actions/runs/41236056207):
   secret scanning, dependency advisories, and workflow/shell validation.
 
-Those runs do not certify subsequent edits. Read the exact current commit's
+Its local cleanup pass also passed 897 Rust and 85 Python tests.
+Those runs cover that revision, including its documentation and payloads.
+Subsequent edits require fresh checks. Read the exact current commit's
 results on [Actions](https://github.com/alxxrzfyr/maintainer-app/actions).
 The [dated audit](validation/2026-11-01/report.md) records the baseline's scope;
 [October evidence](validation/2026-10-31/report.md) preserves earlier experiments.

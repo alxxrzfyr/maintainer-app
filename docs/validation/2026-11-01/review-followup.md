@@ -1,6 +1,7 @@
 # Hardware and UI review follow-up
 
-Scope: the review changes after `5d33175` on `release/1.3.0-readiness`.
+Initial scope: `5d33175..b2e62d8` on `release/1.3.0-readiness`.
+The subsequent cleanup section records verification of `3b61032`.
 This record covers local verification; the committed source is bound by its
 subsequent CI manifests. It does not replace the earlier hardware measurements.
 
@@ -41,6 +42,10 @@ execute controlled policy responses only. Raw output remains in ignored
 [release status](../../release-status.md).
 
 ## Subsequent cleanup after `b2e62d8`
+
+Verified source: `3b61032`. Hosted evidence is linked from
+[release status](../../release-status.md); the measurements above remain tied
+to the initial review.
 
 - Validate duplicate-row widget structure and current bindings. Disable and clear
   unbound rows, ignore detached checkboxes, and release callback borrows before
