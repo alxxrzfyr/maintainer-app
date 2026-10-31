@@ -1,8 +1,9 @@
 //! Hardware inspection collectors for GPU, USB devices, PCI devices, and BIOS.
 
+use crate::command::{CommandRunner, CommandSpec, SystemCommandRunner};
+use crate::jobs::CancellationToken;
 use std::fs;
 use std::path::Path;
-use std::process::Command;
 
 /// Information about the primary GPU and graphics acceleration features.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -74,32 +75,29 @@ pub fn read_gpu_info() -> GpuInfo {
     let mut pci_id = "—".to_string();
     let mut driver = "—".to_string();
 
-    if let Ok(output) = Command::new("lspci").args(["-mm", "-nn"]).output() {
-        if output.status.success() {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            for line in stdout.lines() {
-                if line.contains("VGA compatible controller")
-                    || line.contains("3D controller")
-                    || line.contains("Display controller")
-                {
-                    let parts: Vec<&str> = line
-                        .split('"')
-                        .enumerate()
-                        .filter_map(|(idx, s)| if idx % 2 == 1 { Some(s.trim()) } else { None })
-                        .collect();
-                    if parts.len() >= 3 {
-                        brand = parts[1].replace(" Corporation", "").replace(" Inc.", "");
-                        name = parts[2].to_string();
-                        if let Some(start) = line.find('[') {
-                            if let Some(end) = line[start..].find(']') {
-                                let id_str = &line[start + 1..start + end];
-                                if id_str.contains(':') {
-                                    pci_id = id_str.to_string();
-                                }
+    if let Some(stdout) = run_local_command("lspci", &["-mm", "-nn"]) {
+        for line in stdout.lines() {
+            if line.contains("VGA compatible controller")
+                || line.contains("3D controller")
+                || line.contains("Display controller")
+            {
+                let parts: Vec<&str> = line
+                    .split('"')
+                    .enumerate()
+                    .filter_map(|(idx, s)| if idx % 2 == 1 { Some(s.trim()) } else { None })
+                    .collect();
+                if parts.len() >= 3 {
+                    brand = parts[1].replace(" Corporation", "").replace(" Inc.", "");
+                    name = parts[2].to_string();
+                    if let Some(start) = line.find('[') {
+                        if let Some(end) = line[start..].find(']') {
+                            let id_str = &line[start + 1..start + end];
+                            if id_str.contains(':') {
+                                pci_id = id_str.to_string();
                             }
                         }
-                        break;
                     }
+                    break;
                 }
             }
         }
@@ -181,51 +179,48 @@ pub fn read_gpu_info() -> GpuInfo {
 pub fn read_usb_devices() -> Vec<UsbDevice> {
     let mut devices = Vec::new();
 
-    if let Ok(output) = Command::new("lsusb").output() {
-        if output.status.success() {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            for line in stdout.lines() {
-                if let Some(id_idx) = line.find("ID ") {
-                    let rest = &line[id_idx + 3..];
-                    let mut parts = rest.splitn(2, ' ');
-                    let id = parts.next().unwrap_or("").trim().to_string();
-                    let name = parts.next().unwrap_or("").trim().to_string();
+    if let Some(stdout) = run_local_command("lsusb", &[]) {
+        for line in stdout.lines() {
+            if let Some(id_idx) = line.find("ID ") {
+                let rest = &line[id_idx + 3..];
+                let mut parts = rest.splitn(2, ' ');
+                let id = parts.next().unwrap_or("").trim().to_string();
+                let name = parts.next().unwrap_or("").trim().to_string();
 
-                    let bus_part = if line.starts_with("Bus ") {
-                        line.split(':').next().unwrap_or("").trim().to_string()
+                let bus_part = if line.starts_with("Bus ") {
+                    line.split(':').next().unwrap_or("").trim().to_string()
+                } else {
+                    "USB".to_string()
+                };
+
+                let is_hub = name.to_lowercase().contains("root hub")
+                    || name.to_lowercase().contains("controller");
+                let speed = if is_hub && (name.contains("3.0") || name.contains("3.1")) {
+                    "5000 Mbps".to_string()
+                } else if is_hub || name.to_lowercase().contains("camera") {
+                    "480 Mbps".to_string()
+                } else {
+                    "12 Mbps".to_string()
+                };
+
+                let power = if is_hub {
+                    "0 mA max".to_string()
+                } else {
+                    "100 mA".to_string()
+                };
+
+                devices.push(UsbDevice {
+                    name: if name.is_empty() {
+                        format!("USB Device [{id}]")
                     } else {
-                        "USB".to_string()
-                    };
-
-                    let is_hub = name.to_lowercase().contains("root hub")
-                        || name.to_lowercase().contains("controller");
-                    let speed = if is_hub && (name.contains("3.0") || name.contains("3.1")) {
-                        "5000 Mbps".to_string()
-                    } else if is_hub || name.to_lowercase().contains("camera") {
-                        "480 Mbps".to_string()
-                    } else {
-                        "12 Mbps".to_string()
-                    };
-
-                    let power = if is_hub {
-                        "0 mA max".to_string()
-                    } else {
-                        "100 mA".to_string()
-                    };
-
-                    devices.push(UsbDevice {
-                        name: if name.is_empty() {
-                            format!("USB Device [{id}]")
-                        } else {
-                            name
-                        },
-                        id,
-                        speed,
-                        power,
-                        is_hub,
-                        bus: bus_part,
-                    });
-                }
+                        name
+                    },
+                    id,
+                    speed,
+                    power,
+                    is_hub,
+                    bus: bus_part,
+                });
             }
         }
     }
@@ -298,85 +293,82 @@ pub fn read_usb_devices() -> Vec<UsbDevice> {
 pub fn read_pci_devices() -> Vec<PciDevice> {
     let mut devices = Vec::new();
 
-    if let Ok(output) = Command::new("lspci").args(["-mm", "-nn", "-k"]).output() {
-        if output.status.success() {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let mut current_slot = String::new();
-            let mut current_type = String::new();
-            let mut current_brand = String::new();
-            let mut current_device = String::new();
-            let mut current_id = String::new();
-            let mut current_driver = String::new();
+    if let Some(stdout) = run_local_command("lspci", &["-mm", "-nn", "-k"]) {
+        let mut current_slot = String::new();
+        let mut current_type = String::new();
+        let mut current_brand = String::new();
+        let mut current_device = String::new();
+        let mut current_id = String::new();
+        let mut current_driver = String::new();
 
-            for line in stdout.lines() {
-                if line.starts_with("Slot:\t") {
-                    if !current_slot.is_empty() {
-                        devices.push(PciDevice {
-                            slot: current_slot.clone(),
-                            dev_type: current_type.clone(),
-                            brand: current_brand.clone(),
-                            device: current_device.clone(),
-                            id: current_id.clone(),
-                            driver: if current_driver.is_empty() {
-                                "—".to_string()
-                            } else {
-                                current_driver.clone()
-                            },
-                        });
-                        current_driver.clear();
-                        current_id.clear();
-                    }
-                    current_slot = line.trim_start_matches("Slot:\t").trim().to_string();
-                } else if line.starts_with("Class:\t") {
-                    let raw_type = line.trim_start_matches("Class:\t").trim();
-                    current_type = raw_type
-                        .split('[')
-                        .next()
-                        .unwrap_or(raw_type)
-                        .trim()
-                        .to_string();
-                } else if line.starts_with("Vendor:\t") {
-                    let raw_vendor = line.trim_start_matches("Vendor:\t").trim();
-                    current_brand = raw_vendor
-                        .split('[')
-                        .next()
-                        .unwrap_or(raw_vendor)
-                        .trim()
-                        .replace(" Corporation", "")
-                        .replace(" Inc.", "")
-                        .replace(" Co., Ltd.", "");
-                } else if line.starts_with("Device:\t") {
-                    let raw_dev = line.trim_start_matches("Device:\t").trim();
-                    current_device = raw_dev
-                        .split('[')
-                        .next()
-                        .unwrap_or(raw_dev)
-                        .trim()
-                        .to_string();
-                    if let Some(start) = raw_dev.find('[') {
-                        if let Some(end) = raw_dev[start..].find(']') {
-                            current_id = raw_dev[start + 1..start + end].to_string();
-                        }
-                    }
-                } else if line.starts_with("Driver:\t") {
-                    current_driver = line.trim_start_matches("Driver:\t").trim().to_string();
+        for line in stdout.lines() {
+            if line.starts_with("Slot:\t") {
+                if !current_slot.is_empty() {
+                    devices.push(PciDevice {
+                        slot: current_slot.clone(),
+                        dev_type: current_type.clone(),
+                        brand: current_brand.clone(),
+                        device: current_device.clone(),
+                        id: current_id.clone(),
+                        driver: if current_driver.is_empty() {
+                            "—".to_string()
+                        } else {
+                            current_driver.clone()
+                        },
+                    });
+                    current_driver.clear();
+                    current_id.clear();
                 }
+                current_slot = line.trim_start_matches("Slot:\t").trim().to_string();
+            } else if line.starts_with("Class:\t") {
+                let raw_type = line.trim_start_matches("Class:\t").trim();
+                current_type = raw_type
+                    .split('[')
+                    .next()
+                    .unwrap_or(raw_type)
+                    .trim()
+                    .to_string();
+            } else if line.starts_with("Vendor:\t") {
+                let raw_vendor = line.trim_start_matches("Vendor:\t").trim();
+                current_brand = raw_vendor
+                    .split('[')
+                    .next()
+                    .unwrap_or(raw_vendor)
+                    .trim()
+                    .replace(" Corporation", "")
+                    .replace(" Inc.", "")
+                    .replace(" Co., Ltd.", "");
+            } else if line.starts_with("Device:\t") {
+                let raw_dev = line.trim_start_matches("Device:\t").trim();
+                current_device = raw_dev
+                    .split('[')
+                    .next()
+                    .unwrap_or(raw_dev)
+                    .trim()
+                    .to_string();
+                if let Some(start) = raw_dev.find('[') {
+                    if let Some(end) = raw_dev[start..].find(']') {
+                        current_id = raw_dev[start + 1..start + end].to_string();
+                    }
+                }
+            } else if line.starts_with("Driver:\t") {
+                current_driver = line.trim_start_matches("Driver:\t").trim().to_string();
             }
+        }
 
-            if !current_slot.is_empty() {
-                devices.push(PciDevice {
-                    slot: current_slot,
-                    dev_type: current_type,
-                    brand: current_brand,
-                    device: current_device,
-                    id: current_id,
-                    driver: if current_driver.is_empty() {
-                        "—".to_string()
-                    } else {
-                        current_driver
-                    },
-                });
-            }
+        if !current_slot.is_empty() {
+            devices.push(PciDevice {
+                slot: current_slot,
+                dev_type: current_type,
+                brand: current_brand,
+                device: current_device,
+                id: current_id,
+                driver: if current_driver.is_empty() {
+                    "—".to_string()
+                } else {
+                    current_driver
+                },
+            });
         }
     }
 
@@ -421,6 +413,17 @@ pub fn read_pci_devices() -> Vec<PciDevice> {
     }
 
     devices
+}
+
+fn run_local_command(program: &str, args: &[&str]) -> Option<String> {
+    let spec = CommandSpec::new(program, args.iter().copied())
+        .ok()?
+        .with_timeout(std::time::Duration::from_secs(3))
+        .with_output_cap(256 * 1024);
+    let output = SystemCommandRunner
+        .run(&spec, &CancellationToken::new())
+        .ok()?;
+    (output.success() && !output.stdout_truncated).then_some(output.stdout)
 }
 
 /// Read BIOS and Motherboard information from DMI.

@@ -25,6 +25,11 @@ impl CancellationToken {
         }
     }
 
+    /// Share cancellation with an adapter that already uses an atomic flag.
+    pub fn from_shared_flag(flag: Arc<AtomicBool>) -> Self {
+        Self { flag }
+    }
+
     /// Signal cancellation.
     pub fn cancel(&self) {
         self.flag.store(true, Ordering::Release);
@@ -110,133 +115,407 @@ pub enum JobMessage<T> {
     Panicked(String),
 }
 
-/// Bounded thread-pool executor for CPU or blocking-I/O jobs.
-///
-/// Limits concurrency to `max_workers`, catches panics at worker boundaries,
-/// and communicates results through a bounded channel.
-pub struct JobExecutor {
+const MAX_QUEUED_JOBS: usize = 16;
+const MAX_ACCEPTED_JOBS: usize = 24;
+const MAX_RETAINED_RESULT_BYTES: usize = 16 * 1024 * 1024;
+const TERMINAL_RESULT_BYTES: usize = 4096;
+
+type Task = Box<dyn FnOnce() + Send>;
+struct QueuedJob {
+    task: Task,
+    cancellation: CancellationToken,
+}
+struct SchedulerState {
+    queue: std::collections::VecDeque<QueuedJob>,
+    active: usize,
+    accepted: usize,
+    retained_bytes: usize,
+    shutdown: bool,
+    scans: usize,
+    cancellations: Vec<std::sync::Weak<AtomicBool>>,
+}
+struct Scheduler {
+    state: std::sync::Mutex<SchedulerState>,
+    ready: std::sync::Condvar,
     max_workers: usize,
 }
 
-impl JobExecutor {
-    /// Create an executor that runs at most `max_workers` concurrent jobs.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `max_workers` is zero.
-    pub fn new(max_workers: usize) -> crate::error::Result<Self> {
-        if max_workers == 0 {
-            return Err(MaintainerError::Internal {
-                context: "JobExecutor::new".into(),
-                message: "max_workers must be at least 1".into(),
-            });
+struct PermitState {
+    stopped: bool,
+    consumed: bool,
+    released: bool,
+    bytes: usize,
+    scan: bool,
+}
+struct JobPermit {
+    scheduler: Arc<Scheduler>,
+    state: std::sync::Mutex<PermitState>,
+}
+impl JobPermit {
+    fn update(&self, stopped: bool, consumed: bool) {
+        let mut permit = self
+            .state
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let scan_finished = stopped && !permit.stopped && permit.scan;
+        permit.stopped |= stopped;
+        permit.consumed |= consumed;
+        let release = permit.stopped && permit.consumed && !permit.released;
+        if scan_finished || release {
+            let mut scheduler = self
+                .scheduler
+                .state
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            if scan_finished {
+                scheduler.scans -= 1;
+            }
+            if release {
+                permit.released = true;
+                scheduler.accepted -= 1;
+                scheduler.retained_bytes -= permit.bytes;
+            }
         }
-        Ok(Self { max_workers })
+    }
+    fn reserve_bytes(&self, bytes: usize) -> bool {
+        let mut permit = self
+            .state
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let mut scheduler = self
+            .scheduler
+            .state
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let bytes = bytes.max(TERMINAL_RESULT_BYTES);
+        let available =
+            MAX_RETAINED_RESULT_BYTES.saturating_sub(scheduler.retained_bytes - permit.bytes);
+        if bytes > available {
+            return false;
+        }
+        scheduler.retained_bytes = scheduler.retained_bytes - permit.bytes + bytes;
+        permit.bytes = bytes;
+        true
+    }
+}
+
+/// A result subscription retains its admission permits until work stops and
+/// results are consumed or dropped. Dropping it requests cooperative cancellation.
+pub struct JobReceiver<T> {
+    receiver: Receiver<(JobMessage<T>, Option<Arc<JobPermit>>)>,
+    permits: Vec<Arc<JobPermit>>,
+    cancellation: CancellationToken,
+}
+impl<T> JobReceiver<T> {
+    pub fn try_recv(&self) -> std::result::Result<JobMessage<T>, mpsc::TryRecvError> {
+        self.receiver.try_recv().map(|(message, permit)| {
+            if let Some(permit) = permit {
+                permit.update(false, true);
+            }
+            message
+        })
+    }
+    pub fn recv(&self) -> std::result::Result<JobMessage<T>, mpsc::RecvError> {
+        self.receiver.recv().map(|(message, permit)| {
+            if let Some(permit) = permit {
+                permit.update(false, true);
+            }
+            message
+        })
+    }
+}
+impl<T> Drop for JobReceiver<T> {
+    fn drop(&mut self) {
+        self.cancellation.cancel();
+        for permit in &self.permits {
+            permit.update(false, true);
+        }
+    }
+}
+
+/// One shared, bounded worker pool for all submissions to this executor.
+pub struct JobExecutor {
+    scheduler: Arc<Scheduler>,
+}
+impl JobExecutor {
+    pub fn new(max_workers: usize) -> crate::error::Result<Self> {
+        if max_workers == 0 || max_workers > MAX_ACCEPTED_JOBS {
+            return Err(MaintainerError::invalid_data(
+                "job scheduler",
+                "worker count must be between 1 and 24",
+            ));
+        }
+        let scheduler = Self::scheduler(max_workers, false);
+        for index in 0..max_workers {
+            let worker = scheduler.clone();
+            if let Err(error) = thread::Builder::new()
+                .name(format!("job-worker-{index}"))
+                .spawn(move || {
+                    loop {
+                        let task = {
+                            let mut state = worker
+                                .state
+                                .lock()
+                                .unwrap_or_else(|poison| poison.into_inner());
+                            while state.queue.is_empty() && !state.shutdown {
+                                state = worker
+                                    .ready
+                                    .wait(state)
+                                    .unwrap_or_else(|poison| poison.into_inner());
+                            }
+                            let Some(job) = state.queue.pop_front() else {
+                                return;
+                            };
+                            state.active += 1;
+                            job.task
+                        };
+                        task();
+                        let mut state = worker
+                            .state
+                            .lock()
+                            .unwrap_or_else(|poison| poison.into_inner());
+                        state.active -= 1;
+                    }
+                })
+            {
+                scheduler
+                    .state
+                    .lock()
+                    .unwrap_or_else(|poison| poison.into_inner())
+                    .shutdown = true;
+                scheduler.ready.notify_all();
+                return Err(MaintainerError::io("starting job worker", error));
+            }
+        }
+        Ok(Self { scheduler })
     }
 
-    /// Execute a batch of jobs, returning a receiver for typed results.
-    ///
-    /// Each job runs in its own thread (bounded by `max_workers`).
-    /// The channel is bounded to `max_workers` to provide backpressure.
-    /// Worker panics are caught and reported as `JobMessage::Panicked`.
-    pub fn execute<T, F>(&self, jobs: Vec<F>) -> Receiver<JobMessage<T>>
+    fn scheduler(max_workers: usize, shutdown: bool) -> Arc<Scheduler> {
+        Arc::new(Scheduler {
+            state: std::sync::Mutex::new(SchedulerState {
+                queue: std::collections::VecDeque::new(),
+                active: 0,
+                accepted: 0,
+                retained_bytes: 0,
+                shutdown,
+                scans: 0,
+                cancellations: Vec::new(),
+            }),
+            ready: std::sync::Condvar::new(),
+            max_workers,
+        })
+    }
+
+    /// An explicit unavailable capability when OS worker creation fails.
+    pub fn unavailable() -> Self {
+        Self {
+            scheduler: Self::scheduler(0, true),
+        }
+    }
+
+    pub fn execute<T, F>(&self, jobs: Vec<F>) -> JobReceiver<T>
     where
         T: Send + 'static,
         F: FnOnce() -> crate::error::Result<T> + Send + 'static,
     {
-        let (tx, rx) = mpsc::sync_channel::<JobMessage<T>>(self.max_workers);
-        let max_workers = self.max_workers;
-
-        thread::spawn(move || {
-            let (token_tx, token_rx) = mpsc::sync_channel::<()>(max_workers);
-            for _ in 0..max_workers {
-                let _ = token_tx.send(());
-            }
-
-            for job in jobs {
-                if token_rx.recv().is_err() {
-                    break;
-                }
-                let tx = tx.clone();
-                let token_tx = token_tx.clone();
-                thread::spawn(move || {
-                    let msg = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(job)) {
-                        Ok(Ok(value)) => JobMessage::Completed(value),
-                        Ok(Err(e)) => JobMessage::Failed(e),
-                        Err(panic_info) => {
-                            let message = if let Some(s) = panic_info.downcast_ref::<&str>() {
-                                (*s).to_string()
-                            } else if let Some(s) = panic_info.downcast_ref::<String>() {
-                                s.clone()
-                            } else {
-                                "unknown panic".to_string()
-                            };
-                            JobMessage::Panicked(message)
-                        }
-                    };
-                    let _ = tx.send(msg);
-                    let _ = token_tx.send(());
-                });
-            }
-        });
-
-        rx
+        self.execute_cancellable(jobs, CancellationToken::new())
     }
 
-    /// Execute a batch of jobs with bounded concurrency, blocking until all complete.
-    ///
-    /// Returns results in completion order. Limits active threads to `max_workers`.
+    /// Submit atomically; saturation produces a bounded terminal busy error.
+    /// Heap-owning outputs should use execute_sized to account for their payload.
+    pub fn execute_cancellable<T, F>(
+        &self,
+        jobs: Vec<F>,
+        cancellation: CancellationToken,
+    ) -> JobReceiver<T>
+    where
+        T: Send + 'static,
+        F: FnOnce() -> crate::error::Result<T> + Send + 'static,
+    {
+        self.execute_sized(jobs, cancellation, |_| std::mem::size_of::<T>())
+    }
+
+    pub fn execute_sized<T, F, S>(
+        &self,
+        jobs: Vec<F>,
+        cancellation: CancellationToken,
+        result_bytes: S,
+    ) -> JobReceiver<T>
+    where
+        T: Send + 'static,
+        F: FnOnce() -> crate::error::Result<T> + Send + 'static,
+        S: Fn(&T) -> usize + Send + Sync + 'static,
+    {
+        self.submit_sized(jobs, cancellation, result_bytes, false)
+    }
+
+    /// Reserve the filesystem lane at admission; workers never wait for it.
+    pub fn execute_scan_sized<T, F, S>(
+        &self,
+        jobs: Vec<F>,
+        cancellation: CancellationToken,
+        result_bytes: S,
+    ) -> JobReceiver<T>
+    where
+        T: Send + 'static,
+        F: FnOnce() -> crate::error::Result<T> + Send + 'static,
+        S: Fn(&T) -> usize + Send + Sync + 'static,
+    {
+        self.submit_sized(jobs, cancellation, result_bytes, true)
+    }
+
+    fn submit_sized<T, F, S>(
+        &self,
+        jobs: Vec<F>,
+        cancellation: CancellationToken,
+        result_bytes: S,
+        scan: bool,
+    ) -> JobReceiver<T>
+    where
+        T: Send + 'static,
+        F: FnOnce() -> crate::error::Result<T> + Send + 'static,
+        S: Fn(&T) -> usize + Send + Sync + 'static,
+    {
+        let count = jobs.len();
+        let (sender, receiver) = mpsc::sync_channel(count.clamp(1, MAX_ACCEPTED_JOBS));
+        let mut subscription = JobReceiver {
+            receiver,
+            permits: Vec::new(),
+            cancellation: cancellation.clone(),
+        };
+        let mut state = self
+            .scheduler
+            .state
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        if state.shutdown
+            || count.saturating_mul(TERMINAL_RESULT_BYTES)
+                > MAX_RETAINED_RESULT_BYTES.saturating_sub(state.retained_bytes)
+            || (scan && (count != 1 || state.scans != 0))
+            || count > MAX_ACCEPTED_JOBS.saturating_sub(state.accepted)
+            || count
+                > (self.scheduler.max_workers + MAX_QUEUED_JOBS)
+                    .saturating_sub(state.active + state.queue.len())
+        {
+            // Rejected batches execute nothing and report one admission failure.
+            let _ = sender.send((
+                JobMessage::Failed(MaintainerError::invalid_data(
+                    "job scheduler",
+                    if state.shutdown {
+                        "background workers are unavailable or shutting down"
+                    } else {
+                        "busy; try again after another operation finishes"
+                    },
+                )),
+                None,
+            ));
+            return subscription;
+        }
+        state.accepted += count;
+        state.retained_bytes += count * TERMINAL_RESULT_BYTES;
+        if scan {
+            state.scans += count;
+        }
+        state
+            .cancellations
+            .retain(|token| token.strong_count() != 0);
+        state.cancellations.push(Arc::downgrade(&cancellation.flag));
+        let result_bytes = Arc::new(result_bytes);
+        for job in jobs {
+            let sender = sender.clone();
+            let token = cancellation.clone();
+            let permit = Arc::new(JobPermit {
+                scheduler: self.scheduler.clone(),
+                state: std::sync::Mutex::new(PermitState {
+                    stopped: false,
+                    consumed: false,
+                    released: false,
+                    bytes: TERMINAL_RESULT_BYTES,
+                    scan,
+                }),
+            });
+            subscription.permits.push(permit.clone());
+            let size = result_bytes.clone();
+            state.queue.push_back(QueuedJob {
+                cancellation: token.clone(),
+                task: Box::new(move || {
+                    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        if token.is_cancelled() {
+                            return Err(MaintainerError::Cancelled);
+                        }
+                        let value = job()?;
+                        if !permit.reserve_bytes(size(&value)) {
+                            return Err(MaintainerError::invalid_data(
+                                "job result",
+                                "result exceeds the retained data budget",
+                            ));
+                        }
+                        Ok(value)
+                    }));
+                    let message = match outcome {
+                        Ok(Ok(value)) => JobMessage::Completed(value),
+                        Ok(Err(MaintainerError::Cancelled)) => {
+                            JobMessage::Failed(MaintainerError::Cancelled)
+                        }
+                        Ok(Err(error)) => {
+                            let rendered = error.to_string();
+                            let mut end = rendered.len().min(3072);
+                            while !rendered.is_char_boundary(end) {
+                                end -= 1;
+                            }
+                            // Copy the bounded slice: truncate alone retains an oversized allocation.
+                            let message = rendered[..end].to_owned();
+                            JobMessage::Failed(MaintainerError::invalid_data(
+                                "background operation",
+                                message,
+                            ))
+                        }
+                        Err(_) => JobMessage::Panicked("background operation panicked".into()),
+                    };
+                    let _ = sender.send((message, Some(permit.clone())));
+                    permit.update(true, false);
+                }),
+            });
+        }
+        drop(state);
+        self.scheduler.ready.notify_all();
+        subscription
+    }
+
     pub fn execute_all<T, F>(&self, jobs: Vec<F>) -> Vec<JobMessage<T>>
     where
         T: Send + 'static,
         F: FnOnce() -> crate::error::Result<T> + Send + 'static,
     {
-        let job_count = jobs.len();
-        let (tx, rx) = mpsc::sync_channel::<JobMessage<T>>(self.max_workers);
-
-        let (token_tx, token_rx) = mpsc::sync_channel::<()>(self.max_workers);
-        for _ in 0..self.max_workers {
-            let _ = token_tx.send(());
+        let receiver = self.execute(jobs);
+        let mut results = Vec::new();
+        while let Ok(message) = receiver.recv() {
+            results.push(message);
         }
-
-        let dispatch = thread::spawn(move || {
-            for job in jobs {
-                if token_rx.recv().is_err() {
-                    break;
-                }
-                let tx = tx.clone();
-                let token_tx = token_tx.clone();
-                thread::spawn(move || {
-                    let msg = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(job)) {
-                        Ok(Ok(value)) => JobMessage::Completed(value),
-                        Ok(Err(e)) => JobMessage::Failed(e),
-                        Err(panic_info) => {
-                            let message = if let Some(s) = panic_info.downcast_ref::<&str>() {
-                                (*s).to_string()
-                            } else if let Some(s) = panic_info.downcast_ref::<String>() {
-                                s.clone()
-                            } else {
-                                "unknown panic".to_string()
-                            };
-                            JobMessage::Panicked(message)
-                        }
-                    };
-                    let _ = tx.send(msg);
-                    let _ = token_tx.send(());
-                });
-            }
-        });
-
-        let mut results = Vec::with_capacity(job_count);
-        for _ in 0..job_count {
-            match rx.recv() {
-                Ok(msg) => results.push(msg),
-                Err(_) => break,
-            }
-        }
-
-        let _ = dispatch.join();
         results
+    }
+
+    pub fn shutdown(&self) {
+        let mut state = self
+            .scheduler
+            .state
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        state.shutdown = true;
+        for token in &state.cancellations {
+            if let Some(flag) = token.upgrade() {
+                flag.store(true, Ordering::Release);
+            }
+        }
+        for job in &state.queue {
+            job.cancellation.cancel();
+        }
+        self.scheduler.ready.notify_all();
+    }
+}
+impl Drop for JobExecutor {
+    fn drop(&mut self) {
+        self.shutdown();
     }
 }
 
@@ -245,6 +524,246 @@ mod tests {
     use super::*;
     use std::sync::atomic::AtomicU32;
     use std::time::Duration;
+
+    fn wait_idle(executor: &JobExecutor) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            let state = executor.scheduler.state.lock().unwrap();
+            if state.active == 0 && state.queue.is_empty() {
+                return;
+            }
+            drop(state);
+            assert!(
+                std::time::Instant::now() < deadline,
+                "workers failed to stop"
+            );
+            thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    #[test]
+    fn independent_submissions_share_four_workers_and_sixteen_queue_slots() {
+        let executor = JobExecutor::new(4).unwrap();
+        let gate = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+        let (started_tx, started_rx) = mpsc::channel();
+        let mut running = Vec::new();
+        for _ in 0..4 {
+            let gate = gate.clone();
+            let started = started_tx.clone();
+            running.push(executor.execute(vec![move || {
+                started.send(()).unwrap();
+                let (mutex, changed) = &*gate;
+                let mut released = mutex.lock().unwrap();
+                while !*released {
+                    released = changed.wait(released).unwrap();
+                }
+                Ok(())
+            }]));
+        }
+        for _ in 0..4 {
+            started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        }
+        let queued: Vec<_> = (0..16).map(|_| executor.execute(vec![|| Ok(())])).collect();
+        assert!(matches!(
+            executor.execute(vec![|| Ok(())]).try_recv(),
+            Ok(JobMessage::Failed(_))
+        ));
+        drop(running);
+        // Dropping running subscriptions must not free worker capacity.
+        assert!(matches!(
+            executor.execute(vec![|| Ok(())]).try_recv(),
+            Ok(JobMessage::Failed(_))
+        ));
+        *gate.0.lock().unwrap() = true;
+        gate.1.notify_all();
+        for receiver in queued {
+            assert!(matches!(
+                receiver.recv().unwrap(),
+                JobMessage::Completed(())
+            ));
+        }
+        wait_idle(&executor);
+    }
+
+    #[test]
+    fn completed_results_retain_admission_until_consumed_or_dropped() {
+        let executor = JobExecutor::new(4).unwrap();
+        let mut results = Vec::new();
+        for _ in 0..24 {
+            results.push(executor.execute(vec![|| Ok(())]));
+            wait_idle(&executor);
+        }
+        assert!(matches!(
+            executor.execute(vec![|| Ok(())]).try_recv(),
+            Ok(JobMessage::Failed(_))
+        ));
+        drop(results.pop());
+        let accepted = executor.execute(vec![|| Ok(42)]);
+        assert!(matches!(
+            accepted.recv().unwrap(),
+            JobMessage::Completed(42)
+        ));
+    }
+
+    #[test]
+    fn oversized_batches_are_rejected_atomically() {
+        let executor = JobExecutor::new(4).unwrap();
+        let executed = Arc::new(AtomicU32::new(0));
+        let jobs: Vec<_> = (0..21)
+            .map(|_| {
+                let executed = executed.clone();
+                move || {
+                    executed.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                }
+            })
+            .collect();
+        assert!(matches!(
+            executor.execute(jobs).recv().unwrap(),
+            JobMessage::Failed(_)
+        ));
+        assert_eq!(executed.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn queued_cancellation_skips_body_and_recovers_after_panic() {
+        let executor = JobExecutor::new(1).unwrap();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (start_tx, start_rx) = mpsc::channel();
+        let running = executor.execute(vec![move || {
+            start_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+            Ok(())
+        }]);
+        start_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let token = CancellationToken::new();
+        let queued = executor.execute_cancellable(
+            vec![|| -> crate::error::Result<()> { panic!("cancelled job ran") }],
+            token.clone(),
+        );
+        token.cancel();
+        release_tx.send(()).unwrap();
+        assert!(matches!(running.recv().unwrap(), JobMessage::Completed(())));
+        assert!(matches!(
+            queued.recv().unwrap(),
+            JobMessage::Failed(MaintainerError::Cancelled)
+        ));
+        let panicked = executor.execute(vec![|| -> crate::error::Result<()> {
+            panic!("private panic")
+        }]);
+        assert!(matches!(panicked.recv().unwrap(), JobMessage::Panicked(_)));
+        assert!(matches!(
+            executor.execute(vec![|| Ok(7)]).recv().unwrap(),
+            JobMessage::Completed(7)
+        ));
+    }
+
+    #[test]
+    fn retained_payload_budget_is_aggregate_and_released_on_consumption() {
+        let executor = JobExecutor::new(2).unwrap();
+        let first = executor.execute_sized(
+            vec![|| Ok(vec![0u8; 9 * 1024 * 1024])],
+            CancellationToken::new(),
+            Vec::capacity,
+        );
+        wait_idle(&executor);
+        let second = executor.execute_sized(
+            vec![|| Ok(vec![0u8; 9 * 1024 * 1024])],
+            CancellationToken::new(),
+            Vec::capacity,
+        );
+        assert!(matches!(second.recv().unwrap(), JobMessage::Failed(_)));
+        drop(first);
+        let third = executor.execute_sized(
+            vec![|| Ok(vec![0u8; 9 * 1024 * 1024])],
+            CancellationToken::new(),
+            Vec::capacity,
+        );
+        assert!(matches!(third.recv().unwrap(), JobMessage::Completed(_)));
+    }
+
+    #[test]
+    fn shutdown_requests_running_cancellation_and_rejects_submissions() {
+        let executor = JobExecutor::new(1).unwrap();
+        let token = CancellationToken::new();
+        let worker_token = token.clone();
+        let (started_tx, started_rx) = mpsc::channel();
+        let running = executor.execute_cancellable(
+            vec![move || {
+                started_tx.send(()).unwrap();
+                while !worker_token.is_cancelled() {
+                    thread::sleep(Duration::from_millis(2));
+                }
+                Err::<(), _>(MaintainerError::Cancelled)
+            }],
+            token,
+        );
+        started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        executor.shutdown();
+        assert!(matches!(
+            running.recv().unwrap(),
+            JobMessage::Failed(MaintainerError::Cancelled)
+        ));
+        assert!(matches!(
+            executor.execute(vec![|| Ok(())]).recv().unwrap(),
+            JobMessage::Failed(_)
+        ));
+    }
+
+    #[test]
+    fn filesystem_lane_is_reserved_without_blocking_a_worker() {
+        let executor = JobExecutor::new(2).unwrap();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (started_tx, started_rx) = mpsc::channel();
+        let scan = executor.execute_scan_sized(
+            vec![move || {
+                started_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                Ok(())
+            }],
+            CancellationToken::new(),
+            |_| 0,
+        );
+        started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let rejected =
+            executor.execute_scan_sized(vec![|| Ok(())], CancellationToken::new(), |_| 0);
+        assert!(matches!(rejected.recv().unwrap(), JobMessage::Failed(_)));
+        assert!(matches!(
+            executor.execute(vec![|| Ok(())]).recv().unwrap(),
+            JobMessage::Completed(())
+        ));
+        release_tx.send(()).unwrap();
+        assert!(matches!(scan.recv().unwrap(), JobMessage::Completed(())));
+    }
+
+    #[test]
+    fn unavailable_executor_refuses_work_without_panicking() {
+        let executor = JobExecutor::unavailable();
+        assert!(matches!(
+            executor.execute(vec![|| Ok(())]).recv().unwrap(),
+            JobMessage::Failed(_)
+        ));
+    }
+
+    #[test]
+    fn terminal_failures_fit_the_reserved_budget() {
+        let executor = JobExecutor::new(1).unwrap();
+        let receiver = executor.execute(vec![|| {
+            Err::<(), _>(MaintainerError::invalid_data(
+                "fixture",
+                "x".repeat(100_000),
+            ))
+        }]);
+        match receiver.recv().unwrap() {
+            JobMessage::Failed(MaintainerError::InvalidData { message, .. }) => {
+                assert!(message.len() <= 3072);
+                assert!(message.capacity() < TERMINAL_RESULT_BYTES);
+            }
+            _ => panic!("expected bounded failure"),
+        }
+        wait_idle(&executor);
+        assert_eq!(executor.scheduler.state.lock().unwrap().retained_bytes, 0);
+    }
 
     #[test]
     fn cancellation_token_starts_not_cancelled() {
@@ -407,7 +926,7 @@ mod tests {
         assert_eq!(panics.len(), 1);
 
         if let JobMessage::Panicked(msg) = &panics[0] {
-            assert!(msg.contains("intentional test panic"));
+            assert_eq!(msg, "background operation panicked");
         }
     }
 
