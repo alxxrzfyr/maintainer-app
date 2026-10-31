@@ -11,7 +11,7 @@
 A native GTK4 app for Ubuntu-based Linux.<br>
 Inspect storage, manage updates, and understand system health in one place.
 
-[Features](#features) · [Install](#install) · [Development](#development) · [Documentation](docs/README.md) · [Release status](docs/release-status.md)
+[Features](#features) · [Install](#install) · [Development](#development) · [Documentation](docs/README.md) · [Releases](https://github.com/alxxrzfyr/maintainer-app/releases)
 
 <br>
 
@@ -189,6 +189,10 @@ Keep raw local output in ignored [logs](logs/README.md).
 CI runs the configured native, security, packaging, and disposable installed-upgrade
 checks for the exact pushed commit. Local tests, hosted checks, hardware measurements,
 and interactive manual validation are separate evidence.
+
+Pushing a stable version tag such as `v1.3.0` also publishes a GitHub Release
+after its automated checks pass, using the exact installed-tested packages and
+checksums. See the [release guide](docs/releasing.md) for tagging and recovery.
 
 ### Measure performance
 

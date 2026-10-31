@@ -22,17 +22,32 @@ def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def source(metadata, repository, run_id):
+def source(metadata, repository, run_id, tag_name=None):
     workflow, run, tag = (load(metadata / name) for name in ('workflow.json', 'run.json', 'tag.json'))
     require(run['id'] == int(run_id) and run['repository']['full_name'] == repository)
     require(workflow['path'] == '.github/workflows/ci.yml' and run['workflow_id'] == workflow['id'])
     require(run['path'] == '.github/workflows/ci.yml')
-    require(run['status'] == 'completed' and run['conclusion'] == 'success')
-    require(run['event'] == 'push' and run['head_branch'] == 'main')
+    if tag_name is None:
+        require(run['status'] == 'completed' and run['conclusion'] == 'success')
+        require(run['head_branch'] == 'main')
+    else:
+        require(re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+', tag_name))
+        require(run['head_branch'] == tag_name)
+        require((run['status'], run['conclusion']) in
+                (('in_progress', None), ('completed', 'success')))
+    require(run['event'] == 'push')
     sha = run['head_sha']
     require(type(sha) is str and re.fullmatch('[a-f0-9]{40}', sha))
     require(tag['object']['type'] == 'commit' and tag['object']['sha'] == sha)
     jobs = [job for page in load(metadata / 'jobs.json') for job in page['jobs']]
+    publishers = [job for job in jobs if job['name'] == 'publish']
+    require(len(publishers) <= 1)
+    for job in publishers:
+        require(job['run_id'] == run['id'] and job['head_sha'] == sha)
+        allowed = (('completed', 'skipped'),) if tag_name is None else (
+            ('queued', None), ('in_progress', None), ('completed', 'success'))
+        require((job['status'], job['conclusion']) in allowed)
+    jobs = [job for job in jobs if job['name'] != 'publish']
     expected = {'check', 'package-amd64', 'package-arm64', 'installed-amd64', 'installed-arm64'}
     require({job['name'] for job in jobs} == expected and len(jobs) == len(expected))
     check = next(job for job in jobs if job['name'] == 'check')

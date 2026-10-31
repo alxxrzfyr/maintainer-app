@@ -37,7 +37,12 @@ class CandidateBinding(unittest.TestCase):
         root = Path(__file__).resolve().parents[2]
         candidate = (root / '.github/workflows/ci.yml').read_text()
         promote = (root / '.github/workflows/promote.yml').read_text()
-        self.assertNotIn('  publish:', candidate)
+        self.assertIn('  publish:', candidate)
+        self.assertIn('needs: [check, package, installed-artifact]', candidate)
+        self.assertIn("startsWith(github.ref, 'refs/tags/v')", candidate)
+        self.assertIn("needs.installed-artifact.result == 'success'", candidate)
+        self.assertIn('scripts/publish-release.py', candidate)
+        self.assertEqual(candidate.count('contents: write'), 1)
         self.assertNotIn('continue-on-error:', candidate + promote)
         self.assertIn('  installed-artifact:\n    name: installed-${{ matrix.deb_arch }}\n    needs: package', candidate)
         self.assertIn('name: maintainer-validated-${{ matrix.deb_arch }}', candidate)
@@ -77,6 +82,30 @@ class CandidateBinding(unittest.TestCase):
         package.write_bytes(b'rebuilt bytes')
         with self.assertRaises(ValueError):
             gate.artifact(self.base, 'amd64', self.sha, '123', self.run)
+
+    def test_completed_main_run_allows_only_a_skipped_publisher(self):
+        publisher = dict(self.jobs[0], name='publish', conclusion='skipped', steps=[])
+        self.jobs.append(publisher)
+        self.assertEqual(self.validate(), self.sha)
+        publisher['conclusion'] = 'success'
+        with self.assertRaises(ValueError):
+            self.validate()
+
+    def test_active_tag_run_requires_all_existing_checks_to_finish(self):
+        self.run.update(head_branch='v1.3.0', status='in_progress', conclusion=None)
+        self.jobs.append(dict(self.jobs[0], name='publish', status='in_progress',
+                              conclusion=None, steps=[]))
+        self.write('run.json', self.run)
+        self.write('jobs.json', [{'jobs': self.jobs}])
+        self.assertEqual(gate.source(self.base, 'owner/repo', '123', tag_name='v1.3.0'), self.sha)
+        for status, conclusion in [('in_progress', None), ('completed', 'failure'),
+                                   ('completed', 'skipped')]:
+            self.jobs[1].update(status=status, conclusion=conclusion)
+            self.write('jobs.json', [{'jobs': self.jobs}])
+            with self.assertRaises(ValueError):
+                gate.source(self.base, 'owner/repo', '123', tag_name='v1.3.0')
+        with self.assertRaises(ValueError):
+            gate.source(self.base, 'owner/repo', '123')
 
     def test_wrong_source_repository_workflow_branch_and_state_block(self):
         original = copy.deepcopy(self.run)

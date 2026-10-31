@@ -1,8 +1,13 @@
 # Release guide
 
-This repository prepares native Debian packages and verification artifacts.
-Pushing a tag runs CI; it does not publish a GitHub Release. Publication is an
-explicit action after the release evidence is complete.
+Pushing a stable version tag such as `v1.3.0` runs CI and publishes its GitHub
+Release after every build and installed-package check passes. Publishing a tag
+is therefore an instruction to release that exact commit.
+
+The release contains four uploaded files: amd64 and arm64 Debian packages, plus
+one checksum file per architecture. GitHub adds ZIP and TAR.GZ source archives,
+giving six downloads. Packages are reused from the verified workflow artifacts;
+the publishing job never rebuilds them.
 
 Current scope and open checks live in [release status](release-status.md).
 The commands below use `v1.3.0` as the planned stable release. Run Linux build
@@ -58,11 +63,40 @@ The tag points to the checked-out commit. Confirm it is the same SHA verified
 on `main`, and push only this tag. If `v1.3.0` already exists, stop and inspect
 it; published tags must not be moved or force-pushed.
 
-The tag triggers `.github/workflows/ci.yml`. Wait for that run as well before
-publishing. Installed-upgrade tests download the latest published package, which
-must still be the previous version while testing this candidate.
+The tag triggers `.github/workflows/ci.yml`. Its publishing job waits for the
+existing checks and both architectures' installed-package tests. It verifies
+the remote tag, source commit, workflow/run attempt, package versions,
+architectures, lockfile bytes, and checksums before uploading.
 
-## Collect the verified packages
+The job creates a draft first, uploads and verifies all four files, then
+publishes it as the latest release. Repeating publication accepts identical
+files and fills missing uploads; different or unexpected assets fail validation
+without being replaced. Upgrade tests select the newest earlier stable release,
+so reruns still exercise an upgrade after this version is published.
+
+Only the publishing job has release-write permission. Branch and pull-request
+runs cannot publish. Tags must use `vMAJOR.MINOR.PATCH`, and the tagged commit
+must belong to `main`. Automated publication does not mark unmeasured manual or
+performance acceptance as passed.
+
+## Publish an existing tag
+
+A tag created before this publishing job was added still uses its original
+workflow. Keep that tag unchanged and run the recovery option from `main`:
+
+1. Open **Actions → CI → Run workflow** and select branch `main`.
+2. Set `release_tag` to the existing tag, such as `v1.3.0`.
+3. Set `candidate_run_id` to a successful **main push** CI run for the exact
+   tagged commit. For the original 1.3.0 merge, this is `41240057429`.
+4. Run the workflow. Recovery validates that run's completed tests, source, and
+   installed-tested artifacts, then publishes those exact files.
+
+Recovery skips rebuilding because it consumes an already successful run. A
+failed, foreign, PR-only, or mismatched run is rejected. If the artifacts have
+expired, obtain a fresh complete verification run rather than replacing the
+tag or using unrelated package bytes.
+
+## Inspect or download packages manually
 
 From the successful final `main` push CI run, download both
 `maintainer-validated-amd64` and `maintainer-validated-arm64`. Use the artifacts
@@ -85,11 +119,12 @@ checksum file from inside its directory:
 Confirm both `SOURCE-*.json` manifests name the tagged commit, the intended CI
 run, matching lockfile hashes, and exact package hashes. The annotated tag can
 be resolved to its commit with `git rev-parse "v1.3.0^{commit}"`.
-`scripts/validate-candidate.py` provides the existing source/tag/artifact binding
-checks; its source check requires a successful `main` push run. Preserve the
+`scripts/validate-candidate.py` provides source/tag/artifact binding checks.
+Recovery requires a successful `main` push run; automatic publishing validates
+the active tag run after its prerequisite jobs finish. Preserve the
 manifests and lockfile with the reviewed validation evidence.
 
-## Publish the GitHub Release
+## Manual publication fallback
 
 Use the existing tag, the finalized versioned release notes, and the exact
 validated packages and checksum files:
@@ -102,7 +137,7 @@ gh release create v1.3.0 /tmp/maintainer-release-1.3.0/amd64/maintainer_1.3.0-1_
 release; use `--draft` when preparing an unpublished GitHub preview. A Git tag
 and a GitHub Release are separate objects.
 
-After publication, verify both downloads and checksums, record the release URL,
+After automatic or manual publication, verify both downloads and checksums, record the release URL,
 and update release status/README with the actual publication result. APT repository
 signing and publication are separate operations; these steps do not access keys
 or publish an APT repository.

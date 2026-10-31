@@ -2,7 +2,9 @@
 
 Version 1.3.0 remains an unpublished development candidate. Release acceptance
 is incomplete: the last clean hardware sample fails CPU acceptance, and the
-manual checks below remain open. Builds and CI do not publish a release.
+manual checks below remain open. Tag-triggered CI now automates publication
+after the existing build and installed-package checks; it does not certify the
+remaining performance or manual acceptance work.
 
 Release preparation targets `v1.3.0` and Debian version `1.3.0-1`. All three
 Cargo packages already use `1.3.0`; package metadata remains explicitly
@@ -75,9 +77,12 @@ Use the [candidate commands](../README.md#build-a-candidate) after all release
 inputs are final. Their external manifest binds source, lockfile, three full test
 passes, and package/runtime bytes; it does not install on the personal host.
 
-PR #4 still needs to reach `main` before the stable release is tagged. Confirm
-fresh checks for the exact merged commit after all metadata edits. Tag pushes
-trigger CI; they do not create a GitHub Release or upload release assets.
+PR #4 merged as `56d745c`, and `v1.3.0` points to that commit. Its main and tag
+CI runs passed, including both installed-package jobs. The new publishing job
+was added afterward, so this existing tag needs the one-time recovery procedure
+in the [release guide](releasing.md#publish-an-existing-tag).
+Future stable tag pushes run the complete pipeline and publish its four verified
+assets automatically. GitHub supplies the two source archives.
 
 [Archived plans](archive/README.md) are historical records. Their status labels
 neither complete nor waive unfinished work. Green CI does not waive performance

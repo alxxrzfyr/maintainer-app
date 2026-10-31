@@ -12,6 +12,9 @@ Publication status and outstanding acceptance checks are tracked in
 
 ### Added
 
+- Tag-triggered GitHub Releases publish the verified amd64/arm64 packages and
+  checksum files after automated checks pass. A recovery workflow publishes
+  existing tags from a successful matching `main` CI run without rebuilding.
 - Native APT transactions retain the reviewed resolver plan and package locks
   through execution. A separate transaction owner provides scoped authorization,
   durable receipts, Resume, cancellation boundaries, and read-only recovery audits.
