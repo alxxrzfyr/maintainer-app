@@ -42,6 +42,8 @@ pub enum HoldState {
 /// A single package that has an update available.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UpdateCandidate {
+    /// Architecture confirmed by the backend; absent when unresolved.
+    pub architecture: Option<String>,
     /// Package name.
     pub name: String,
     /// Currently installed version, if any.
@@ -67,6 +69,19 @@ pub struct UpdateCandidate {
     pub is_kernel: bool,
 }
 
+impl UpdateCandidate {
+    /// Stable selection identity, including a confirmed architecture.
+    pub fn selection_key(&self) -> String {
+        if self.name.contains(':') {
+            self.name.clone()
+        } else if let Some(architecture) = &self.architecture {
+            format!("{}:{architecture}", self.name)
+        } else {
+            self.name.clone()
+        }
+    }
+}
+
 /// A package scheduled for removal as part of the update.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemovalCandidate {
@@ -76,6 +91,35 @@ pub struct RemovalCandidate {
     pub installed_version: String,
 }
 
+/// An exact package/version explicitly requested before dependency resolution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpdateRequest {
+    pub architecture: Option<String>,
+    pub name: String,
+    pub version: String,
+}
+
+impl UpdateRequest {
+    /// Preserve an explicit architecture without adding a second qualifier.
+    pub fn package_spec(&self) -> String {
+        let name = if self.name.contains(':') {
+            self.name.clone()
+        } else if let Some(architecture) = &self.architecture {
+            format!("{}:{architecture}", self.name)
+        } else {
+            self.name.clone()
+        };
+        format!("{name}={}", self.version)
+    }
+}
+
+/// Resolver intent, independent of the number of resolved package operations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UpdateIntent {
+    FullUpgrade,
+    Selected(Vec<UpdateRequest>),
+}
+
 /// An immutable, reviewed update plan.
 ///
 /// Once created, no mutations are allowed. If the package set changes (e.g.,
@@ -83,6 +127,8 @@ pub struct RemovalCandidate {
 /// and a fresh review performed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UpdatePlan {
+    /// Original resolver request, excluding dependencies added by APT.
+    pub intent: UpdateIntent,
     /// Unique plan identifier.
     pub plan_id: String,
     /// When the plan was created.

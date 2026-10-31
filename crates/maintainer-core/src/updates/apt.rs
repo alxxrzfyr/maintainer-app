@@ -11,7 +11,7 @@ use std::path::Path;
 
 use super::model::{
     DiscoveryError, DiscoveryResult, HoldState, RemovalCandidate, UpdateBackend, UpdateCandidate,
-    UpdateClassification, UpdatePlan,
+    UpdateClassification, UpdateIntent, UpdatePlan, UpdateRequest,
 };
 
 /// Detect whether a package name refers to a Linux kernel package.
@@ -194,6 +194,34 @@ impl AptDiscovery {
         cancel: &dyn Cancellation,
         selected: &[UpdateCandidate],
     ) -> Capability<DiscoveryResult> {
+        let requests = selected
+            .iter()
+            .map(|candidate| UpdateRequest {
+                architecture: candidate.architecture.clone(),
+                name: candidate.name.clone(),
+                version: candidate.available_version.clone(),
+            })
+            .collect::<Vec<_>>();
+        Self::resolve_selection(runner, cancel, &requests)
+    }
+
+    /// Revalidate with the same resolver and original requests used for review.
+    pub fn revalidate_plan(
+        runner: &dyn CommandRunner,
+        cancel: &dyn Cancellation,
+        plan: &UpdatePlan,
+    ) -> Capability<DiscoveryResult> {
+        match &plan.intent {
+            UpdateIntent::FullUpgrade => Self::check_full_upgrade(runner, cancel),
+            UpdateIntent::Selected(requests) => Self::resolve_selection(runner, cancel, requests),
+        }
+    }
+
+    fn resolve_selection(
+        runner: &dyn CommandRunner,
+        cancel: &dyn Cancellation,
+        selected: &[UpdateRequest],
+    ) -> Capability<DiscoveryResult> {
         // Empty selection is a no-op: no packages to install means the system
         // is effectively up-to-date from the user's perspective.
         if selected.is_empty() {
@@ -204,10 +232,7 @@ impl AptDiscovery {
         // selected candidate. The version pin ensures apt resolves against
         // exactly the versions the user reviewed, not newer ones that may
         // have appeared since the original discovery.
-        let pinned_args: Vec<String> = selected
-            .iter()
-            .map(|c| format!("{}={}", c.name, c.available_version))
-            .collect();
+        let pinned_args: Vec<String> = selected.iter().map(UpdateRequest::package_spec).collect();
 
         let mut args = vec![
             "--simulate".to_string(),
@@ -261,7 +286,10 @@ impl AptDiscovery {
             }));
         }
 
-        let parse_result = parse_apt_simulate(&output);
+        let mut parse_result = parse_apt_simulate(&output);
+        if let DiscoveryResult::Available(plan) = &mut parse_result {
+            plan.intent = UpdateIntent::Selected(selected.to_vec());
+        }
         Capability::Available(parse_result)
     }
 }
@@ -324,6 +352,7 @@ pub fn parse_apt_simulate(output: &CommandOutput) -> DiscoveryResult {
         .iter()
         .filter(|name| !candidates.iter().any(|c| &c.name == *name))
         .map(|name| UpdateCandidate {
+            architecture: None,
             name: name.clone(),
             installed_version: None,
             available_version: String::new(),
@@ -348,6 +377,7 @@ pub fn parse_apt_simulate(output: &CommandOutput) -> DiscoveryResult {
 
     let content_hash = compute_plan_hash(&candidates, &removals);
     let plan = UpdatePlan {
+        intent: UpdateIntent::FullUpgrade,
         plan_id: uuid::Uuid::new_v4().to_string(),
         created_at: std::time::SystemTime::now(),
         candidates,
@@ -403,9 +433,29 @@ fn parse_inst_line(line: &str, _new_packages: &[String]) -> Option<UpdateCandida
     // Classify based on origin containing "security".
     let classification = classify_origin(origin);
 
+    let architecture = paren_content
+        .split_whitespace()
+        .last()
+        .and_then(|value| value.strip_prefix('[')?.strip_suffix(']'))
+        .filter(|value| {
+            !value.is_empty()
+                && value
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        })
+        .or_else(|| name.split_once(':').map(|(_, arch)| arch))
+        .map(str::to_string);
+    if let (Some((_, qualified)), Some(architecture)) =
+        (name.split_once(':'), architecture.as_deref())
+    {
+        if qualified != architecture {
+            return None;
+        }
+    }
     let is_new = installed_version.is_none();
 
     Some(UpdateCandidate {
+        architecture,
         name: name.to_string(),
         installed_version,
         available_version,
@@ -491,7 +541,14 @@ fn compute_plan_hash(candidates: &[UpdateCandidate], removals: &[RemovalCandidat
     use std::fmt::Write;
     let mut data = String::new();
     for c in candidates {
-        let _ = write!(data, "{}:{}:{};", c.name, c.available_version, c.is_new);
+        let _ = write!(
+            data,
+            "{}:{}:{}:{};",
+            c.name,
+            c.architecture.as_deref().unwrap_or("?"),
+            c.available_version,
+            c.is_new
+        );
     }
     for r in removals {
         let _ = write!(data, "-{}:{};", r.name, r.installed_version);
@@ -528,6 +585,41 @@ mod tests {
             stdout_truncated: false,
             stderr_truncated: false,
         }
+    }
+
+    #[test]
+    fn architecture_is_preserved_in_selection_resolution_and_plan_hash() {
+        let output = make_output("Inst libfoo [1.0] (2.0 Ubuntu:stable [i386])\n", "", 0);
+        let parsed = parse_apt_simulate(&output);
+        let DiscoveryResult::Available(plan) = parsed else {
+            panic!("missing plan");
+        };
+        assert_eq!(plan.candidates[0].architecture.as_deref(), Some("i386"));
+        let mut other = plan.candidates.clone();
+        other[0].architecture = Some("amd64".into());
+        assert_ne!(
+            compute_plan_hash(&plan.candidates, &[]),
+            compute_plan_hash(&other, &[])
+        );
+        let runner = CapturingMockRunner::new(output);
+        let result = AptDiscovery::plan_for_selection(
+            &runner,
+            &crate::jobs::CancellationToken::new(),
+            &plan.candidates,
+        );
+        assert!(
+            runner
+                .captured_args()
+                .contains(&"libfoo:i386=2.0".to_string())
+        );
+        let Capability::Available(DiscoveryResult::Available(selected)) = result else {
+            panic!("missing selected plan");
+        };
+        let UpdateIntent::Selected(requests) = selected.intent else {
+            panic!("missing intent");
+        };
+        assert_eq!(requests[0].architecture.as_deref(), Some("i386"));
+        assert_eq!(requests[0].package_spec(), "libfoo:i386=2.0");
     }
 
     #[test]
@@ -996,6 +1088,7 @@ mod tests {
 
     fn make_test_candidate(name: &str, version: &str) -> UpdateCandidate {
         UpdateCandidate {
+            architecture: None,
             name: name.to_string(),
             installed_version: Some("1.0.0".to_string()),
             available_version: version.to_string(),
@@ -1079,6 +1172,19 @@ mod tests {
             Capability::Available(DiscoveryResult::Available(p)) => p,
             other => panic!("Expected Available plan, got {other:?}"),
         };
+
+        let original_args = runner.captured_args();
+        let requests = match &plan.intent {
+            UpdateIntent::Selected(requests) => requests,
+            other => panic!("selection lost its intent: {other:?}"),
+        };
+        assert_eq!(requests.len(), 2);
+        assert!(!requests.iter().any(|request| request.name == "libgnutls30"));
+        let revalidated = AptDiscovery::revalidate_plan(&runner, &cancel, &plan);
+        assert_eq!(runner.captured_args(), original_args);
+        assert!(
+            matches!(revalidated, Capability::Available(DiscoveryResult::Available(ref current)) if current.content_hash == plan.content_hash && current.intent == plan.intent)
+        );
 
         // libgnutls30 was NOT in the user's selection but apt decided to
         // install it as a dependency. It must appear in the plan as a new

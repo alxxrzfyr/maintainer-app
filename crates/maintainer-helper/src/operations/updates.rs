@@ -1,94 +1,40 @@
-//! Fixed system update execution for the privileged helper CLI.
-
-use std::os::unix::process::CommandExt;
-use std::process::Command;
+//! Refuse package execution until an authoritative reviewed-plan owner exists.
 
 use crate::api::InstallUpdatesRequest;
 
-const APT_GET_PATH: &str = "/usr/bin/apt-get";
-
-/// Build the only APT argument shapes this helper permits.
-pub fn apt_get_arguments(request: &InstallUpdatesRequest) -> Vec<String> {
-    let mut arguments = vec![
-        "-y".to_string(),
-        "-o".to_string(),
-        "APT::Status-Fd=1".to_string(),
-        "-o".to_string(),
-        "Dpkg::Options::=--force-confdef".to_string(),
-        "-o".to_string(),
-        "Dpkg::Options::=--force-confold".to_string(),
-    ];
-    match request {
-        InstallUpdatesRequest::Full => arguments.push("dist-upgrade".to_string()),
-        InstallUpdatesRequest::Selected(package_specs) => {
-            arguments.push("install".to_string());
-            // Prevent every following package spec from being interpreted as
-            // an APT option even if validation is accidentally weakened later.
-            arguments.push("--".to_string());
-            arguments.extend(package_specs.iter().cloned());
-        }
-    }
-    arguments
-}
-
-/// Replace the authenticated helper process with the fixed APT transaction.
+/// The legacy CLI cannot bind the complete dependency plan to execution or
+/// retain ownership across GUI disconnects. Version pins cover only requested
+/// packages. Neither repeating simulation nor a separate PackageKit simulation
+/// freezes the resolver state used by the eventual transaction.
 ///
-/// `exec` preserves stdout/stderr pipes and PID, so the app can stream real APT
-/// progress and cancellation terminates APT itself rather than orphaning a
-/// privileged child process.
-pub fn exec_install_updates(request: &InstallUpdatesRequest) -> std::io::Error {
-    let arguments = apt_get_arguments(request);
-    Command::new(APT_GET_PATH)
-        .args(arguments)
-        .env_clear()
-        .env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin")
-        .env("DEBIAN_FRONTEND", "noninteractive")
-        .exec()
+/// Keep this entrypoint fail-closed so direct invocations cannot bypass the GUI
+/// capability check. No child process or package-manager lock is acquired.
+pub fn exec_install_updates(_request: &InstallUpdatesRequest) -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        maintainer_core::updates::PACKAGE_EXECUTION_UNAVAILABLE_REASON,
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::InstallUpdatesRequest;
 
     #[test]
-    fn full_update_builds_fixed_dist_upgrade_arguments() {
-        assert_eq!(
-            apt_get_arguments(&InstallUpdatesRequest::Full),
-            [
-                "-y",
-                "-o",
-                "APT::Status-Fd=1",
-                "-o",
-                "Dpkg::Options::=--force-confdef",
-                "-o",
-                "Dpkg::Options::=--force-confold",
-                "dist-upgrade",
-            ]
-        );
+    fn full_upgrade_cannot_enter_unbound_package_execution() {
+        let error = exec_install_updates(&InstallUpdatesRequest::Full);
+        assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
+        assert!(error.to_string().contains("reviewed-plan binding"));
     }
 
     #[test]
-    fn selected_update_uses_option_terminator_and_exact_versions() {
+    fn version_pins_cannot_enable_unbound_dependency_execution() {
         let request = InstallUpdatesRequest::Selected(vec![
             "curl=8.5.0-2ubuntu10.6".to_string(),
             "libc6:amd64=2.39-0ubuntu8.4".to_string(),
         ]);
-        assert_eq!(
-            apt_get_arguments(&request),
-            [
-                "-y",
-                "-o",
-                "APT::Status-Fd=1",
-                "-o",
-                "Dpkg::Options::=--force-confdef",
-                "-o",
-                "Dpkg::Options::=--force-confold",
-                "install",
-                "--",
-                "curl=8.5.0-2ubuntu10.6",
-                "libc6:amd64=2.39-0ubuntu8.4",
-            ]
-        );
+        let error = exec_install_updates(&request);
+        assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
+        assert!(error.to_string().contains("transaction ownership"));
     }
 }
