@@ -15,6 +15,9 @@ User=root
 # removes everything it has no reason to reach.
 
 # Filesystem is read-only apart from the two caches it is allowed to empty.
+StateDirectory=maintainer
+StateDirectoryMode=0700
+UMask=0077
 ProtectSystem=strict
 ReadWritePaths=/var/cache/apt /var/log/journal
 ProtectHome=yes

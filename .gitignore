@@ -20,3 +20,20 @@ gschemas.compiled
 
 # OS noise
 .DS_Store
+/scripts/__pycache__/
+/tests/performance/__pycache__/
+/tests/release/__pycache__/
+/tests/package_transaction/__pycache__/
+
+# Local credentials and validation state
+.env
+.env.*
+!.env.example
+!.env.sample
+.gstack/
+/SHA256SUMS-*
+/SOURCE-*.json
+
+# Private raw logs; only the storage guide is public
+/logs/*
+!/logs/README.md

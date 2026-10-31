@@ -2,7 +2,7 @@
 
 Date: 2026-10-30. Source baseline: `07f7b9a096c3a84b57b329fca5e4d4d2d93289c1` (1.2.0); reconciled with `main` at `79b42ac`.
 Status: implementation proposal; no runtime changes or Linux validation in this review.
-Read with the [evidence register](../research/2026-10-30-engineering-review.md), [safety decisions A1-A3](safety-design-decisions.md) and [memory experiments M0-M6](../research/2026-10-30-memory-under-100mb.md). [Documentation index](../README.md). D0-D13 are stable references, not execution order; new types/files are proposals.
+Read with the [evidence register](../research/2026-10-30-engineering-review.md), [safety decisions A1-A3](safety-design-decisions.md) and [memory experiments M0-M6](../research/2026-10-30-memory-under-100mb.md). [Documentation index](../../README.md). D0-D13 are stable references, not execution order; new types/files are proposals.
 
 ## 1. Outcome and constraints
 
@@ -21,7 +21,7 @@ Deliver a responsive, lightweight native GTK4 maintenance app for Ubuntu 22.04 a
 
 Keep 2 s default monitoring and 10 s hidden sampling. Render on demand; 60 FPS is an interaction aspiration. Preserve accessibility and safety during optimization. Use existing dependencies first. Exclude WebView/Electron/libadwaita, automatic duplicate deletion, RAM cleaning, arbitrary commands, unsolicited scans, new cleaner catalogs and a snapshot/rollback engine. Defer other feature expansion.
 
-**Shared rules:** helper API/Polkit changes require explicit approval, [threat review](../threat-model.md) and authorization tests; this plan grants none. Keep other maintenance operations sandboxed. Preserve shipped migrations and Cargo-owned lockfiles; no signing credentials needed. Missing evidence is `unverified`. Interrupted mutations may be `partial`, `recovery required` or `outcome unknown`; never automatically replay them. One terminal notification does not guarantee exactly-once effects across crashes.
+**Shared rules:** helper API/Polkit changes require explicit approval, [threat review](../../threat-model.md) and authorization tests; this plan grants none. Keep other maintenance operations sandboxed. Preserve shipped migrations and Cargo-owned lockfiles; no signing credentials needed. Missing evidence is `unverified`. Interrupted mutations may be `partial`, `recovery required` or `outcome unknown`; never automatically replay them. One terminal notification does not guarantee exactly-once effects across crashes.
 
 ## 2. Delivery order and accountability
 

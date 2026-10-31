@@ -1,6 +1,31 @@
 #!/bin/sh
 set -e
 
+# Restore only masks created by this exact package transaction.
+restore_helper_activation() {
+    for service in maintainer-helper maintainer-package-owner; do
+        state=/run/${service}-package-upgrade
+        [ "$service" != maintainer-helper ] || state=/run/maintainer-package-upgrade
+        mask=/run/systemd/system/${service}.service
+        [ -d "$state" ] || continue
+        [ ! -L "$state" ] && [ "$(stat -c '%u:%a' "$state")" = 0:700 ] || return 1
+        [ -f "$state/mask-identity" ] && [ ! -L "$state/mask-identity" ] || return 1
+        if [ -L "$mask" ] && [ "$(readlink "$mask")" = /dev/null ] &&
+           [ "$(stat -c '%d:%i' "$mask")" = "$(cat "$state/mask-identity")" ]; then
+            rm -- "$mask" "$state/mask-identity"
+            rmdir -- "$state"
+            systemctl daemon-reload
+        else
+            echo 'Maintainer activation mask changed; administrator review required.' >&2
+            return 1
+        fi
+    done
+}
+
+case "${1:-}" in
+    abort-install|abort-upgrade|disappear|remove|purge) restore_helper_activation ;;
+esac
+
 # DEBHELPER#
 
 if [ "$1" = "remove" ] || [ "$1" = "purge" ]; then
@@ -21,6 +46,15 @@ if [ "$1" = "remove" ] || [ "$1" = "purge" ]; then
 fi
 
 if [ "$1" = "purge" ]; then
+    # Never remove receipts retained by an approved backend surviving its owner.
+    transactions=/var/lib/maintainer/transactions
+    if [ -e "$transactions" ] || [ -L "$transactions" ]; then
+        [ -d "$transactions" ] && [ ! -L "$transactions" ] &&
+        [ "$(stat -c '%u:%a' "$transactions")" = 0:700 ] || exit 1
+        [ ! -L "$transactions/current.lock" ] || exit 1
+        exec 9>"$transactions/current.lock"
+        flock -n 9 || { echo 'Maintainer package backend is busy; purge refused.' >&2; exit 1; }
+    fi
     # Remove user data directories on purge only
     # User databases and settings survive ordinary uninstall
     rm -rf /var/lib/maintainer 2>/dev/null || true

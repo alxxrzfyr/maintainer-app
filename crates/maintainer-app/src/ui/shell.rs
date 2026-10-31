@@ -1,9 +1,9 @@
 //! Application shell: main window layout with navigation and page stack.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use glib::ControlFlow;
 use gtk4::prelude::*;
@@ -11,8 +11,6 @@ use gtk4::{
     Align, ApplicationWindow, Box as GtkBox, Button, Label, MenuButton, Orientation, Popover,
     Stack, StackTransitionType,
 };
-
-use maintainer_core::settings::SettingsRepository;
 
 use crate::monitoring::MonitoringMessage;
 use crate::runtime::RuntimeHandle;
@@ -29,6 +27,12 @@ use crate::ui::settings::build_settings_page;
 use crate::ui::storage::StoragePage;
 use crate::ui::system::SystemPage;
 use crate::ui::updates::UpdatesPage;
+
+mod cleanup;
+mod diagnostics;
+mod settings;
+mod storage;
+mod updates;
 
 /// The application shell manages the window layout and page lifecycle.
 pub struct Shell {
@@ -53,7 +57,7 @@ impl Shell {
 
         let overview_page = OverviewPage::new();
         let system_page = SystemPage::new();
-        let network_page = NetworkPage::new();
+        let network_page = NetworkPage::new(runtime.borrow().executor.clone());
         let processes_page = ProcessesPage::new();
         // GTK4 has no refuse-fullscreen flag. Reverse compositor or keyboard
         // fullscreen requests as soon as the asynchronous property changes.
@@ -62,47 +66,6 @@ impl Shell {
                 window.unfullscreen();
             }
         });
-        let storage_page = StoragePage::new();
-        let cleanup_page = CleanupPage::new();
-        let updates_page = UpdatesPage::new();
-        let diagnostics_page = DiagnosticsPage::new();
-        let reports_widget = build_reports_page(runtime.clone());
-
-        let settings_snapshot = runtime.borrow().settings.clone();
-        let runtime_for_settings = runtime.clone();
-        let window_for_settings = window.clone();
-        let settings_widget = build_settings_page(&settings_snapshot, move |intent| match intent {
-            crate::state::SettingsIntent::RequestDeleteAllHistory => {
-                Self::confirm_settings_deletion(&window_for_settings, &runtime_for_settings, false);
-            }
-            crate::state::SettingsIntent::RequestDeleteAllData => {
-                Self::confirm_settings_deletion(&window_for_settings, &runtime_for_settings, true);
-            }
-            intent => {
-                let requested_theme = match &intent {
-                    crate::state::SettingsIntent::SetTheme(theme) => Some(*theme),
-                    _ => None,
-                };
-                let mut rt = runtime_for_settings.borrow_mut();
-                let mut settings_state =
-                    crate::state::SettingsState::from_snapshot(rt.settings.clone());
-                if settings_state.reduce(intent) {
-                    rt.settings = settings_state.snapshot.clone();
-                    if let Some(db) = rt.database() {
-                        let repo = maintainer_core::settings::SqliteSettingsRepository::new(db);
-                        let core_settings = to_core_settings(&settings_state.snapshot);
-                        if let Err(error) = repo.save(&core_settings) {
-                            eprintln!("warning: failed to save settings: {error}");
-                        }
-                    }
-                    drop(rt);
-                    if let Some(theme) = requested_theme {
-                        crate::application::apply_theme(theme);
-                    }
-                }
-            }
-        });
-
         let page_stack = Stack::new();
         page_stack.set_transition_type(StackTransitionType::None);
         page_stack.set_hexpand(true);
@@ -112,12 +75,45 @@ impl Shell {
         page_stack.add_named(system_page.widget(), Some("System"));
         page_stack.add_named(network_page.widget(), Some("Network"));
         page_stack.add_named(processes_page.widget(), Some("Processes"));
-        page_stack.add_named(storage_page.widget(), Some("Storage"));
-        page_stack.add_named(cleanup_page.widget(), Some("Cleanup"));
-        page_stack.add_named(updates_page.widget(), Some("Updates"));
-        page_stack.add_named(diagnostics_page.widget(), Some("Diagnostics"));
-        page_stack.add_named(&reports_widget, Some("Reports"));
-        page_stack.add_named(&settings_widget, Some("Settings"));
+        for page in [
+            Page::Storage,
+            Page::Cleanup,
+            Page::Updates,
+            Page::Diagnostics,
+            Page::Reports,
+            Page::Settings,
+        ] {
+            let runtime = runtime.clone();
+            let window = window.downgrade();
+            Self::add_lazy_page(&page_stack, page.label(), move || match page {
+                Page::Storage => {
+                    let page = StoragePage::new();
+                    Self::wire_storage_dispatch(&page, &runtime);
+                    Some(page.widget().clone().upcast())
+                }
+                Page::Cleanup => {
+                    let window = window.upgrade()?;
+                    let page = CleanupPage::new();
+                    Self::wire_cleanup_dispatch(&page, &runtime, &window);
+                    Some(page.widget().clone().upcast())
+                }
+                Page::Updates => {
+                    let page = UpdatesPage::new();
+                    Self::wire_updates_dispatch(&page, &runtime);
+                    Some(page.widget().clone().upcast())
+                }
+                Page::Diagnostics => {
+                    let page = DiagnosticsPage::new();
+                    Self::wire_diagnostics_dispatch(&page, &runtime);
+                    Some(page.widget().clone().upcast())
+                }
+                Page::Reports => Some(build_reports_page(runtime).upcast()),
+                Page::Settings => {
+                    Some(Self::build_runtime_settings_page(&runtime, &window.upgrade()?).upcast())
+                }
+                _ => None,
+            });
+        }
 
         page_stack.set_visible_child_name("Overview");
 
@@ -236,27 +232,66 @@ impl Shell {
 
         let runtime_for_proc_terminate = runtime.clone();
         let proc_terminate_status = processes_ref.operation_status_handle().clone();
+        let parent_for_process = window.downgrade();
         processes_ref.connect_terminate(move |pid, start_time_ticks| {
             proc_terminate_status.remove_css_class("error");
-            proc_terminate_status.set_text("Requesting authorization…");
+            proc_terminate_status.set_text("Preparing process review…");
             proc_terminate_status.set_visible(true);
-
             let rt = runtime_for_proc_terminate.borrow();
             let helper = rt.helper.clone();
             let executor = rt.executor.clone();
             drop(rt);
+            let executor_for_review = executor.clone();
             let status = proc_terminate_status.clone();
-            crate::dispatch::dispatch_helper_call(
+            let parent = parent_for_process.clone();
+            crate::dispatch::dispatch_local_action(
                 &executor,
-                move || helper.terminate_process(pid, start_time_ticks),
-                move |result| Self::show_helper_result(&status, result),
+                move || maintainer_core::metrics::ProcessHandle::acquire(
+                    maintainer_core::metrics::ProcessIdentity { pid, start_time_ticks }
+                ).map_err(|error| error.to_string()),
+                move |result| {
+                    let handle = match result {
+                        Ok(handle) => handle,
+                        Err(error) => {
+                            status.add_css_class("error");
+                            status.set_text(&error);
+                            return;
+                        }
+                    };
+                    let Some(parent) = parent.upgrade() else { return; };
+                    let dialog = gtk4::MessageDialog::builder()
+                        .transient_for(&parent).modal(true)
+                        .message_type(gtk4::MessageType::Warning)
+                        .text("End this process?")
+                        .secondary_text(format!(
+                            "{} (PID {}, start tick {}). Unsaved work may be lost. This sends SIGTERM; exit is not guaranteed.",
+                            handle.name(), handle.identity().pid, handle.identity().start_time_ticks
+                        )).build();
+                    dialog.add_button("Cancel", gtk4::ResponseType::Cancel);
+                    dialog.add_button("Send SIGTERM", gtk4::ResponseType::Accept);
+                    dialog.set_default_response(gtk4::ResponseType::Cancel);
+                    let retained_handle = RefCell::new(Some(handle));
+                    status.set_text("Review the process before authorization.");
+                    dialog.connect_response(move |dialog, response| {
+                        dialog.close();
+                        let Some(handle) = retained_handle.borrow_mut().take() else { return; };
+                        if response != gtk4::ResponseType::Accept {
+                            status.set_text("Cancelled; no signal was sent.");
+                            return;
+                        }
+                        status.set_text("Requesting authorization…");
+                        let status = status.clone();
+                        let helper = helper.clone();
+                        crate::dispatch::dispatch_helper_call(
+                            &executor_for_review,
+                            move || helper.terminate_process(handle),
+                            move |result| Self::show_helper_result(&status, result),
+                        );
+                    });
+                    dialog.present();
+                },
             );
         });
-        Self::wire_storage_dispatch(&storage_page, &runtime);
-        Self::wire_cleanup_dispatch(&cleanup_page, &runtime, &window);
-        Self::wire_updates_dispatch(&updates_page, &runtime);
-        Self::wire_diagnostics_dispatch(&diagnostics_page, &runtime);
-
         let runtime_for_timer = runtime.clone();
         let overview_for_timer = overview_ref.clone();
         let system_for_timer = system_ref.clone();
@@ -264,11 +299,29 @@ impl Shell {
         let processes_for_timer = processes_ref.clone();
 
         let runtime_for_vis = runtime.clone();
-        window.connect_is_active_notify(move |win| {
-            let visible = win.is_active();
-            let mut rt = runtime_for_vis.borrow_mut();
-            rt.monitoring
-                .reduce(MonitoringMessage::VisibilityChanged(visible));
+        window.connect_visible_notify(move |win| {
+            runtime_for_vis
+                .borrow_mut()
+                .monitoring
+                .reduce(MonitoringMessage::VisibilityChanged(
+                    Self::monitoring_window_visible(win),
+                ));
+        });
+        let runtime_for_surface = runtime.clone();
+        window.connect_realize(move |win| {
+            if let Some(toplevel) = win.surface().and_downcast::<gtk4::gdk::Toplevel>() {
+                let window = win.downgrade();
+                let runtime = runtime_for_surface.clone();
+                toplevel.connect_state_notify(move |_| {
+                    if let Some(window) = window.upgrade() {
+                        runtime.borrow_mut().monitoring.reduce(
+                            MonitoringMessage::VisibilityChanged(Self::monitoring_window_visible(
+                                &window,
+                            )),
+                        );
+                    }
+                });
+            }
         });
 
         Self::start_monitoring_timer(
@@ -280,124 +333,45 @@ impl Shell {
             page_stack.clone(),
         );
 
+        Self::wire_settings_close_drain(&window, &runtime, &page_stack);
+        crate::probe::install_navigation_canary(&window, &page_stack, &sidebar_container);
+
         Shell { window }
     }
 
-    fn confirm_settings_deletion(
-        parent: &ApplicationWindow,
-        runtime: &RuntimeHandle,
-        delete_all_data: bool,
-    ) {
-        let (title, body, confirm_label) = if delete_all_data {
-            (
-                "Delete all Maintainer data?",
-                "This permanently removes local settings and maintenance history. The database schema is preserved and default settings are recreated.",
-                "Delete All Data",
-            )
-        } else {
-            (
-                "Delete all history?",
-                "This permanently removes operation, diagnostic, and scan history. Settings are preserved.",
-                "Delete History",
-            )
-        };
-
-        let dialog = gtk4::MessageDialog::builder()
-            .transient_for(parent)
-            .modal(true)
-            .message_type(gtk4::MessageType::Warning)
-            .text(title)
-            .secondary_text(body)
-            .build();
-        dialog.add_button("Cancel", gtk4::ResponseType::Cancel);
-        dialog.add_button(confirm_label, gtk4::ResponseType::Accept);
-
-        let runtime_for_response = runtime.clone();
-        let parent_for_response = parent.clone();
-        dialog.connect_response(move |dialog, response| {
-            dialog.close();
-            if response != gtk4::ResponseType::Accept {
-                return;
-            }
-
-            let rt = runtime_for_response.borrow();
-            let Some(database) = rt.db.clone() else {
-                Self::show_settings_result(
-                    &parent_for_response,
-                    false,
-                    "Local database is unavailable; no data was changed.",
-                );
-                return;
-            };
-            let executor = rt.executor.clone();
-            drop(rt);
-
-            let runtime_for_done = runtime_for_response.clone();
-            let parent_for_done = parent_for_response.clone();
-            crate::dispatch::dispatch_local_action(
-                &executor,
-                move || {
-                    let result = if delete_all_data {
-                        database.clear_user_data()
-                    } else {
-                        database.clear_history()
-                    };
-                    result.map_err(|error| error.to_string())
-                },
-                move |result| match result {
-                    Ok(deleted) => {
-                        if delete_all_data {
-                            let defaults = crate::state::SettingsSnapshot::default();
-                            runtime_for_done.borrow_mut().settings = defaults.clone();
-                            if let Some(database) = runtime_for_done.borrow().db.as_deref() {
-                                let repository =
-                                    maintainer_core::settings::SqliteSettingsRepository::new(database);
-                                if let Err(error) = repository.save(&to_core_settings(&defaults)) {
-                                    Self::show_settings_result(
-                                        &parent_for_done,
-                                        false,
-                                        &format!("Data was cleared, but defaults could not be saved: {error}"),
-                                    );
-                                    return;
-                                }
-                            }
-                        }
-                        Self::show_settings_result(
-                            &parent_for_done,
-                            true,
-                            &format!("Deleted {deleted} local record(s)."),
-                        );
-                    }
-                    Err(error) => Self::show_settings_result(
-                        &parent_for_done,
-                        false,
-                        &format!("Nothing was deleted: {error}"),
-                    ),
-                },
-            );
-        });
-        dialog.present();
+    fn monitoring_window_visible(window: &ApplicationWindow) -> bool {
+        window.is_visible()
+            && !window
+                .surface()
+                .and_downcast::<gtk4::gdk::Toplevel>()
+                .is_some_and(|toplevel| {
+                    toplevel
+                        .state()
+                        .contains(gtk4::gdk::ToplevelState::MINIMIZED)
+                })
     }
 
-    fn show_settings_result(parent: &ApplicationWindow, success: bool, message: &str) {
-        let dialog = gtk4::MessageDialog::builder()
-            .transient_for(parent)
-            .modal(true)
-            .message_type(if success {
-                gtk4::MessageType::Info
-            } else {
-                gtk4::MessageType::Error
-            })
-            .text(if success {
-                "Completed"
-            } else {
-                "Action failed"
-            })
-            .secondary_text(message)
-            .build();
-        dialog.add_button("Close", gtk4::ResponseType::Close);
-        dialog.connect_response(|dialog, _| dialog.close());
-        dialog.present();
+    fn add_lazy_page(
+        stack: &Stack,
+        name: &'static str,
+        factory: impl FnOnce() -> Option<gtk4::Widget> + 'static,
+    ) {
+        let host = GtkBox::new(Orientation::Vertical, 0);
+        host.set_hexpand(true);
+        host.set_vexpand(true);
+        stack.add_named(&host, Some(name));
+        let factory = RefCell::new(Some(factory));
+        stack.connect_visible_child_name_notify(move |stack| {
+            if stack.visible_child_name().as_deref() != Some(name) {
+                return;
+            }
+            // Consume before constructing widgets: notifications cannot build a
+            // second instance, and cached roots retain active jobs and UI state.
+            let build = factory.borrow_mut().take();
+            if let Some(widget) = build.and_then(|build| build()) {
+                host.append(&widget);
+            }
+        });
     }
 
     /// Present the window.
@@ -443,181 +417,76 @@ impl Shell {
     ) {
         let tick_counter: Rc<RefCell<u32>> = Rc::new(RefCell::new(0));
 
-        let (snapshot_tx, snapshot_rx) =
-            std::sync::mpsc::channel::<Box<maintainer_core::metrics::SystemSnapshot>>();
+        let latest_snapshot = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let snapshot_for_worker = latest_snapshot.clone();
+        let (device_info_tx, device_info_rx) =
+            std::sync::mpsc::channel::<crate::monitoring::DeviceInfo>();
+        let mut connection_pending: Option<
+            maintainer_core::jobs::JobReceiver<maintainer_core::metrics::ConnectionDetails>,
+        > = None;
 
-        // Bounded request channel (capacity=1) provides tick coalescing.
-        // reuses the last collected process list instead of re-reading all of
-        // /proc/[pid], which is the single most expensive collector per tick.
+        // Coalesce worker requests. Only the Processes page requests a scan;
+        // its view model owns the retained rows between fresh process samples.
         let (request_tx, request_rx) = std::sync::mpsc::sync_channel::<bool>(1);
 
-        std::thread::Builder::new()
+        let device_info_worker_started = std::thread::Builder::new()
+            .name("device-info-worker".into())
+            .spawn(move || {
+                let info = crate::monitoring::collect_device_info();
+                let _ = device_info_tx.send(info);
+            })
+            .is_ok();
+        if !device_info_worker_started {
+            let info = crate::monitoring::DeviceInfo {
+                model: "Unavailable".into(),
+                os: "Unavailable".into(),
+                kernel: "Unavailable".into(),
+                cpu: "Unavailable".into(),
+                gpu: "Unavailable".into(),
+                memory: "Unavailable".into(),
+                storage: "Unavailable".into(),
+                desktop_env: "Unavailable".into(),
+                display_server: "Unavailable".into(),
+            };
+            runtime.borrow_mut().monitoring.overview.device_info = info;
+        }
+
+        let metric_worker_started = std::thread::Builder::new()
             .name("metric-worker".into())
             .spawn(move || {
-                use maintainer_core::capability::{Capability, UnavailableReason};
-                use maintainer_core::metrics::disk::read_mounts_with_capacity;
-                use maintainer_core::metrics::network::NetCounters;
-                use maintainer_core::metrics::{
-                    CpuSample, NetworkSnapshot, ProcessSnapshot, SystemSnapshot,
-                    compute_cpu_snapshot, read_cpu_sample, read_memory, read_net_dev,
-                    read_processes,
-                };
-                use std::collections::HashMap;
-                use std::path::Path;
-                use std::time::Instant;
-
-                let proc_path = Path::new("/proc");
-                let sys_path = Path::new("/sys");
-                let mut prev_cpu: Option<CpuSample> = None;
-                let mut prev_net: Option<(HashMap<String, NetCounters>, Instant)> = None;
-                let mut last_processes: Option<Capability<Vec<ProcessSnapshot>>> = None;
-                let mut temperature_collector =
-                    maintainer_core::metrics::TemperatureCollector::new();
-
+                let mut collector = maintainer_core::metrics::SystemCollector::new();
                 while let Ok(mut needs_processes) = request_rx.recv() {
                     // Drain coalesced ticks; keep the most recent request's flag.
                     while let Ok(latest) = request_rx.try_recv() {
                         needs_processes = latest;
                     }
 
-                    let now = Instant::now();
+                    let snapshot = collector.collect(needs_processes);
 
-                    let cpu = match read_cpu_sample(proc_path, now) {
-                        Ok(sample) => {
-                            let snapshot = match &prev_cpu {
-                                Some(prev) => compute_cpu_snapshot(prev, &sample),
-                                None => maintainer_core::metrics::CpuSnapshot {
-                                    total_percent: 0.0,
-                                    per_core_percent: vec![0.0; sample.cores.len()],
-                                },
-                            };
-                            prev_cpu = Some(sample);
-                            Capability::Available(snapshot)
-                        }
-                        Err(e) => Capability::Unavailable(UnavailableReason {
-                            code: "proc-stat-read",
-                            message: e.to_string(),
-                            remediation: None,
-                        }),
-                    };
-
-                    let memory = match read_memory(proc_path) {
-                        Ok(m) => Capability::Available(m),
-                        Err(e) => Capability::Unavailable(UnavailableReason {
-                            code: "meminfo-read",
-                            message: e.to_string(),
-                            remediation: None,
-                        }),
-                    };
-
-                    let disks = match read_mounts_with_capacity(proc_path) {
-                        Ok(d) => Capability::Available(d),
-                        Err(e) => Capability::Unavailable(UnavailableReason {
-                            code: "mounts-read",
-                            message: e.to_string(),
-                            remediation: None,
-                        }),
-                    };
-
-                    let network = match read_net_dev(proc_path) {
-                        Ok(counters) => {
-                            let prev = prev_net.take();
-                            let snapshots: Vec<NetworkSnapshot> = counters
-                                .iter()
-                                .map(|(iface, c)| {
-                                    let (rx_rate, tx_rate) = match &prev {
-                                        Some((prev_counters, prev_time)) => {
-                                            let elapsed =
-                                                now.duration_since(*prev_time).as_secs_f64();
-                                            if elapsed > 0.0 {
-                                                if let Some(pc) = prev_counters.get(iface) {
-                                                    let rx =
-                                                        (c.rx_bytes.saturating_sub(pc.rx_bytes))
-                                                            as f64
-                                                            / elapsed;
-                                                    let tx =
-                                                        (c.tx_bytes.saturating_sub(pc.tx_bytes))
-                                                            as f64
-                                                            / elapsed;
-                                                    (Some(rx), Some(tx))
-                                                } else {
-                                                    (None, None)
-                                                }
-                                            } else {
-                                                (None, None)
-                                            }
-                                        }
-                                        None => (None, None),
-                                    };
-                                    NetworkSnapshot {
-                                        interface: iface.clone(),
-                                        is_loopback: iface == "lo",
-                                        rx_bytes: c.rx_bytes,
-                                        tx_bytes: c.tx_bytes,
-                                        rx_packets: c.rx_packets,
-                                        tx_packets: c.tx_packets,
-                                        rx_errors: c.rx_errors,
-                                        tx_errors: c.tx_errors,
-                                        rx_bytes_per_sec: rx_rate,
-                                        tx_bytes_per_sec: tx_rate,
-                                    }
-                                })
-                                .collect();
-                            prev_net = Some((counters, now));
-                            Capability::Available(snapshots)
-                        }
-                        Err(e) => Capability::Unavailable(UnavailableReason {
-                            code: "net-dev-read",
-                            message: e.to_string(),
-                            remediation: None,
-                        }),
-                    };
-
-                    let temperatures = match temperature_collector.read(sys_path) {
-                        Ok(t) => Capability::Available(t),
-                        Err(e) => Capability::Unavailable(UnavailableReason {
-                            code: "hwmon-read",
-                            message: e.to_string(),
-                            remediation: None,
-                        }),
-                    };
-
-                    let processes = if needs_processes {
-                        let result = match read_processes(proc_path) {
-                            Ok(p) => Capability::Available(p),
-                            Err(e) => Capability::Unavailable(UnavailableReason {
-                                code: "proc-read",
-                                message: e.to_string(),
-                                remediation: None,
-                            }),
-                        };
-                        last_processes = Some(result.clone());
-                        result
-                    } else {
-                        last_processes.clone().unwrap_or(Capability::Unavailable(
-                            UnavailableReason {
-                                code: "proc-not-requested",
-                                message: "Process list not requested for this sample".into(),
-                                remediation: None,
-                            },
-                        ))
-                    };
-
-                    let snapshot = SystemSnapshot {
-                        cpu,
-                        memory,
-                        disks,
-                        network,
-                        temperatures,
-                        processes,
-                    };
-
-                    if snapshot_tx.send(Box::new(snapshot)).is_err() {
-                        break;
+                    match snapshot_for_worker.lock() {
+                        Ok(mut latest) => *latest = Some(Box::new(snapshot)),
+                        Err(_) => break,
                     }
                 }
             })
-            .expect("failed to spawn metric-worker thread");
+            .is_ok();
+        if !metric_worker_started {
+            let mut runtime = runtime.borrow_mut();
+            runtime.monitoring.overview.cpu_text = "Unavailable".into();
+            runtime.monitoring.overview.memory_text = "Unavailable".into();
+            runtime.monitoring.overview.disk_text = "Unavailable".into();
+            runtime.monitoring.overview.network_text = "Unavailable".into();
+            runtime.monitoring.overview.cpu_unavailable_reason =
+                Some("Monitoring worker could not start".into());
+            runtime.monitoring.overview.memory_unavailable_reason =
+                Some("Monitoring worker could not start".into());
+            runtime.monitoring.network_vm.unavailable_reason =
+                Some("Monitoring worker could not start".into());
+            runtime.monitoring.processes_vm.unavailable_reason =
+                Some("Monitoring worker could not start".into());
+        }
+
+        let last_connection_request = Rc::new(Cell::new(None::<Instant>));
 
         // Refresh a page as soon as it becomes visible. The timer only updates
         // the page on screen, so without this a page switched to would show
@@ -628,12 +497,16 @@ impl Shell {
             let system_for_switch = system.clone();
             let network_for_switch = network.clone();
             let processes_for_switch = processes.clone();
+            let last_connection_request = last_connection_request.clone();
             page_stack.connect_visible_child_name_notify(move |stack| {
                 let rt = runtime_for_switch.borrow();
                 match stack.visible_child_name().as_deref() {
                     Some("Overview") => overview_for_switch.update(&rt.monitoring.overview),
                     Some("System") => system_for_switch.update(&rt.monitoring.system),
-                    Some("Network") => network_for_switch.update(&rt.monitoring.network_vm),
+                    Some("Network") => {
+                        last_connection_request.set(None);
+                        network_for_switch.update(&rt.monitoring.network_vm);
+                    }
                     Some("Processes") => processes_for_switch.update(&rt.monitoring.processes_vm),
                     _ => {}
                 }
@@ -642,7 +515,50 @@ impl Shell {
 
         // Timer tick: request samples and drain results.
         glib::timeout_add_local(Duration::from_secs(1), move || {
+            if page_stack.root().is_none() {
+                return ControlFlow::Break;
+            }
             let mut rt = runtime.borrow_mut();
+            let was_loading = rt.db_loading;
+            let loaded_theme = rt.poll_database_initialization();
+            let write_result = rt.poll_settings_writes();
+            let reset_settings = write_result
+                .as_ref()
+                .is_some_and(|result| result.reset_defaults);
+            let settings_theme = reset_settings.then_some(rt.settings.theme).or(loaded_theme);
+            let database_finished = was_loading && !rt.db_loading;
+            if let Some(widget) = page_stack.child_by_name("Settings") {
+                widget.set_sensitive(!rt.db_loading && !rt.clearing_settings);
+            }
+            if let Some(result) = write_result.filter(|_| {
+                page_stack
+                    .root()
+                    .is_some_and(|window| window.is_sensitive())
+            }) {
+                if let Some(window) = page_stack.root().and_downcast::<ApplicationWindow>() {
+                    match result.result {
+                        Ok(deleted) if result.cleared => Self::show_settings_result(
+                            &window,
+                            true,
+                            &format!(
+                                "Deleted {deleted} local record(s). Settings restored to defaults."
+                            ),
+                        ),
+                        Err(message) => Self::show_settings_result(&window, false, &message),
+                        Ok(_) => {}
+                    }
+                }
+            }
+            if database_finished || reset_settings {
+                drop(rt);
+                if let Some(window) = page_stack.root().and_downcast::<ApplicationWindow>() {
+                    Self::refresh_mounted_settings(&runtime, &window, &page_stack);
+                }
+                if let Some(theme) = settings_theme {
+                    crate::application::apply_theme(theme);
+                }
+                rt = runtime.borrow_mut();
+            }
             let immediate = rt.monitoring.immediate_sample_pending;
             let interval_secs = rt.monitoring.interval.as_secs() as u32;
 
@@ -658,7 +574,41 @@ impl Shell {
             // page-switch handler repaints the incoming page immediately.
             let visible_page = page_stack.visible_child_name();
             let visible_page = visible_page.as_deref();
-            while let Ok(snapshot) = snapshot_rx.try_recv() {
+            while let Ok(info) = device_info_rx.try_recv() {
+                rt.monitoring.overview.device_info = info;
+                if visible_page == Some("Overview") {
+                    overview.update(&rt.monitoring.overview);
+                }
+            }
+            let connection_result = connection_pending
+                .as_ref()
+                .map(|receiver| receiver.try_recv());
+            if let Some(result) = connection_result {
+                match result {
+                    Ok(maintainer_core::jobs::JobMessage::Completed(details)) => {
+                        rt.monitoring.network_vm.connection_details = details;
+                        rt.monitoring.network_vm.connection_unavailable_reason = None;
+                        connection_pending = None;
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                    _ => {
+                        rt.monitoring.network_vm.connection_details = Default::default();
+                        rt.monitoring.network_vm.connection_unavailable_reason = Some(
+                            "Connection details are unavailable; another operation may be busy."
+                                .into(),
+                        );
+                        connection_pending = None;
+                    }
+                }
+                if visible_page == Some("Network") {
+                    network.update(&rt.monitoring.network_vm);
+                }
+            }
+            let snapshot = latest_snapshot
+                .lock()
+                .ok()
+                .and_then(|mut latest| latest.take());
+            if let Some(snapshot) = snapshot {
                 rt.monitoring
                     .reduce(MonitoringMessage::SnapshotReady(snapshot));
                 match visible_page {
@@ -667,6 +617,28 @@ impl Shell {
                     Some("Network") => network.update(&rt.monitoring.network_vm),
                     Some("Processes") => processes.update(&rt.monitoring.processes_vm),
                     _ => {}
+                }
+                crate::probe::mark_once("first-data");
+            }
+
+            if visible_page == Some("Network") {
+                let due = last_connection_request
+                    .get()
+                    .is_none_or(|last| last.elapsed() >= Duration::from_secs(10));
+                if due && connection_pending.is_none() {
+                    let token = maintainer_core::jobs::CancellationToken::new();
+                    let worker_token = token.clone();
+                    connection_pending = Some(rt.executor.execute_sized(vec![move || {
+                        Ok(maintainer_core::metrics::connection::read_connection_details_cancellable(&worker_token))
+                    }], token, |details| {
+                        std::mem::size_of_val(details)
+                            + details.ip_address.as_ref().map_or(0, String::capacity)
+                            + details.gateway.as_ref().map_or(0, String::capacity)
+                            + details.dns_servers.capacity() * std::mem::size_of::<String>()
+                            + details.dns_servers.iter().map(String::capacity).sum::<usize>()
+                            + details.wifi.as_ref().map_or(0, |wifi| std::mem::size_of_val(wifi) + wifi.ssid.capacity() + wifi.signal.capacity() + wifi.link_speed.capacity() + wifi.frequency.capacity())
+                    }));
+                    last_connection_request.set(Some(Instant::now()));
                 }
             }
 
@@ -678,11 +650,10 @@ impl Shell {
             rt.monitoring.immediate_sample_pending = false;
 
             // Non-blocking: if worker is busy, this tick coalesces.
-            let needs_processes = matches!(
-                page_stack.visible_child_name().as_deref(),
-                Some("System") | Some("Processes")
-            );
-            let _ = request_tx.try_send(needs_processes);
+            let needs_processes = page_stack.visible_child_name().as_deref() == Some("Processes");
+            if metric_worker_started {
+                let _ = request_tx.try_send(needs_processes);
+            }
 
             ControlFlow::Continue
         });
@@ -795,909 +766,9 @@ impl Shell {
     }
 
     /// Wire storage scans to state and render their results.
-    fn wire_storage_dispatch(storage_page: &StoragePage, runtime: &RuntimeHandle) {
-        use crate::dispatch::{self, DuplicateScanJobResult, StorageScanResult};
-        use crate::state::{StorageIntent, StorageState, StorageSubPage};
-        use std::cell::Cell;
-
-        let page = storage_page.clone();
-        let home = PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/home".to_string()));
-        let storage_state = Rc::new(RefCell::new(StorageState::default()));
-        storage_state
-            .borrow_mut()
-            .reduce(StorageIntent::SetScanRoot(home));
-        page.apply_state(&storage_state.borrow());
-
-        let state_for_change = storage_state.clone();
-        let page_for_change = page.clone();
-        storage_page
-            .overview
-            .change_root_button()
-            .connect_clicked(move |_| {
-                let dialog = gtk4::FileChooserDialog::new(
-                    Some("Select Scan Directory"),
-                    gtk4::Window::NONE,
-                    gtk4::FileChooserAction::SelectFolder,
-                    &[
-                        ("Cancel", gtk4::ResponseType::Cancel),
-                        ("Select", gtk4::ResponseType::Accept),
-                    ],
-                );
-                let state_done = state_for_change.clone();
-                let page_done = page_for_change.clone();
-                dialog.connect_response(move |dialog, response| {
-                    if response == gtk4::ResponseType::Accept {
-                        if let Some(file) = dialog.file() {
-                            if let Some(path) = file.path() {
-                                state_done
-                                    .borrow_mut()
-                                    .reduce(StorageIntent::SetScanRoot(path));
-                                page_done.apply_state(&state_done.borrow());
-                            }
-                        }
-                    }
-                    dialog.close();
-                });
-                dialog.show();
-            });
-
-        let state_for_subpage = storage_state.clone();
-        let programmatic_nav_guard = storage_page.programmatic_navigation.clone();
-        storage_page
-            .stack_handle()
-            .connect_visible_child_name_notify(move |stack| {
-                // Skip re-deriving state for a transition StoragePage::apply_state
-                // itself drove: state.sub_page is already authoritative in that
-                // case, and re-entering this borrow while apply_state's caller
-                // may still hold the same RefCell borrowed panics with
-                // BorrowMutError inside a GTK signal callback, which aborts the
-                // process rather than unwinding. See StoragePage::apply_state.
-                if programmatic_nav_guard.get() {
-                    return;
-                }
-                if let Some(name) = stack.visible_child_name() {
-                    let sub = match name.as_str() {
-                        "large-files" => StorageSubPage::LargeFiles,
-                        "duplicates" => StorageSubPage::Duplicates,
-                        _ => StorageSubPage::Overview,
-                    };
-                    let mut st = state_for_subpage.borrow_mut();
-                    if st.sub_page != sub {
-                        st.sub_page = sub;
-                    }
-                }
-            });
-
-        let active_kind = Rc::new(Cell::new(0_u8));
-        let scan_token: Rc<RefCell<Option<maintainer_core::jobs::CancellationToken>>> =
-            Rc::new(RefCell::new(None));
-        let duplicate_token: Rc<RefCell<Option<maintainer_core::jobs::CancellationToken>>> =
-            Rc::new(RefCell::new(None));
-
-        let runtime_for_scan = runtime.clone();
-        let state_for_scan = storage_state.clone();
-        let page_for_scan = page.clone();
-        let token_for_scan = scan_token.clone();
-        let kind_for_scan = active_kind.clone();
-        storage_page.overview.connect_scan(move || {
-            if kind_for_scan.get() != 0 {
-                return;
-            }
-
-            let (job_id, mut policy) = {
-                let mut state = state_for_scan.borrow_mut();
-                if !state.reduce(StorageIntent::StartStorageScan) {
-                    return;
-                }
-                let Some(scan) = state.storage_scan.as_ref() else {
-                    return;
-                };
-                (scan.job_id, scan.policy.clone())
-            };
-
-            let rt = runtime_for_scan.borrow();
-            policy.large_file_threshold_bytes = rt.settings.large_file_threshold_bytes;
-            policy
-                .exclusions
-                .extend(rt.settings.scan_exclusions.iter().map(PathBuf::from));
-            let executor = rt.executor.clone();
-            drop(rt);
-
-            kind_for_scan.set(1);
-            page_for_scan.apply_state(&state_for_scan.borrow());
-
-            let progress_state = state_for_scan.clone();
-            let progress_page = page_for_scan.clone();
-            let done_state = state_for_scan.clone();
-            let done_page = page_for_scan.clone();
-            let done_kind = kind_for_scan.clone();
-            let done_token = token_for_scan.clone();
-            let (token, _) = dispatch::dispatch_storage_scan(
-                &executor,
-                job_id,
-                policy,
-                move |progress| {
-                    if progress_state
-                        .borrow_mut()
-                        .reduce(StorageIntent::StorageScanProgress {
-                            job_id,
-                            completed: progress.completed,
-                            total: progress.total,
-                        })
-                    {
-                        progress_page.overview.apply_state(&progress_state.borrow());
-                    }
-                },
-                move |result| {
-                    let accepted = match result {
-                        StorageScanResult::Completed {
-                            job_id,
-                            large_files,
-                            issues,
-                        } => {
-                            let mut state = done_state.borrow_mut();
-                            state.reduce(StorageIntent::StorageScanCompleted {
-                                job_id,
-                                large_files,
-                                issues,
-                            }) && state
-                                .reduce(StorageIntent::NavigateSubPage(StorageSubPage::LargeFiles))
-                        }
-                        StorageScanResult::Cancelled { job_id } => done_state
-                            .borrow_mut()
-                            .reduce(StorageIntent::CancelStorageScan { job_id }),
-                        StorageScanResult::Failed { job_id, message } => {
-                            let accepted = done_state
-                                .borrow_mut()
-                                .reduce(StorageIntent::CancelStorageScan { job_id });
-                            if accepted {
-                                done_page.overview.show_error(&message);
-                            }
-                            accepted
-                        }
-                    };
-                    if accepted {
-                        done_page.apply_state(&done_state.borrow());
-                        done_kind.set(0);
-                        done_token.borrow_mut().take();
-                    }
-                },
-            );
-            *token_for_scan.borrow_mut() = Some(token);
-        });
-
-        let runtime_for_duplicates = runtime.clone();
-        let state_for_duplicates = storage_state.clone();
-        let page_for_duplicates = page.clone();
-        let token_for_duplicates = duplicate_token.clone();
-        let kind_for_duplicates = active_kind.clone();
-        storage_page.overview.connect_duplicate_scan(move || {
-            if kind_for_duplicates.get() != 0 {
-                return;
-            }
-
-            let (job_id, mut policy) = {
-                let mut state = state_for_duplicates.borrow_mut();
-                if !state.reduce(StorageIntent::StartDuplicateScan) {
-                    return;
-                }
-                let Some(scan) = state.duplicate_scan.as_ref() else {
-                    return;
-                };
-                (scan.job_id, scan.policy.clone())
-            };
-
-            let rt = runtime_for_duplicates.borrow();
-            policy.large_file_threshold_bytes = 1;
-            policy
-                .exclusions
-                .extend(rt.settings.scan_exclusions.iter().map(PathBuf::from));
-            let executor = rt.executor.clone();
-            drop(rt);
-
-            kind_for_duplicates.set(2);
-            page_for_duplicates.apply_state(&state_for_duplicates.borrow());
-
-            let progress_state = state_for_duplicates.clone();
-            let progress_page = page_for_duplicates.clone();
-            let done_state = state_for_duplicates.clone();
-            let done_page = page_for_duplicates.clone();
-            let done_kind = kind_for_duplicates.clone();
-            let done_token = token_for_duplicates.clone();
-            let (token, _) = dispatch::dispatch_duplicate_scan(
-                &executor,
-                job_id,
-                policy,
-                move |progress| {
-                    if progress_state
-                        .borrow_mut()
-                        .reduce(StorageIntent::DuplicateScanProgress {
-                            job_id,
-                            completed: progress.completed,
-                            total: progress.total,
-                        })
-                    {
-                        progress_page.overview.apply_state(&progress_state.borrow());
-                    }
-                },
-                move |result| {
-                    let accepted = match result {
-                        DuplicateScanJobResult::Completed {
-                            job_id,
-                            groups,
-                            issues,
-                        } => {
-                            let mut state = done_state.borrow_mut();
-                            state.reduce(StorageIntent::DuplicateScanCompleted {
-                                job_id,
-                                groups,
-                                issues,
-                            }) && state
-                                .reduce(StorageIntent::NavigateSubPage(StorageSubPage::Duplicates))
-                        }
-                        DuplicateScanJobResult::Cancelled { job_id } => done_state
-                            .borrow_mut()
-                            .reduce(StorageIntent::CancelDuplicateScan { job_id }),
-                        DuplicateScanJobResult::Failed { job_id, message } => {
-                            let accepted = done_state
-                                .borrow_mut()
-                                .reduce(StorageIntent::CancelDuplicateScan { job_id });
-                            if accepted {
-                                done_page.overview.show_error(&message);
-                            }
-                            accepted
-                        }
-                    };
-                    if accepted {
-                        done_page.apply_state(&done_state.borrow());
-                        done_kind.set(0);
-                        done_token.borrow_mut().take();
-                    }
-                },
-            );
-            *token_for_duplicates.borrow_mut() = Some(token);
-        });
-
-        let state_for_back = storage_state.clone();
-        let page_for_back = page.clone();
-        storage_page.large_files.connect_back(move || {
-            if state_for_back.borrow_mut().reduce(StorageIntent::DrillUp) {
-                page_for_back.apply_state(&state_for_back.borrow());
-            }
-        });
-
-        let state_for_selection = storage_state.clone();
-        let page_for_selection = page.clone();
-        storage_page
-            .duplicates
-            .connect_selection_changed(move |group_idx, file_idx| {
-                if state_for_selection.borrow_mut().reduce(
-                    StorageIntent::ToggleDuplicateSelection {
-                        group_idx,
-                        file_idx,
-                    },
-                ) {
-                    page_for_selection.apply_state(&state_for_selection.borrow());
-                }
-            });
-
-        let state_for_review = storage_state.clone();
-        let page_for_review = page.clone();
-        storage_page.duplicates.connect_review(move || {
-            if state_for_review
-                .borrow_mut()
-                .reduce(StorageIntent::BuildRemovalPlan)
-            {
-                if let Some(review) = state_for_review.borrow().removal_review.as_ref() {
-                    page_for_review.duplicates.show_review_plan(review);
-                }
-            }
-        });
-
-        let cancel_kind = active_kind;
-        storage_page
-            .overview
-            .connect_cancel(move || match cancel_kind.get() {
-                1 => {
-                    if let Some(token) = scan_token.borrow().as_ref() {
-                        token.cancel();
-                    }
-                }
-                2 => {
-                    if let Some(token) = duplicate_token.borrow().as_ref() {
-                        token.cancel();
-                    }
-                }
-                _ => {}
-            });
-    }
-
     /// Wire cleanup scan, review, confirmation, and execution.
-    fn wire_cleanup_dispatch(
-        cleanup_page: &CleanupPage,
-        runtime: &RuntimeHandle,
-        parent: &ApplicationWindow,
-    ) {
-        use crate::dispatch::{self, CleanupExecutionOutcome, CleanupScanOutcome};
-        use crate::ui::dialogs::confirm_cleanup::{ConfirmCleanupDialog, ConfirmItem};
-        use maintainer_core::cleanup::CleanupPlan;
-
-        let page = cleanup_page.clone();
-        let current_plan: Rc<RefCell<Option<CleanupPlan>>> = Rc::new(RefCell::new(None));
-        let active_token: Rc<RefCell<Option<maintainer_core::jobs::CancellationToken>>> =
-            Rc::new(RefCell::new(None));
-
-        let runtime_for_scan = runtime.clone();
-        let page_for_scan = page.clone();
-        let plan_for_scan = current_plan.clone();
-
-        let runtime_for_cache = runtime.clone();
-        let cache_status = cleanup_page.status_label_handle();
-        cleanup_page
-            .package_cache_button()
-            .connect_clicked(move |btn| {
-                btn.set_sensitive(false);
-                btn.set_label("Cleaning Package Cache…");
-                cache_status.remove_css_class("error");
-                cache_status.set_text("Requesting authorization to clean package cache…");
-                cache_status.set_visible(true);
-                let rt = runtime_for_cache.borrow();
-                let helper = rt.helper.clone();
-                let executor = rt.executor.clone();
-                drop(rt);
-                let status = cache_status.clone();
-                let btn_done = btn.clone();
-                let request_id = format!(
-                    "cache-{}-{}",
-                    std::process::id(),
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::SystemTime::UNIX_EPOCH)
-                        .map(|duration| duration.as_secs())
-                        .unwrap_or(0)
-                );
-                dispatch::dispatch_helper_call(
-                    &executor,
-                    move || helper.clean_package_cache(&request_id),
-                    move |result| {
-                        btn_done.set_sensitive(true);
-                        btn_done.set_label("Clean Package Cache");
-                        Self::show_helper_result(&status, result);
-                    },
-                );
-            });
-
-        let runtime_for_journal = runtime.clone();
-        let journal_status = cleanup_page.status_label_handle();
-        cleanup_page
-            .journal_vacuum_button()
-            .connect_clicked(move |btn| {
-                btn.set_sensitive(false);
-                btn.set_label("Vacuuming Journal…");
-                journal_status.remove_css_class("error");
-                journal_status.set_text(
-                    "Requesting authorization to retain 500 MiB / 30 days of journal data…",
-                );
-                journal_status.set_visible(true);
-                let rt = runtime_for_journal.borrow();
-                let helper = rt.helper.clone();
-                let executor = rt.executor.clone();
-                drop(rt);
-                let status = journal_status.clone();
-                let btn_done = btn.clone();
-                dispatch::dispatch_helper_call(
-                    &executor,
-                    move || helper.vacuum_journal(500, 30),
-                    move |result| {
-                        btn_done.set_sensitive(true);
-                        btn_done.set_label("Vacuum Journal");
-                        Self::show_helper_result(&status, result);
-                    },
-                );
-            });
-        let token_for_scan = active_token.clone();
-        cleanup_page.scan_button().connect_clicked(move |_| {
-            page_for_scan.show_executing("Scanning reclaimable files…");
-            plan_for_scan.borrow_mut().take();
-            let executor = runtime_for_scan.borrow().executor.clone();
-            let progress_page = page_for_scan.clone();
-            let done_page = page_for_scan.clone();
-            let done_plan = plan_for_scan.clone();
-            let done_token = token_for_scan.clone();
-            let (token, _) = dispatch::dispatch_cleanup_scan(
-                &executor,
-                move |progress| {
-                    progress_page.show_scan_progress(
-                        progress.completed,
-                        progress.total,
-                        &progress.message,
-                    );
-                },
-                move |outcome| {
-                    match outcome {
-                        CleanupScanOutcome::Completed { targets } => {
-                            let home = std::env::var("HOME")
-                                .map(PathBuf::from)
-                                .unwrap_or_else(|_| PathBuf::from("/tmp"));
-                            match CleanupPlan::from_targets(targets, &home) {
-                                Ok(plan) => {
-                                    done_page.show_plan(&plan);
-                                    *done_plan.borrow_mut() = Some(plan);
-                                }
-                                Err(error) => done_page.show_error(&error.to_string()),
-                            }
-                        }
-                        CleanupScanOutcome::Failed { message } => done_page.show_error(&message),
-                    }
-                    done_token.borrow_mut().take();
-                },
-            );
-            *token_for_scan.borrow_mut() = Some(token);
-        });
-
-        let runtime_for_execute = runtime.clone();
-        let page_for_execute = page.clone();
-        let plan_for_execute = current_plan.clone();
-        let parent_for_execute = parent.clone();
-        let token_for_execute = active_token.clone();
-        cleanup_page.connect_execute(move || {
-            let selected_indices = page_for_execute.selected_indices();
-            if selected_indices.is_empty() {
-                return;
-            }
-            let Some(plan) = plan_for_execute.borrow().clone() else {
-                page_for_execute.show_error("Cleanup plan expired. Scan again.");
-                return;
-            };
-
-            let items: Vec<ConfirmItem> = selected_indices
-                .iter()
-                .filter_map(|index| plan.items.get(*index))
-                .map(|item| ConfirmItem {
-                    display_path: item.display_path.clone(),
-                    size_bytes: item.size_bytes,
-                    is_permanent: matches!(
-                        item.reversibility,
-                        maintainer_core::cleanup::Reversibility::PermanentOnly
-                    ),
-                })
-                .collect();
-            let total_bytes = items.iter().map(|item| item.size_bytes).sum();
-            let has_permanent = items.iter().any(|item| item.is_permanent);
-            let confirmation = ConfirmCleanupDialog::new(&items, total_bytes, has_permanent);
-            let dialog = gtk4::Window::builder()
-                .title("Confirm Cleanup")
-                .transient_for(&parent_for_execute)
-                .modal(true)
-                .default_width(560)
-                .default_height(480)
-                .build();
-            dialog.add_css_class("maintainer_dialog");
-            dialog.set_child(Some(confirmation.widget()));
-
-            let cancel_dialog = dialog.clone();
-            confirmation
-                .cancel_button()
-                .connect_clicked(move |_| cancel_dialog.close());
-
-            let confirm_dialog = dialog.clone();
-            let confirm_page = page_for_execute.clone();
-            let confirm_runtime = runtime_for_execute.clone();
-            let confirm_token = token_for_execute.clone();
-            let confirm_plan = plan.clone();
-            let confirm_indices = selected_indices.clone();
-            confirmation.confirm_button().connect_clicked(move |_| {
-                confirm_dialog.close();
-                let rt = confirm_runtime.borrow();
-                let Some(database) = rt.db.clone() else {
-                    confirm_page.show_error("Cleanup history database is unavailable.");
-                    return;
-                };
-                let executor = rt.executor.clone();
-                drop(rt);
-
-                confirm_page.show_executing("Removing selected items…");
-                let progress_page = confirm_page.clone();
-                let done_page = confirm_page.clone();
-                let done_token = confirm_token.clone();
-                let (token, _) = dispatch::dispatch_cleanup_execution(
-                    &executor,
-                    confirm_plan.clone(),
-                    confirm_indices.clone(),
-                    database,
-                    move |progress| {
-                        progress_page.show_executing(&progress.message);
-                    },
-                    move |outcome| {
-                        match outcome {
-                            CleanupExecutionOutcome::Completed(result) => {
-                                let summary = format!(
-                                    "Removed {} item(s), recovered {}.",
-                                    result.outcome.succeeded,
-                                    Self::format_size(result.actual_recovered_bytes)
-                                );
-                                done_page.show_result(&summary, result.outcome.failed == 0);
-                            }
-                            CleanupExecutionOutcome::Failed { message } => {
-                                done_page.show_result(&message, false);
-                            }
-                        }
-                        done_token.borrow_mut().take();
-                    },
-                );
-                *confirm_token.borrow_mut() = Some(token);
-            });
-            dialog.present();
-        });
-    }
-
     /// Wire update discovery, review, and helper-authorized APT execution.
-    fn wire_updates_dispatch(updates_page: &UpdatesPage, runtime: &RuntimeHandle) {
-        use crate::dispatch::{self, UpdateExecutionOutcome, UpdatesCheckOutcome};
-        use crate::ui::updates::{
-            SelectionMode, filter_candidates_for_mode, format_filtered_summary,
-        };
-        use maintainer_core::updates::UpdatePlan;
-
-        let page = updates_page.clone();
-        let current_plan: Rc<RefCell<Option<UpdatePlan>>> = Rc::new(RefCell::new(None));
-        let active_token: Rc<RefCell<Option<maintainer_core::jobs::CancellationToken>>> =
-            Rc::new(RefCell::new(None));
-
-        // --- Wire selection mode toggles ---
-        let plan_for_everything = current_plan.clone();
-        let page_for_everything = page.clone();
-        updates_page
-            .everything_toggle()
-            .connect_toggled(move |btn| {
-                if btn.is_active() {
-                    let mut p = page_for_everything.clone();
-                    p.set_selection_mode(SelectionMode::Everything);
-                    if let Some(plan) = plan_for_everything.borrow().as_ref() {
-                        let filtered =
-                            filter_candidates_for_mode(&plan.candidates, SelectionMode::Everything);
-                        let summary = format_filtered_summary(
-                            &filtered,
-                            plan.removals.len(),
-                            plan.held.len(),
-                        );
-                        let owned: Vec<_> = filtered.into_iter().cloned().collect();
-                        p.populate_package_list(&owned);
-                        p.update_summary_text(&summary);
-                    }
-                }
-            });
-
-        let plan_for_security = current_plan.clone();
-        let page_for_security = page.clone();
-        updates_page.security_toggle().connect_toggled(move |btn| {
-            if btn.is_active() {
-                let mut p = page_for_security.clone();
-                p.set_selection_mode(SelectionMode::SecurityOnly);
-                if let Some(plan) = plan_for_security.borrow().as_ref() {
-                    let filtered =
-                        filter_candidates_for_mode(&plan.candidates, SelectionMode::SecurityOnly);
-                    let summary =
-                        format_filtered_summary(&filtered, plan.removals.len(), plan.held.len());
-                    let owned: Vec<_> = filtered.into_iter().cloned().collect();
-                    p.populate_package_list(&owned);
-                    p.update_summary_text(&summary);
-                }
-            }
-        });
-
-        // --- Wire Review Selection button (re-plan through apt for custom selection) ---
-        let runtime_for_replan = runtime.clone();
-        let page_for_replan = page.clone();
-        let plan_for_replan = current_plan.clone();
-        let token_for_replan = active_token.clone();
-        updates_page.review_button().connect_clicked(move |_| {
-            let Some(full_plan) = plan_for_replan.borrow().clone() else {
-                let mut ui = page_for_replan.clone();
-                ui.set_check_failed("Update plan expired. Check for updates again.");
-                return;
-            };
-
-            // Collect the selected package names and find their candidates.
-            let selected_names = page_for_replan.selected_packages();
-            let selected_candidates: Vec<_> = full_plan
-                .candidates
-                .iter()
-                .filter(|c| selected_names.contains(&c.name))
-                .cloned()
-                .collect();
-
-            if selected_candidates.is_empty() {
-                page_for_replan.update_summary_text("No packages selected.");
-                return;
-            }
-
-            // Dispatch re-planning through apt's resolver on a background thread.
-            let executor = runtime_for_replan.borrow().executor.clone();
-            let mut done_page = page_for_replan.clone();
-            let done_plan = plan_for_replan.clone();
-            let done_token = token_for_replan.clone();
-
-            let (token, _) = dispatch::dispatch_replan_selection(
-                &executor,
-                selected_candidates,
-                move |_progress| {
-                    // Re-planning is typically fast; no granular progress needed.
-                },
-                move |outcome| {
-                    match outcome {
-                        UpdatesCheckOutcome::Available {
-                            mut summary,
-                            security_count,
-                            total_count,
-                            plan,
-                        } => {
-                            if let Some(security) = crate::ui::updates::format_security_label(
-                                security_count,
-                                total_count,
-                            ) {
-                                summary.push_str(&format!(". {security}."));
-                            }
-                            done_page.set_reviewing_plan(&summary, &plan);
-                            // Stay in Custom mode but mark as replanned so
-                            // Install becomes submittable with this plan.
-                            done_page.set_selection_mode(SelectionMode::Custom);
-                            done_page.mark_selection_replanned();
-                            *done_plan.borrow_mut() = Some(plan);
-                        }
-                        UpdatesCheckOutcome::UpToDate => done_page.set_up_to_date(),
-                        UpdatesCheckOutcome::Failed { message } => {
-                            done_page.set_check_failed(&message)
-                        }
-                    }
-                    done_token.borrow_mut().take();
-                },
-            );
-            *token_for_replan.borrow_mut() = Some(token);
-        });
-
-        // --- Wire check button ---
-        let runtime_for_check = runtime.clone();
-        let page_for_check = page.clone();
-        let plan_for_check = current_plan.clone();
-        let token_for_check = active_token.clone();
-        updates_page.check_button().connect_clicked(move |_| {
-            let mut starting_page = page_for_check.clone();
-            starting_page.set_checking();
-            plan_for_check.borrow_mut().take();
-            let executor = runtime_for_check.borrow().executor.clone();
-            let progress_page = page_for_check.clone();
-            let mut done_page = page_for_check.clone();
-            let done_plan = plan_for_check.clone();
-            let done_token = token_for_check.clone();
-            let (token, _) = dispatch::dispatch_updates_check(
-                &executor,
-                move |progress| {
-                    progress_page.show_check_progress(
-                        progress.completed,
-                        progress.total,
-                        &progress.message,
-                    );
-                },
-                move |outcome| {
-                    match outcome {
-                        UpdatesCheckOutcome::Available {
-                            mut summary,
-                            security_count,
-                            total_count,
-                            plan,
-                        } => {
-                            if let Some(security) = crate::ui::updates::format_security_label(
-                                security_count,
-                                total_count,
-                            ) {
-                                summary.push_str(&format!(". {security}."));
-                            }
-                            done_page.set_reviewing_plan(&summary, &plan);
-                            *done_plan.borrow_mut() = Some(plan);
-                        }
-                        UpdatesCheckOutcome::UpToDate => done_page.set_up_to_date(),
-                        UpdatesCheckOutcome::Failed { message } => {
-                            done_page.set_check_failed(&message)
-                        }
-                    }
-                    done_token.borrow_mut().take();
-                },
-            );
-            *token_for_check.borrow_mut() = Some(token);
-        });
-
-        // --- Wire confirm (Install) button ---
-        let runtime_for_execute = runtime.clone();
-        let page_for_execute = page.clone();
-        let plan_for_execute = current_plan.clone();
-        let token_for_execute = active_token.clone();
-        updates_page.confirm_button().connect_clicked(move |_| {
-            let Some(full_plan) = plan_for_execute.borrow().clone() else {
-                let mut ui = page_for_execute.clone();
-                ui.set_check_failed("Update plan expired. Check for updates again.");
-                return;
-            };
-            // Apply selection mode filter to the plan before execution.
-            let mode = page_for_execute.selection_mode();
-            let plan = match mode {
-                SelectionMode::Everything => full_plan,
-                SelectionMode::SecurityOnly => {
-                    let filtered = filter_candidates_for_mode(
-                        &full_plan.candidates,
-                        SelectionMode::SecurityOnly,
-                    );
-                    let filtered_candidates: Vec<_> = filtered.into_iter().cloned().collect();
-                    UpdatePlan {
-                        candidates: filtered_candidates,
-                        ..full_plan
-                    }
-                }
-                SelectionMode::Custom => {
-                    // Safety: in Custom mode, execution is only allowed after
-                    // the user's selection has been re-planned through apt's
-                    // resolver (plan_for_selection). The re-planned result
-                    // replaces `current_plan`, so we use it directly.
-                    if !page_for_execute.is_selection_replanned() {
-                        // This should not happen because the Install button is
-                        // disabled until re-planning completes, but guard anyway.
-                        let mut ui = page_for_execute.clone();
-                        ui.set_check_failed(
-                            "Custom selection requires re-planning. \
-                             Use 'Review Selection' first.",
-                        );
-                        return;
-                    }
-                    full_plan
-                }
-            };
-            let executor = runtime_for_execute.borrow().executor.clone();
-            let mut executing_page = page_for_execute.clone();
-            executing_page.set_executing();
-            let progress_page = page_for_execute.clone();
-            let mut done_page = page_for_execute.clone();
-            let done_token = token_for_execute.clone();
-            let (token, _) = dispatch::dispatch_update_execution(
-                &executor,
-                plan,
-                move |progress| {
-                    let allow_cancel =
-                        crate::ui::updates::cancellation_allowed_for_progress(&progress.message);
-                    progress_page.set_progress(
-                        progress.completed,
-                        progress.total,
-                        &progress.message,
-                        allow_cancel,
-                    );
-                },
-                move |outcome| {
-                    match outcome {
-                        UpdateExecutionOutcome::Completed {
-                            message,
-                            restart_required,
-                        } => done_page.set_result(true, &message, restart_required),
-                        UpdateExecutionOutcome::Failed { message } => {
-                            done_page.set_result(false, &message, false)
-                        }
-                    }
-                    done_token.borrow_mut().take();
-                },
-            );
-            *token_for_execute.borrow_mut() = Some(token);
-        });
-
-        let token_for_cancel = active_token;
-        updates_page.cancel_button().connect_clicked(move |_| {
-            if let Some(token) = token_for_cancel.borrow().as_ref() {
-                token.cancel();
-            }
-        });
-    }
-
     /// Wire diagnostics collection and render evidence-first findings.
-    fn wire_diagnostics_dispatch(diagnostics_page: &DiagnosticsPage, runtime: &RuntimeHandle) {
-        use crate::dispatch::{self, DiagnosticsScanOutcome, SmartRefreshOutcome};
-        use crate::ui::diagnostics::{DiagnosticsIntent, DiagnosticsState};
-
-        let page = diagnostics_page.clone();
-        let state = Rc::new(RefCell::new(DiagnosticsState::default()));
-        let active_token: Rc<RefCell<Option<maintainer_core::jobs::CancellationToken>>> =
-            Rc::new(RefCell::new(None));
-        let runtime_for_scan = runtime.clone();
-        let state_for_scan = state.clone();
-        let page_for_scan = page.clone();
-        let token_for_scan = active_token.clone();
-
-        let state_for_expand = state.clone();
-        let page_for_expand = page.clone();
-        diagnostics_page.connect_toggle_expanded(move |index| {
-            state_for_expand
-                .borrow_mut()
-                .reduce(DiagnosticsIntent::ToggleExpanded(index));
-            page_for_expand.update(&state_for_expand.borrow());
-        });
-
-        diagnostics_page.scan_button().connect_clicked(move |_| {
-            state_for_scan
-                .borrow_mut()
-                .reduce(DiagnosticsIntent::StartScan);
-            page_for_scan.update(&state_for_scan.borrow());
-            let executor = runtime_for_scan.borrow().executor.clone();
-            let progress_page = page_for_scan.clone();
-            let done_state = state_for_scan.clone();
-            let done_page = page_for_scan.clone();
-            let done_token = token_for_scan.clone();
-            let (token, _) = dispatch::dispatch_diagnostics_scan(
-                &executor,
-                move |progress| {
-                    progress_page.show_scan_progress(
-                        progress.completed,
-                        progress.total,
-                        &progress.message,
-                    );
-                },
-                move |outcome| {
-                    match outcome {
-                        DiagnosticsScanOutcome::Completed { findings } => done_state
-                            .borrow_mut()
-                            .reduce(DiagnosticsIntent::ScanCompleted(findings)),
-                        DiagnosticsScanOutcome::Failed { message } => done_state
-                            .borrow_mut()
-                            .reduce(DiagnosticsIntent::ScanFailed(message)),
-                    }
-                    done_page.update(&done_state.borrow());
-                    done_token.borrow_mut().take();
-                },
-            );
-            *token_for_scan.borrow_mut() = Some(token);
-        });
-
-        let runtime_for_smart = runtime.clone();
-        let state_for_smart = state.clone();
-        let page_for_smart = page.clone();
-        let token_for_smart = active_token;
-        diagnostics_page
-            .smart_refresh_button()
-            .connect_clicked(move |_| {
-                state_for_smart
-                    .borrow_mut()
-                    .reduce(DiagnosticsIntent::RefreshSmart);
-                page_for_smart.update(&state_for_smart.borrow());
-                let rt = runtime_for_smart.borrow();
-                let executor = rt.executor.clone();
-                let helper = rt.helper.clone();
-                drop(rt);
-                let done_state = state_for_smart.clone();
-                let done_page = page_for_smart.clone();
-                let done_token = token_for_smart.clone();
-                let token = dispatch::dispatch_smart_refresh(&executor, helper, move |outcome| {
-                    match outcome {
-                        SmartRefreshOutcome::Loaded(drives) => {
-                            let views = drives
-                                .iter()
-                                .map(crate::ui::diagnostics::SmartDriveView::from_smart_drive)
-                                .collect();
-                            done_state
-                                .borrow_mut()
-                                .reduce(DiagnosticsIntent::SmartLoaded(views));
-                        }
-                        SmartRefreshOutcome::PermissionRequired => {
-                            done_state
-                                .borrow_mut()
-                                .reduce(DiagnosticsIntent::SmartPermissionRequired);
-                        }
-                        SmartRefreshOutcome::Unavailable(reason) => {
-                            done_state
-                                .borrow_mut()
-                                .reduce(DiagnosticsIntent::SmartUnavailable(reason));
-                        }
-                    }
-                    done_page.update(&done_state.borrow());
-                    done_token.borrow_mut().take();
-                });
-                *token_for_smart.borrow_mut() = Some(token);
-            });
-    }
-
     fn format_size(bytes: u64) -> String {
         const KIB: f64 = 1024.0;
         const MIB: f64 = KIB * 1024.0;
@@ -1727,5 +798,130 @@ fn to_core_settings(snap: &crate::state::SettingsSnapshot) -> maintainer_core::s
         hidden_interval_secs: snap.hidden_interval_secs,
         scan_exclusions: snap.scan_exclusions.clone(),
         large_file_threshold_bytes: snap.large_file_threshold_bytes,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires a GTK display; run this exact test under Xvfb"]
+    fn secondary_page_factories_mount_once_and_preserve_navigation_and_widgets() {
+        gtk4::init().unwrap();
+        let stack = Stack::new();
+        let primary = GtkBox::new(Orientation::Vertical, 0);
+        stack.add_named(&primary, Some("Overview"));
+        stack.set_visible_child_name("Overview");
+        let storage_count = Rc::new(Cell::new(0));
+        let settings_count = Rc::new(Cell::new(0));
+        let storage_widget = Rc::new(RefCell::new(None::<Label>));
+        let storage_calls = storage_count.clone();
+        let storage = storage_widget.clone();
+        Shell::add_lazy_page(&stack, "Storage", move || {
+            storage_calls.set(storage_calls.get() + 1);
+            let widget = Label::new(Some("Initial state"));
+            *storage.borrow_mut() = Some(widget.clone());
+            Some(widget.upcast())
+        });
+        let settings_calls = settings_count.clone();
+        Shell::add_lazy_page(&stack, "Settings", move || {
+            settings_calls.set(settings_calls.get() + 1);
+            Some(Label::new(Some("Settings content")).upcast())
+        });
+        let storage_host = stack.child_by_name("Storage").unwrap();
+        let settings_host = stack.child_by_name("Settings").unwrap();
+        assert!(storage_widget.borrow().is_none());
+        assert_eq!(storage_count.get(), 0);
+        assert_eq!(settings_count.get(), 0);
+        assert!(storage_host.first_child().is_none());
+        assert!(settings_host.first_child().is_none());
+
+        stack.set_visible_child_name("Storage");
+        assert_eq!(storage_count.get(), 1);
+        assert_eq!(settings_count.get(), 0);
+        let storage_widget = storage_widget.borrow().clone().unwrap();
+        assert_eq!(
+            storage_host.first_child(),
+            Some(storage_widget.clone().upcast())
+        );
+        storage_widget.set_text("State from an active operation");
+        stack.set_visible_child_name("Settings");
+        let settings_content = settings_host.first_child().unwrap();
+        stack.set_visible_child_name("Overview");
+        stack.set_visible_child_name("Storage");
+        stack.set_visible_child_name("Settings");
+        assert_eq!(storage_count.get(), 1);
+        assert_eq!(settings_count.get(), 1);
+        assert_eq!(stack.child_by_name("Storage"), Some(storage_host.clone()));
+        assert_eq!(stack.child_by_name("Settings"), Some(settings_host.clone()));
+        assert_eq!(
+            storage_host.first_child(),
+            Some(storage_widget.clone().upcast())
+        );
+        assert_eq!(storage_widget.text(), "State from an active operation");
+        assert_eq!(settings_host.first_child(), Some(settings_content));
+        assert_eq!(stack.visible_child(), Some(settings_host));
+        assert_eq!(stack.visible_child_name().as_deref(), Some("Settings"));
+    }
+
+    #[test]
+    #[ignore = "requires a GTK display; run this exact test under Xvfb"]
+    fn shell_geometry_and_navigation_follow_allocated_surface_width() {
+        gtk4::init().unwrap();
+        let runtime = crate::runtime::Runtime::isolated_for_test();
+        let app = gtk4::Application::new(None::<&str>, gio::ApplicationFlags::NON_UNIQUE);
+        app.register(None::<&gio::Cancellable>).unwrap();
+        let shell = Shell::new(&app, runtime);
+        let window = shell.window();
+        assert_eq!(window.default_size(), (1100, 700));
+        assert_eq!(window.size_request(), (640, 420));
+        assert!(window.titlebar().is_none());
+        let outer = window.child().unwrap();
+        let root = outer.last_child().unwrap();
+        let sidebar = root.first_child().unwrap();
+        let mut pending = vec![outer.clone()];
+        while let Some(widget) = pending.pop() {
+            assert!(!widget.is::<gtk4::HeaderBar>());
+            let mut child = widget.first_child();
+            while let Some(current) = child {
+                child = current.next_sibling();
+                pending.push(current);
+            }
+        }
+        let wait_for = |condition: &dyn Fn() -> bool| {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while !condition() && Instant::now() < deadline {
+                while glib::MainContext::default().pending() {
+                    glib::MainContext::default().iteration(false);
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            assert!(
+                condition(),
+                "surface allocation did not reach expected navigation mode"
+            );
+        };
+        window.present();
+        wait_for(&|| root.has_css_class("maintainer_layout_wide"));
+        wait_for(&|| {
+            window
+                .surface()
+                .is_some_and(|surface| surface.width() >= 900)
+        });
+        window.set_default_size(700, 700);
+        // A requested default size does not change the allocated surface yet.
+        // Navigation must wait for the actual allocation rather than this setter.
+        assert!(window.surface().unwrap().width() >= 900);
+        assert!(root.has_css_class("maintainer_layout_wide"));
+        wait_for(&|| root.has_css_class("maintainer_layout_compact"));
+        assert_eq!(sidebar.width_request(), 60);
+        // A child minimum can also resize the surface, without a size request.
+        root.set_size_request(1000, -1);
+        wait_for(&|| root.has_css_class("maintainer_layout_wide"));
+        assert!(window.surface().unwrap().width() >= 1000);
+        assert_eq!(sidebar.width_request(), 220);
+        assert!(sidebar.is_visible());
+        window.close();
     }
 }

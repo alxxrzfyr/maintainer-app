@@ -334,8 +334,12 @@ impl OverviewPage {
         self.update_capacity_bar(vm.disk_used_percent);
 
         self.network_card.set_value(&vm.network_text);
-        self.net_rx_value.set_text(&vm.net_rx_text);
-        self.net_tx_value.set_text(&vm.net_tx_text);
+        if self.net_rx_value.text() != vm.net_rx_text {
+            self.net_rx_value.set_text(&vm.net_rx_text);
+        }
+        if self.net_tx_value.text() != vm.net_tx_text {
+            self.net_tx_value.set_text(&vm.net_tx_text);
+        }
 
         let specs_changed = self.last_device_info.borrow().as_ref() != Some(&vm.device_info);
         if specs_changed {
@@ -371,24 +375,30 @@ impl OverviewPage {
         };
         self.capacity_bar_fill.set_size_request(fill_width, -1);
 
-        // Color thresholds: warning at 80%, critical at 90%
-        self.capacity_bar_fill
-            .remove_css_class("maintainer_capacity_bar_fill_warning");
-        self.capacity_bar_fill
-            .remove_css_class("maintainer_capacity_bar_fill_critical");
-        if clamped >= 90.0 {
-            self.capacity_bar_fill
-                .add_css_class("maintainer_capacity_bar_fill_critical");
-        } else if clamped >= 80.0 {
-            self.capacity_bar_fill
-                .add_css_class("maintainer_capacity_bar_fill_warning");
+        // Change a class only when its threshold state changes.
+        for (class, enabled) in [
+            ("maintainer_capacity_bar_fill_critical", clamped >= 90.0),
+            (
+                "maintainer_capacity_bar_fill_warning",
+                (80.0..90.0).contains(&clamped),
+            ),
+        ] {
+            if self.capacity_bar_fill.has_css_class(class) != enabled {
+                if enabled {
+                    self.capacity_bar_fill.add_css_class(class);
+                } else {
+                    self.capacity_bar_fill.remove_css_class(class);
+                }
+            }
         }
 
-        // Capacity label shows percentage
-        if clamped > 0.0 {
-            self.capacity_label.set_text(&format!("{clamped:.0}% used"));
+        let text = if clamped > 0.0 {
+            format!("{clamped:.0}% used")
         } else {
-            self.capacity_label.set_text("");
+            String::new()
+        };
+        if self.capacity_label.text() != text {
+            self.capacity_label.set_text(&text);
         }
     }
 
@@ -507,4 +517,51 @@ fn build_spec_item(icon_name: &'static str, label_text: &str, value_label: &Labe
 
     item_box.append(&text_box);
     item_box
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+
+    #[test]
+    fn capacity_state_preserves_styles_and_skips_unchanged_css() {
+        gtk4::init().expect("GTK display required; use scripts/test-native.sh");
+        let page = OverviewPage::new();
+        page.update_capacity_bar(95.0);
+        let changes = Rc::new(Cell::new(0));
+        let observed = changes.clone();
+        page.capacity_bar_fill
+            .connect_notify_local(Some("css-classes"), move |_, _| {
+                observed.set(observed.get() + 1);
+            });
+        page.update_capacity_bar(95.0);
+        assert_eq!(changes.get(), 0);
+        assert!(
+            page.capacity_bar_fill
+                .has_css_class("maintainer_capacity_bar_fill_critical")
+        );
+        page.update_capacity_bar(85.0);
+        assert!(
+            page.capacity_bar_fill
+                .has_css_class("maintainer_capacity_bar_fill_warning")
+        );
+        assert!(
+            !page
+                .capacity_bar_fill
+                .has_css_class("maintainer_capacity_bar_fill_critical")
+        );
+        page.update_capacity_bar(70.0);
+        assert!(
+            !page
+                .capacity_bar_fill
+                .has_css_class("maintainer_capacity_bar_fill_warning")
+        );
+        assert!(
+            !page
+                .capacity_bar_fill
+                .has_css_class("maintainer_capacity_bar_fill_critical")
+        );
+        assert_eq!(page.capacity_label.text(), "70% used");
+    }
 }

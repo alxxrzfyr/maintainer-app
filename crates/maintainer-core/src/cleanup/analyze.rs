@@ -88,6 +88,7 @@ pub struct CleanupAnalyzer {
     user_cache_roots: Vec<PathBuf>,
     /// Home directory for the current user.
     home_dir: PathBuf,
+    data_home: PathBuf,
 }
 
 impl CleanupAnalyzer {
@@ -99,6 +100,10 @@ impl CleanupAnalyzer {
                 PathBuf::from("fontconfig"),
                 PathBuf::from("event-sound-cache"),
             ],
+            data_home: crate::cleanup::trash::data_home(
+                &home_dir,
+                std::env::var_os("XDG_DATA_HOME").as_deref(),
+            ),
             home_dir,
         }
     }
@@ -137,9 +142,18 @@ impl CleanupAnalyzer {
                 message: format!("Scanning {}", cat.label()),
             });
 
-            match self.scan_category(*cat) {
-                Ok(mut found) => targets.append(&mut found),
-                Err(MaintainerError::Io { .. }) => {}
+            match self.scan_category_cancellable(*cat, cancel) {
+                Ok(mut found) => {
+                    if targets.len().saturating_add(found.len()) > 1_000 {
+                        return Err(MaintainerError::invalid_data(
+                            "cleanup scan",
+                            "aggregate target limit reached; results are incomplete",
+                        ));
+                    }
+                    targets.append(&mut found);
+                }
+                Err(MaintainerError::Io { ref source, .. })
+                    if source.kind() == std::io::ErrorKind::NotFound => {}
                 Err(e) => return Err(e),
             }
         }
@@ -158,46 +172,66 @@ impl CleanupAnalyzer {
         &self,
         category: CleanupCategory,
     ) -> Result<Vec<CleanupTarget>, MaintainerError> {
+        self.scan_category_cancellable(category, &crate::jobs::CancellationToken::new())
+    }
+
+    fn scan_category_cancellable(
+        &self,
+        category: CleanupCategory,
+        cancel: &dyn Cancellation,
+    ) -> Result<Vec<CleanupTarget>, MaintainerError> {
         match category {
-            CleanupCategory::PackageCache => self.scan_package_cache(),
-            CleanupCategory::ThumbnailCache => self.scan_thumbnail_cache(),
-            CleanupCategory::Trash => self.scan_trash(),
-            CleanupCategory::UserCache => self.scan_user_cache(),
-            CleanupCategory::Logs => self.scan_logs(),
+            CleanupCategory::PackageCache => self.scan_package_cache(cancel),
+            CleanupCategory::ThumbnailCache => self.scan_thumbnail_cache(cancel),
+            CleanupCategory::Trash => self.scan_trash(cancel),
+            CleanupCategory::UserCache => self.scan_user_cache(cancel),
+            CleanupCategory::Logs => self.scan_logs(cancel),
         }
     }
 
-    fn scan_package_cache(&self) -> Result<Vec<CleanupTarget>, MaintainerError> {
+    fn scan_package_cache(
+        &self,
+        cancel: &dyn Cancellation,
+    ) -> Result<Vec<CleanupTarget>, MaintainerError> {
         let cache_dir = PathBuf::from("/var/cache/apt/archives");
         self.scan_directory_files(
             &cache_dir,
             CleanupCategory::PackageCache,
             PrivilegeRequirement::Elevated,
+            cancel,
             Reversibility::PermanentOnly,
         )
     }
 
-    fn scan_thumbnail_cache(&self) -> Result<Vec<CleanupTarget>, MaintainerError> {
+    fn scan_thumbnail_cache(
+        &self,
+        cancel: &dyn Cancellation,
+    ) -> Result<Vec<CleanupTarget>, MaintainerError> {
         let thumb_dir = self.home_dir.join(".cache/thumbnails");
         self.scan_directory_files(
             &thumb_dir,
             CleanupCategory::ThumbnailCache,
             PrivilegeRequirement::None,
+            cancel,
             Reversibility::PermanentOnly, // Thumbnails regenerate; no Trash needed.
         )
     }
 
-    fn scan_trash(&self) -> Result<Vec<CleanupTarget>, MaintainerError> {
-        let trash_dir = self.home_dir.join(".local/share/Trash/files");
+    fn scan_trash(&self, cancel: &dyn Cancellation) -> Result<Vec<CleanupTarget>, MaintainerError> {
+        let trash_dir = self.data_home.join("Trash/files");
         self.scan_directory_files(
             &trash_dir,
             CleanupCategory::Trash,
             PrivilegeRequirement::None,
+            cancel,
             Reversibility::PermanentOnly, // Already in Trash.
         )
     }
 
-    fn scan_user_cache(&self) -> Result<Vec<CleanupTarget>, MaintainerError> {
+    fn scan_user_cache(
+        &self,
+        cancel: &dyn Cancellation,
+    ) -> Result<Vec<CleanupTarget>, MaintainerError> {
         let cache_base = self.home_dir.join(".cache");
         let mut targets = Vec::new();
         for root_name in &self.user_cache_roots {
@@ -206,27 +240,47 @@ impl CleanupAnalyzer {
                 &dir,
                 CleanupCategory::UserCache,
                 PrivilegeRequirement::None,
+                cancel,
                 Reversibility::PermanentOnly, // Cache data regenerates.
             ) {
-                Ok(mut found) => targets.append(&mut found),
-                Err(MaintainerError::Io { .. }) => {} // Missing dirs are normal.
+                Ok(mut found) => {
+                    if targets.len().saturating_add(found.len()) > 1_000 {
+                        return Err(MaintainerError::invalid_data(
+                            "cleanup scan",
+                            "aggregate target limit reached; results are incomplete",
+                        ));
+                    }
+                    targets.append(&mut found);
+                }
+                Err(MaintainerError::Io { ref source, .. })
+                    if source.kind() == std::io::ErrorKind::NotFound => {} // Missing dirs are normal.
                 Err(e) => return Err(e),
             }
         }
         Ok(targets)
     }
 
-    fn scan_logs(&self) -> Result<Vec<CleanupTarget>, MaintainerError> {
+    fn scan_logs(&self, cancel: &dyn Cancellation) -> Result<Vec<CleanupTarget>, MaintainerError> {
         let user_log_dir = self.home_dir.join(".local/share/systemd");
         let mut targets = Vec::new();
         match self.scan_directory_files(
             &user_log_dir,
             CleanupCategory::Logs,
             PrivilegeRequirement::None,
+            cancel,
             Reversibility::PermanentOnly,
         ) {
-            Ok(mut found) => targets.append(&mut found),
-            Err(MaintainerError::Io { .. }) => {}
+            Ok(mut found) => {
+                if targets.len().saturating_add(found.len()) > 1_000 {
+                    return Err(MaintainerError::invalid_data(
+                        "cleanup scan",
+                        "aggregate target limit reached; results are incomplete",
+                    ));
+                }
+                targets.append(&mut found);
+            }
+            Err(MaintainerError::Io { ref source, .. })
+                if source.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(e),
         }
         Ok(targets)
@@ -238,32 +292,54 @@ impl CleanupAnalyzer {
         dir: &Path,
         category: CleanupCategory,
         privilege: PrivilegeRequirement,
+        cancel: &dyn Cancellation,
         reversibility: Reversibility,
     ) -> Result<Vec<CleanupTarget>, MaintainerError> {
-        let entries = fs::read_dir(dir)
+        let directory = crate::storage::policy::open_anchored(dir, true)
+            .map_err(|e| MaintainerError::io(format!("opening {}", dir.display()), e))?;
+        let entries = fs::read_dir(crate::storage::policy::descriptor_path(&directory))
             .map_err(|e| MaintainerError::io(format!("reading {}", dir.display()), e))?;
 
         let mut targets = Vec::new();
         let now = SystemTime::now();
 
         for entry_result in entries {
-            let entry = match entry_result {
-                Ok(e) => e,
-                Err(_) => continue, // Skip unreadable entries.
-            };
-            let path = entry.path();
-
-            let metadata = match fs::symlink_metadata(&path) {
-                Ok(m) => m,
-                Err(_) => continue,
-            };
+            if cancel.is_cancelled() {
+                return Err(MaintainerError::Cancelled);
+            }
+            if targets.len() >= 1_000 {
+                return Err(MaintainerError::invalid_data(
+                    "cleanup scan",
+                    "target limit reached; results are incomplete",
+                ));
+            }
+            let entry =
+                entry_result.map_err(|e| MaintainerError::io("reading cleanup target", e))?;
+            let path = dir.join(entry.file_name());
+            let metadata = fs::symlink_metadata(entry.path())
+                .map_err(|e| MaintainerError::io("reading cleanup target metadata", e))?;
 
             if metadata.is_symlink() {
                 continue;
             }
 
             let size_bytes = if metadata.is_dir() {
-                dir_size(&path).unwrap_or(0)
+                let child = crate::storage::policy::open_child_directory(
+                    &directory,
+                    &entry.file_name(),
+                    false,
+                )
+                .map_err(|e| MaintainerError::io("opening cleanup target", e))?;
+                let actual = child
+                    .metadata()
+                    .map_err(|e| MaintainerError::io("checking cleanup target", e))?;
+                if actual.dev() != metadata.dev() || actual.ino() != metadata.ino() {
+                    return Err(MaintainerError::invalid_data(
+                        "cleanup scan",
+                        "target directory changed during discovery",
+                    ));
+                }
+                crate::storage::traverse::directory_size(child, cancel)?
             } else {
                 metadata.len()
             };
@@ -299,21 +375,6 @@ impl CleanupAnalyzer {
     }
 }
 
-/// Recursively compute directory size (not following symlinks).
-fn dir_size(path: &Path) -> Result<u64, std::io::Error> {
-    let mut total = 0u64;
-    for entry in fs::read_dir(path)? {
-        let entry = entry?;
-        let meta = fs::symlink_metadata(entry.path())?;
-        if meta.is_dir() {
-            total += dir_size(&entry.path()).unwrap_or(0);
-        } else if !meta.is_symlink() {
-            total += meta.len();
-        }
-    }
-    Ok(total)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -324,6 +385,23 @@ mod tests {
 
     fn setup_temp_home() -> TempDir {
         tempfile::tempdir().unwrap()
+    }
+
+    #[test]
+    fn trash_scan_uses_the_same_custom_data_home_as_mutation() {
+        let home = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let files = data.path().join("Trash/files");
+        std::fs::create_dir_all(&files).unwrap();
+        std::fs::write(files.join("desktop-visible"), b"trash data").unwrap();
+        let mut analyzer = CleanupAnalyzer::new(home.path().to_path_buf());
+        analyzer.data_home =
+            crate::cleanup::trash::data_home(home.path(), Some(data.path().as_os_str()));
+        let targets = analyzer
+            .scan_trash(&crate::jobs::CancellationToken::new())
+            .unwrap();
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].path, files.join("desktop-visible"));
     }
 
     #[test]
@@ -378,7 +456,8 @@ mod tests {
         let mut f = File::create(trash_files.join("old_doc.txt")).unwrap();
         f.write_all(&[0u8; 256]).unwrap();
 
-        let analyzer = CleanupAnalyzer::new(home.path().to_path_buf());
+        let mut analyzer = CleanupAnalyzer::new(home.path().to_path_buf());
+        analyzer.data_home = home.path().join(".local/share");
         let targets = analyzer.scan_category(CleanupCategory::Trash).unwrap();
 
         assert_eq!(targets.len(), 1);

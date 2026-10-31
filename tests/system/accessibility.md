@@ -1,6 +1,6 @@
 # Accessibility validation procedure
 
-Status: reusable procedure; accessibility has not been certified by this review. Revised 2026-10-30. Follow the [roadmap](../../docs/plans/development-roadmap.md) and [compatibility procedure](compatibility.md).
+Procedure only; completed results belong in dated validation reports. Follow [release status](../../docs/release-status.md) and the [compatibility procedure](compatibility.md).
 
 Record app/package version and checksum, distribution, desktop, GTK version, display backend, monitor resolution, 100%/200% display scale, enlarged text setting, both themes and assistive-technology/version. Record keyboard-only and screen-reader observations separately. A code-level accessible-name assertion does not prove the spoken result.
 
@@ -37,4 +37,4 @@ Contrast figures are review targets from the existing checklist, not evidence of
 
 ## Retain results
 
-After testing, save a dated report under `docs/validation/` with case/page, input sequence, expected/actual behavior, screenshots or spoken observations where useful, sanitized evidence, defect ID, operator and reviewer. Use pass/fail/unverified/not-applicable with reasons. Do not invent results or delete failing cases to obtain sign-off.
+After testing, save a dated report under `docs/validation/YYYY-MM-DD/report.md` with case/page, input sequence, expected/actual behavior, screenshots or spoken observations where useful, sanitized evidence, defect ID, operator and reviewer. Use pass/fail/unverified/not-applicable with reasons. Do not invent results or delete failing cases to obtain sign-off.

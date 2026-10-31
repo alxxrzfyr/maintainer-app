@@ -7,7 +7,7 @@
 # Usage:
 #   tests/system/release-smoke.sh
 #
-# Requirements: xvfb, cargo, libgtk-4-dev, libsqlite3-dev, libpolkit-gobject-1-dev
+# Requirements: xvfb, cargo, sudo, libgtk-4-dev, libsqlite3-dev, libpolkit-gobject-1-dev
 #
 # Exit codes:
 #   0 — All smoke tests passed
@@ -47,11 +47,16 @@ for cmd in cargo Xvfb; do
     command -v "$cmd" >/dev/null 2>&1 || die "Required command not found: $cmd"
 done
 
+if [[ $(id -u) -ne 0 ]]; then
+    command -v sudo >/dev/null 2>&1 || die "Required command not found: sudo"
+    sudo -n true 2>/dev/null || die "Passwordless sudo is required to verify root-launch refusal"
+fi
+
 cd "$PROJECT_ROOT"
 
 # --- Test 1: Release build succeeds ---
 info "Test: Release build"
-if cargo build --workspace --release 2>&1; then
+if python3 scripts/build-release.py 2>&1; then
     pass "Release build succeeded"
 else
     fail "Release build failed"
@@ -61,6 +66,17 @@ fi
 # Check binary exists
 APP_BIN="target/release/maintainer-app"
 HELPER_BIN="target/release/maintainer-helper"
+
+if [[ $(id -u) -eq 0 ]]; then
+    SMOKE_USER="${SMOKE_USER:-${SUDO_USER:-}}"
+    [[ -n "$SMOKE_USER" ]] || die "Set SMOKE_USER to an existing unprivileged account when running as root"
+    SMOKE_UID="$(id -u -- "$SMOKE_USER")" || die "SMOKE_USER does not exist: $SMOKE_USER"
+    [[ "$SMOKE_UID" -ne 0 ]] || die "SMOKE_USER must not be root"
+    command -v runuser >/dev/null 2>&1 || die "Required command not found: runuser"
+    APP_LAUNCH=(runuser -u "$SMOKE_USER" -- env "DISPLAY=$DISPLAY_NUM" "$PROJECT_ROOT/$APP_BIN")
+else
+    APP_LAUNCH=("$APP_BIN")
+fi
 
 if [[ -x "$APP_BIN" ]]; then
     pass "App binary exists and is executable"
@@ -91,7 +107,7 @@ fi
 # --- Test 3: Application launches without immediate crash ---
 info "Test: Application launch (no crash within ${TIMEOUT_SECS}s)"
 
-"$APP_BIN" &
+"${APP_LAUNCH[@]}" &
 APP_PID=$!
 
 # Wait a short time and check it's still alive
@@ -155,15 +171,25 @@ else
     fi
 fi
 
-# --- Test 6: GUI refuses root execution ---
+# --- Test 6: GUI refuses root execution before persistence initialization ---
 info "Test: GUI root-refusal check"
-# We cannot actually test as root in CI, but verify the check exists in the binary
-if strings "$APP_BIN" 2>/dev/null | grep -qi "root\|uid.*0\|refuse\|privileged"; then
-    pass "Binary contains root-check related strings"
+ROOT_TEST_DIR="$(mktemp -d)"
+ROOT_TEST_DATA="$ROOT_TEST_DIR/data"
+ROOT_OUTPUT="$ROOT_TEST_DIR/output"
+ROOT_EXIT=0
+if [[ $(id -u) -eq 0 ]]; then
+    XDG_DATA_HOME="$ROOT_TEST_DATA" "$APP_BIN" >"$ROOT_OUTPUT" 2>&1 || ROOT_EXIT=$?
 else
-    # Not a hard failure — the check may use different wording
-    pass "Root-check string verification skipped (may use runtime check)"
+    sudo -n env XDG_DATA_HOME="$ROOT_TEST_DATA" DISPLAY="$DISPLAY" \
+        "$PROJECT_ROOT/$APP_BIN" >"$ROOT_OUTPUT" 2>&1 || ROOT_EXIT=$?
 fi
+
+if [[ $ROOT_EXIT -eq 1 ]] && grep -q "must run as a normal user" "$ROOT_OUTPUT" && [[ ! -e "$ROOT_TEST_DATA" ]]; then
+    pass "Root launch refused before creating application data"
+else
+    fail "Root launch did not refuse cleanly (exit code: $ROOT_EXIT)"
+fi
+rm -rf "$ROOT_TEST_DIR"
 
 # --- Report ---
 echo ""

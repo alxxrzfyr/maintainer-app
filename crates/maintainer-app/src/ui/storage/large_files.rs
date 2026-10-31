@@ -95,16 +95,24 @@ impl LargeFilesView {
 
         let filename_factory = SignalListItemFactory::new();
         filename_factory.connect_setup(|_, item| {
-            let item = item.downcast_ref::<ListItem>().unwrap();
+            let Some(item) = item.downcast_ref::<ListItem>() else {
+                return;
+            };
             let label = Label::new(None);
             label.set_halign(Align::Start);
             label.set_ellipsize(gtk4::pango::EllipsizeMode::Middle);
             item.set_child(Some(&label));
         });
         filename_factory.connect_bind(|_, item| {
-            let item = item.downcast_ref::<ListItem>().unwrap();
-            let obj = item.item().and_downcast::<LargeFileObject>().unwrap();
-            let label = item.child().and_downcast::<Label>().unwrap();
+            let Some(item) = item.downcast_ref::<ListItem>() else {
+                return;
+            };
+            let (Some(obj), Some(label)) = (
+                item.item().and_downcast::<LargeFileObject>(),
+                item.child().and_downcast::<Label>(),
+            ) else {
+                return;
+            };
             label.set_text(&obj.filename());
             label.set_tooltip_text(Some(&obj.path()));
         });
@@ -114,15 +122,23 @@ impl LargeFilesView {
 
         let size_factory = SignalListItemFactory::new();
         size_factory.connect_setup(|_, item| {
-            let item = item.downcast_ref::<ListItem>().unwrap();
+            let Some(item) = item.downcast_ref::<ListItem>() else {
+                return;
+            };
             let label = Label::new(None);
             label.set_halign(Align::End);
             item.set_child(Some(&label));
         });
         size_factory.connect_bind(|_, item| {
-            let item = item.downcast_ref::<ListItem>().unwrap();
-            let obj = item.item().and_downcast::<LargeFileObject>().unwrap();
-            let label = item.child().and_downcast::<Label>().unwrap();
+            let Some(item) = item.downcast_ref::<ListItem>() else {
+                return;
+            };
+            let (Some(obj), Some(label)) = (
+                item.item().and_downcast::<LargeFileObject>(),
+                item.child().and_downcast::<Label>(),
+            ) else {
+                return;
+            };
             label.set_text(&obj.size_display());
         });
         let size_col = ColumnViewColumn::new(Some("Size"), Some(size_factory));
@@ -131,16 +147,24 @@ impl LargeFilesView {
 
         let path_factory = SignalListItemFactory::new();
         path_factory.connect_setup(|_, item| {
-            let item = item.downcast_ref::<ListItem>().unwrap();
+            let Some(item) = item.downcast_ref::<ListItem>() else {
+                return;
+            };
             let label = Label::new(None);
             label.set_halign(Align::Start);
             label.set_ellipsize(gtk4::pango::EllipsizeMode::Start);
             item.set_child(Some(&label));
         });
         path_factory.connect_bind(|_, item| {
-            let item = item.downcast_ref::<ListItem>().unwrap();
-            let obj = item.item().and_downcast::<LargeFileObject>().unwrap();
-            let label = item.child().and_downcast::<Label>().unwrap();
+            let Some(item) = item.downcast_ref::<ListItem>() else {
+                return;
+            };
+            let (Some(obj), Some(label)) = (
+                item.item().and_downcast::<LargeFileObject>(),
+                item.child().and_downcast::<Label>(),
+            ) else {
+                return;
+            };
             label.set_text(&obj.path());
         });
         let path_col = ColumnViewColumn::new(Some("Path"), Some(path_factory));

@@ -65,16 +65,21 @@ impl MetricCard {
             None
         };
 
-        Self {
+        let card = Self {
             container,
             _title_label: title_label,
             value_label,
             sparkline,
-        }
+        };
+        card.update_accessible_description();
+        card
     }
 
     /// Update the displayed value text.
     pub fn set_value(&self, text: &str) {
+        if self.value_label.text() == text {
+            return;
+        }
         self.value_label.set_text(text);
         self.update_accessible_description();
     }
@@ -88,17 +93,20 @@ impl MetricCard {
 
     /// Show an unavailable state with the given reason.
     pub fn set_unavailable(&self, reason: &str) {
-        self.value_label.set_text(reason);
-        self.value_label.add_css_class("maintainer_text_muted");
+        self.set_value(reason);
+        if !self.value_label.has_css_class("maintainer_text_muted") {
+            self.value_label.add_css_class("maintainer_text_muted");
+        }
         if let Some(ref sparkline) = self.sparkline {
             sparkline.widget().set_visible(false);
         }
-        self.update_accessible_description();
     }
 
     /// Restore available state.
     pub fn set_available(&self) {
-        self.value_label.remove_css_class("maintainer_text_muted");
+        if self.value_label.has_css_class("maintainer_text_muted") {
+            self.value_label.remove_css_class("maintainer_text_muted");
+        }
         if let Some(ref sparkline) = self.sparkline {
             sparkline.widget().set_visible(true);
         }

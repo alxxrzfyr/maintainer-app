@@ -1,154 +1,136 @@
-# Maintainer
+# Maintainer contributor instructions
 
-Maintainer is a lightweight native GTK4 application for monitoring, maintaining, diagnosing, and understanding Ubuntu-based Linux computers.
+Maintainer is a native GTK4 monitor and maintenance application for Ubuntu-based
+Linux. Keep changes focused, safe, responsive, and verifiable.
 
-## Stack
+## Sources of truth
 
-| Layer | Choice |
-|---|---|
-| Language | Rust, stable toolchain pinned in `rust-toolchain.toml` |
-| UI | GTK4 only; no libadwaita, WebView, Electron, or embedded browser |
-| Styling | GTK CSS with semantic tokens defined in `data/styles/` |
-| Persistent data | SQLite for settings and application history only |
-| Build and dependencies | Cargo |
-| Packaging | Native `.deb` package and APT repository |
-| Platform | Current Ubuntu-based distributions; Ubuntu 22.04 compatibility floor |
-| Privilege boundary | Unprivileged GUI plus a small audited D-Bus/Polkit helper |
+- Code, Cargo manifests, scripts, workflows, and `data/styles/` define current
+  behavior, commands, dependencies, and semantic CSS tokens.
+- This file defines contributor rules and performance acceptance.
+- [README](README.md) owns setup and day-to-day commands. Do not copy that guide
+  into other documents.
+- [Release status](docs/release-status.md) owns remaining work and evidence links.
+  Dated reports record observations for a named source or artifact, not later code.
+- [Threat model](docs/threat-model.md) explains trust boundaries and limitations.
+  If documentation disagrees with code, verify the code and update the relevant
+  document. Do not treat a plan or passing historical run as shipped behavior.
 
-## Architecture
+## Stack and boundaries
 
-Maintain three boundaries:
+Use the pinned Rust toolchain, Cargo, GTK4, semantic GTK CSS, and SQLite for
+settings/history. Target Ubuntu 22.04 or newer. No libadwaita, WebView, Electron,
+embedded browser, telemetry, cloud account, or live-metric persistence.
 
-1. `ui`: GTK widgets and presentation state. Never read Linux interfaces, run commands, or access SQLite directly.
-2. `core`: typed application services, capability adapters, collectors, cancellable jobs, and persistence interfaces.
-3. `helper`: narrowly scoped privileged operations with validated callers and parameters. Never expose arbitrary command or shell execution.
+- `ui`: widgets and presentation only. No Linux reads, command execution, or SQL.
+- `core`: typed services, collectors, capability adapters, bounded cancellable
+  jobs, and persistence. Return typed results for incremental UI updates.
+- `helper`: fixed privileged operations over D-Bus/Polkit. The maintenance helper
+  and dedicated package owner have separate service scopes. Never expose arbitrary
+  commands, shell text, or unvalidated operation parameters.
 
-Expected data flow:
+Prefer native Rust APIs, `/proc`, `/sys`, D-Bus, filesystem APIs, then established
+utilities. Run utilities with explicit argument arrays and fixture-tested parsers.
+Optional integrations report available, unavailable with a reason, or permission
+required. Missing data is not zero, success, or an inferred capability.
 
-```text
-GTK view
-  |
-Application service
-  |
-Capability adapter or cancellable job
-  |
-Linux API / D-Bus / validated helper
-  |
-Typed result
-  |
-Incremental GTK update
-```
+## Development and verification
 
-Use native Rust APIs, `/proc`, `/sys`, D-Bus, filesystem APIs, then established Linux utilities in that preference order. External programs must be invoked directly with explicit argument arrays, never through a shell string. Parse their output through isolated, fixture-tested adapters.
+Use the [README commands](README.md#development) and repository scripts:
 
-Every optional integration reports one of: available, unavailable with reason, or permission required. Unsupported capabilities are normal states, not exceptional crashes.
-
-## Setup and commands
-
-Prerequisites: `libgtk-4-dev`, `libsqlite3-dev`, `libpolkit-gobject-1-dev`, `pkg-config`. The pinned Rust toolchain is installed automatically by rustup from `rust-toolchain.toml`.
-
-```bash
-# Run the GUI application (dev mode)
-cargo run -p maintainer-app
-
-# Run the privileged helper (dev mode)
-cargo run -p maintainer-helper
-
-# Build all workspace members (debug)
-cargo build --workspace
-
-# Build all workspace members (release)
-cargo build --workspace --release
-
-# Format check (must pass before commit)
-cargo fmt --all -- --check
-
-# Lint (must pass before commit)
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-
-# Test all workspace members
-cargo test --workspace --all-features
-
-# Test a single target
-cargo test -p maintainer-core module::tests::test_name -- --exact
-
-# Test the app crate only
-cargo test -p maintainer-app
-
-# Test the helper crate only
-cargo test -p maintainer-helper
-```
-
-After scaffolding, Cargo is the only Rust package manager. Never install a dependency or regenerate `Cargo.lock` without stating why.
+- `scripts/test-native.sh` runs native tests with each GTK case in its own process.
+  Plain parallel `cargo test` is not the full GTK verification entry point.
+- `scripts/build-release.py` builds locked release binaries and rejects embedded
+  local build paths. Do not package a direct Cargo release build that bypasses it.
+- `scripts/check-release-local.py` runs the complete three-pass candidate gate.
+  Its manifest is invalid after source, documentation, lockfile, or payload edits.
+- CI performs its configured checks for the exact pushed commit. Check their
+  actual results; a local pass, successful push, or package build is not CI proof.
+- State why before changing dependencies or regenerating `Cargo.lock`. Use Cargo
+  for deliberate dependency operations; never edit the lockfile by hand.
 
 ## Code style
 
-- `rustfmt` owns Rust formatting; do not hand-format around it.
-- `clippy` warnings are defects unless a narrowly scoped allow has a written rationale.
-- Use explicit `crate::` paths across top-level modules and `super::` only for close parent relationships.
-- Keep GTK objects on the main thread. Perform scans and blocking system work in bounded workers, returning typed messages to the UI.
-- Avoid `unwrap`, `expect`, and ignored `Result` values in production paths. Convert failures into contextual typed errors at subsystem boundaries.
-- Model units in names or types: bytes, percentages, Celsius, durations, rates, and process IDs must not be ambiguous.
-- Files and modules use `snake_case`; types and traits use `PascalCase`; functions and variables use `snake_case`; constants use `SCREAMING_SNAKE_CASE`.
-- Prefer small modules with one responsibility and narrow interfaces. UI modules must not become service locators.
-- `unsafe` requires necessity, a documented invariant, and focused tests.
-- Comments explain safety, policy, or non-obvious Linux semantics—not code narration.
-- Do not add dependencies when the standard library or an existing dependency is sufficient.
-- Do not refactor unrelated code while implementing a focused change.
+- Let rustfmt own formatting. Clippy warnings are defects; narrowly scoped allows
+  require a local rationale. Prefer behavioral tests over source-spelling checks.
+- Follow Rust naming conventions. Use explicit `crate::` paths across top-level
+  modules and `super::` only for close parent relationships.
+- Keep GTK objects on the main thread and blocking work in bounded workers.
+  UI defaults and constructors must not collect hardware or perform system I/O.
+- Avoid production `unwrap`, `expect`, and ignored `Result` values. Return
+  contextual typed errors at subsystem boundaries.
+- Make units explicit: bytes, percentages, Celsius, durations, rates, and PIDs.
+- Keep modules cohesive and interfaces narrow. UI modules are not service locators.
+  Do not refactor unrelated code or add dependencies without need.
+- `unsafe` requires necessity, documented invariants, and focused tests. Comments
+  explain safety, policy, or non-obvious Linux semantics, not code narration.
 
-## Safety and privacy rules
+## Safety and privacy
 
-- The main application must never run as root or store administrator credentials.
-- Never execute arbitrary user-provided commands.
-- Validate and canonicalize filesystem targets without following unsafe path substitutions between review and execution.
-- Destructive actions require review and confirmation. Duplicate files are never deleted automatically.
-- Prefer Trash where supported. Permanent deletion requires explicit stronger confirmation.
-- Privileged helper methods must use fixed operation types and allowlisted parameters.
-- Reports redact usernames, hostnames, IP addresses, serial numbers, sensitive paths, and process arguments by default.
-- No telemetry, cloud account, or system-data upload.
-- Do not persist live metrics unless an approved feature explicitly requires history.
+- Refuse root GUI launch; never store administrator credentials.
+- Never execute arbitrary user commands. Preserve fixed operation allowlists.
+- Retain and validate filesystem identities across review/execution; canonicalized
+  paths alone do not prevent substitution races.
+- Destructive actions require review and confirmation. Never automatically delete
+  duplicates. Prefer Trash; permanent deletion requires stronger confirmation.
+- Redact usernames, hostnames, IPs, serials, sensitive paths, and process arguments
+  from reports by default. Preview remains necessary before sharing.
+- Never read, print, commit, or upload signing keys, credentials, or private data.
 
 ## Performance rules
 
-- Idle memory target is 150 MB PSS or less; 220 MB PSS is the hard ceiling. Absolute figures are dominated by GTK4 itself (a window with one label already costs ~167 MB RSS / ~135 MB PSS), so Maintainer's own share above that baseline is budgeted separately at 40 MB PSS or less, and that is the figure application changes can move.
-- Private/dirty idle memory stays at or below 130 MB so a 4 GB system stays near 4% of total RAM without swapping.
-- Average idle CPU stays at or below 0.5% as a target, with a 1.0% hard ceiling on hardware-accelerated sessions and 2.0% under a software rasterizer, where sparkline repaints cannot be offloaded to a GPU. Memory ceilings are not enforced under software rendering because no GTK4 program can meet them there.
-- Cold start must remain at or below 2 seconds.
-- Default monitoring refresh is 2 seconds and slows when the window is hidden.
-- No permanent daemon and no unsolicited filesystem scans.
-- Deep storage, duplicate, SMART, and journal work runs only on request, reports progress, and supports cancellation.
-- Update only affected widgets; never rebuild the whole dashboard for one metric.
+The active release milestone is strictly below **100,000,000 bytes combined idle
+PSS** for Maintainer-owned processes on hardware rendering. The former 150 MB
+PSS target and 220 MB ceiling are legacy context, not alternate release acceptance.
+The matched minimal-GTK comparison retains a 40 MB application-increment target;
+its delta is diagnostic, not exact attribution. Older GTK baseline figures are
+observations tied to their renderer/environment, not universal lower bounds.
 
-## Do not touch without explicit approval
+- Private dirty idle memory: at most 130,000,000 bytes.
+- Hardware-rendered idle CPU: at most 0.35% preferred; the approved fallback is
+  strictly below 0.5%. Exactly 0.5% fails. Older 1% hardware and 2% software ceilings are
+  diagnostic only. Memory ceilings are not enforced under software rendering;
+  report it separately rather than certifying hardware acceptance.
+- Usable startup: at most 2 seconds. Record map/first-data milestones separately;
+  a warm process launch is not cold-boot proof.
+- Default sampling is 2 seconds visible and slower while hidden. Update affected
+  widgets; never rebuild the dashboard for one metric.
+- No permanent daemon or unsolicited scans. Deep storage, duplicates, SMART, and
+  journal work run on request with progress and cancellation.
+- Measure performance-sensitive changes against these limits. Preserve failures
+  and distinguish individual diagnostics from complete release acceptance.
 
-| Path or concern | Why |
-|---|---|
-| Privileged helper API and Polkit policy | Security boundary; changes require threat review and authorization tests |
-| Shipped SQLite migrations | Immutable application history; add a forward migration |
-| `Cargo.lock` by hand | Cargo-owned; change only through deliberate dependency operations |
-| Packaging signing and APT repository credentials | Release secrets; never read, print, or commit them |
-| CI, compiler, formatter, or lint policy | Shared project rules; explain and obtain approval before weakening them |
+## Protected changes
 
-## Documentation
+- Helper API/Polkit changes require explicit authorization, threat review, and
+  authorization tests.
+- Shipped SQL migrations are immutable; add a forward migration.
+- Packaging signing/APT credentials must never be read, printed, or committed.
+- Explain and obtain approval before weakening CI, compiler, formatter, or lint
+  policy. Do not skip failing checks to obtain a pass.
 
-| File | Read when |
-|---|---|
-| `README.md` | Understanding product positioning, platform contract, and performance budgets |
-| `CHANGELOG.md` | Recording a user-visible change |
-| `docs/threat-model.md` | Changing the privilege boundary, helper API, or Polkit policy |
-| `tests/system/*.md` | Running the manual accessibility, compatibility, or security passes before a release |
+## Documentation and outputs
 
-Code is the source of truth for UI structure and styling; the CSS in
-`data/styles/` defines the semantic tokens. If a change alters a product,
-security, performance, or platform contract, update `README.md` and
-`CHANGELOG.md` in the same change.
+Keep setup in README, rules here, current validation in release status, and
+release history in CHANGELOG. Contract changes update README and CHANGELOG in
+that change. Link shared guidance instead of repeating thresholds or commands.
+
+Use `docs/validation/YYYY-MM-DD/report.md` for reviewed results and place supporting
+measurements beside it. Keep raw output in ignored `logs/YYYY-MM-DD/<run>/`.
+Never force-add raw logs. Packages/candidate bundles stay outside the checkout;
+`target/` is Cargo-owned ignored build output.
+
+`docs/archive/` is read-only history unless a historical update is explicitly
+requested. It is not current policy or a task queue. Archiving does not complete
+or waive unfinished work.
 
 ## Definition of done
 
-1. The smallest relevant tests pass and new behavior has a regression test that fails without the change.
-2. Formatting, linting, type checking, and affected builds pass using verified repository commands.
-3. Privileged or destructive behavior has authorization, validation, denial, cancellation, and partial-failure tests.
-4. No new warnings, leaked sensitive data, blocking GTK-main-thread work, or unexplained capability failures appear.
-5. Performance-sensitive work includes a measurement against the applicable budget.
-6. User-visible behavior includes loading, unavailable, permission-required, empty, success, partial-failure, failure, and cancelled states where applicable.
-7. Relevant documentation matches the shipped behavior.
+1. Relevant behavioral tests pass; changed behavior has a regression that fails
+   without the fix. Privileged/destructive cases cover authorization, validation,
+   denial, cancellation, and partial failure.
+2. Formatting, lint, affected builds, and required repository checks pass without
+   new warnings, leaked private data, GTK-thread blocking, or unexplained failures.
+3. Applicable loading, unavailable, permission, empty, success, partial-failure,
+   failure, and cancelled states are clear. Performance-sensitive work is measured.
+4. Relevant documentation matches the change and records unverified scope honestly.

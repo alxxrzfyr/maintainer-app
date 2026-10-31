@@ -99,3 +99,136 @@ mod tests {
         assert!(!policy.is_excluded(Path::new("/home/user/docs")));
     }
 }
+
+/// Resolve each component against an already opened directory. Never follow a
+/// symlink in an ancestor or the leaf, including when a path is concurrently replaced.
+pub(crate) fn open_anchored(
+    path: &std::path::Path,
+    directory: bool,
+) -> std::io::Result<std::fs::File> {
+    use std::ffi::CString;
+    use std::os::fd::{AsRawFd, FromRawFd};
+    use std::os::unix::ffi::OsStrExt;
+    use std::path::Component;
+    let mut current = std::fs::File::open(if path.is_absolute() { "/" } else { "." })?;
+    let components: Vec<_> = path
+        .components()
+        .filter(|c| !matches!(c, Component::RootDir | Component::CurDir))
+        .collect();
+    if components.len() > 256 {
+        return Err(std::io::Error::other("directory depth limit reached"));
+    }
+    for (index, component) in components.iter().enumerate() {
+        if !matches!(component, Component::Normal(_)) {
+            return Err(std::io::Error::other(
+                "parent path components are unsupported",
+            ));
+        }
+        let name = CString::new(component.as_os_str().as_bytes())?;
+        let flags = libc::O_RDONLY
+            | libc::O_CLOEXEC
+            | libc::O_NOFOLLOW
+            | libc::O_NONBLOCK
+            | if directory || index + 1 < components.len() {
+                libc::O_DIRECTORY
+            } else {
+                0
+            };
+        // SAFETY: current owns a live directory descriptor; name is NUL terminated.
+        // openat returns a new owned descriptor and never follows symbolic links.
+        let fd = unsafe { libc::openat(current.as_raw_fd(), name.as_ptr(), flags) };
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        // SAFETY: successful openat returned a fresh descriptor owned here exactly once.
+        current = unsafe { std::fs::File::from_raw_fd(fd) };
+    }
+    Ok(current)
+}
+
+pub(crate) fn descriptor_path(file: &std::fs::File) -> PathBuf {
+    use std::os::fd::AsRawFd;
+    PathBuf::from(format!("/proc/self/fd/{}", file.as_raw_fd()))
+}
+
+pub(crate) fn open_child_directory(
+    parent: &std::fs::File,
+    name: &std::ffi::OsStr,
+    cross_filesystems: bool,
+) -> std::io::Result<std::fs::File> {
+    use std::ffi::CString;
+    use std::os::fd::{AsRawFd, FromRawFd};
+    use std::os::unix::ffi::OsStrExt;
+    let name = CString::new(name.as_bytes())?;
+    #[repr(C)]
+    struct OpenHow {
+        flags: u64,
+        mode: u64,
+        resolve: u64,
+    }
+    let how = OpenHow {
+        flags: (libc::O_RDONLY
+            | libc::O_DIRECTORY
+            | libc::O_CLOEXEC
+            | libc::O_NOFOLLOW
+            | libc::O_NONBLOCK) as u64,
+        mode: 0,
+        // RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS, optionally RESOLVE_NO_XDEV.
+        // NO_XDEV rejects bind mounts as well as device changes.
+        resolve: 0x08 | 0x04 | if cross_filesystems { 0 } else { 0x01 },
+    };
+    // SAFETY: parent is live, name is NUL terminated and how has the Linux
+    // open_how ABI. A failed/unsupported syscall returns an error, never a
+    // weaker path-based fallback. Ubuntu 22.04's kernel supports openat2.
+    let fd = unsafe {
+        libc::syscall(
+            libc::SYS_openat2,
+            parent.as_raw_fd(),
+            name.as_ptr(),
+            &how,
+            std::mem::size_of::<OpenHow>(),
+        )
+    } as libc::c_int;
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: fd is a newly allocated successful openat descriptor.
+    Ok(unsafe { std::fs::File::from_raw_fd(fd) })
+}
+
+#[cfg(test)]
+mod anchored_tests {
+    use super::*;
+    use std::os::unix::fs::symlink;
+
+    #[test]
+    fn queued_directory_stays_attached_after_ancestor_swap() {
+        let temporary = tempfile::tempdir().unwrap();
+        let inside = temporary.path().join("inside");
+        let outside = temporary.path().join("outside");
+        std::fs::create_dir(&inside).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::write(inside.join("original"), b"inside").unwrap();
+        std::fs::write(outside.join("secret"), b"outside").unwrap();
+        let anchor = open_anchored(&inside, true).unwrap();
+        std::fs::rename(&inside, temporary.path().join("moved")).unwrap();
+        symlink(&outside, &inside).unwrap();
+        let names: Vec<_> = std::fs::read_dir(descriptor_path(&anchor))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(names, vec![std::ffi::OsString::from("original")]);
+        assert!(open_anchored(&inside.join("secret"), false).is_err());
+    }
+
+    #[test]
+    fn discovered_child_replacement_cannot_redirect_to_symlink() {
+        let temporary = tempfile::tempdir().unwrap();
+        let parent = open_anchored(temporary.path(), true).unwrap();
+        let child = temporary.path().join("child");
+        std::fs::create_dir(&child).unwrap();
+        std::fs::rename(&child, temporary.path().join("moved")).unwrap();
+        symlink("/tmp", &child).unwrap();
+        assert!(open_child_directory(&parent, std::ffi::OsStr::new("child"), false).is_err());
+    }
+}

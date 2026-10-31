@@ -42,22 +42,80 @@ fn installer_checks_install_updates_exec_annotation() {
     );
 }
 
+// Execute the installed-policy verification section with a controlled pkaction.
+// Installation and service reloads are deliberately outside this test boundary.
+fn run_policy_verification(missing_action: &str, missing_annotation: bool) -> std::process::Output {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let content = std::fs::read_to_string(installer_path()).unwrap();
+    let (_, verification) = content
+        .split_once("echo \"Authorization required for each action:\"")
+        .expect("installer policy verification section");
+    let stub = r#"
+set -euo pipefail
+pkaction() {
+    if [[ "$2" == "io.github.maintainerapp.${MISSING_ACTION}" ]]; then
+        return 0
+    fi
+    echo '  implicit active: auth_admin_keep'
+    if [[ "$2" == 'io.github.maintainerapp.install-updates' && "$MISSING_ANNOTATION" == 'false' ]]; then
+        echo '  org.freedesktop.policykit.exec.path -> /usr/libexec/maintainer-helper'
+    fi
+}
+"#;
+    let mut child = Command::new("bash")
+        .arg("-s")
+        .env("MISSING_ACTION", missing_action)
+        .env("MISSING_ANNOTATION", missing_annotation.to_string())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("start policy verification");
+    let mut stdin = child.stdin.take().unwrap();
+    stdin.write_all(stub.as_bytes()).unwrap();
+    stdin.write_all(verification.as_bytes()).unwrap();
+    drop(stdin);
+    child.wait_with_output().unwrap()
+}
+
 #[test]
 fn installer_exits_nonzero_on_missing_action() {
-    let content = std::fs::read_to_string(installer_path())
-        .expect("failed to read scripts/install-privileged-files.sh");
+    for action in EXPECTED_ACTIONS {
+        let output = run_policy_verification(action, false);
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "missing {action} was accepted");
+        assert!(
+            error.contains(&format!(
+                "action io.github.maintainerapp.{action} not found"
+            )),
+            "{error}"
+        );
+        assert!(
+            error.contains("FATAL:"),
+            "verification did not reach its failure decision: {error}"
+        );
+    }
+}
 
-    // Script must contain an exit 1 (or equivalent failure) path when
-    // verification finds errors.
+#[test]
+fn installer_accepts_complete_installed_policy() {
+    let output = run_policy_verification("", false);
     assert!(
-        content.contains("exit 1"),
-        "installer must exit nonzero when policy verification fails"
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
     );
+}
 
-    // Must have logic to count or detect errors.
+#[test]
+fn installer_rejects_missing_exec_annotation() {
+    let output = run_policy_verification("", true);
+    assert!(!output.status.success());
     assert!(
-        content.contains("POLICY_ERRORS") || content.contains("fail"),
-        "installer must track verification errors and fail on them"
+        String::from_utf8_lossy(&output.stderr)
+            .contains("missing org.freedesktop.policykit.exec.path annotation")
     );
 }
 

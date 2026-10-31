@@ -6,7 +6,7 @@
 //! - Security labels only appear when backend evidence supports them.
 //! - Cancellation is disabled when the backend reports it unsafe.
 //! - No credentials are stored; authentication is delegated to the fixed helper/Polkit path.
-//! - The Install button is only enabled after a plan has been reviewed.
+//! - Installation requires a second, authoritative review from the native package owner.
 
 use gtk4::prelude::*;
 use gtk4::{
@@ -46,10 +46,6 @@ fn progress_fraction(completed: u64, total: Option<u64>) -> Option<f64> {
     total
         .filter(|total| *total > 0)
         .map(|total| (completed as f64 / total as f64).clamp(0.0, 1.0))
-}
-
-pub(crate) fn cancellation_allowed_for_progress(message: &str) -> bool {
-    message == crate::dispatch::UPDATE_AUTHENTICATION_PROGRESS
 }
 
 impl Default for SelectionMode {
@@ -102,13 +98,17 @@ pub enum UpdatePhase {
 pub struct UpdatesPage {
     container: GtkBox,
     check_button: Button,
+    resume_button: Button,
+    recheck_button: Button,
+    kernel_expander: gtk4::Expander,
+    kernels: Rc<RefCell<crate::ui::kernel_section::KernelSection>>,
     status_label: Label,
     // Selection mode toggle
     mode_row: GtkBox,
     custom_selection_label: Label,
     everything_toggle: gtk4::ToggleButton,
     security_toggle: gtk4::ToggleButton,
-    selection_mode: SelectionMode,
+    selection_mode: Rc<Cell<SelectionMode>>,
     // Per-package selection state (package names currently checked).
     // Shared via Rc<RefCell<>> because checkbox signal handlers need access.
     selected_packages: Rc<RefCell<HashSet<String>>>,
@@ -158,8 +158,7 @@ impl UpdatesPage {
         container.append(&header);
 
         let description = Label::new(Some(
-            "Check for available system, application, and firmware updates. \
-             Review all changes before installing.",
+            "Check available updates, then review the complete locked package plan before applying changes.",
         ));
         description.set_wrap(true);
         description.set_halign(gtk4::Align::Start);
@@ -170,7 +169,17 @@ impl UpdatesPage {
         let check_button = Button::with_label("Check for Updates");
         check_button.add_css_class("suggested-action");
         check_button.set_halign(gtk4::Align::Start);
-        container.append(&check_button);
+        let header_actions = GtkBox::new(Orientation::Horizontal, 8);
+        header_actions.append(&check_button);
+        let resume_button = Button::with_label("Resume Package Operation");
+        header_actions.append(&resume_button);
+        let recheck_button = Button::with_label("Recheck recovery");
+        recheck_button.set_tooltip_text(Some(
+            "Read-only check after repairing the package manager with your normal system tools.",
+        ));
+        recheck_button.set_visible(false);
+        header_actions.append(&recheck_button);
+        container.append(&header_actions);
 
         let status_label = Label::new(None);
         status_label.set_halign(gtk4::Align::Start);
@@ -240,9 +249,12 @@ impl UpdatesPage {
         ));
         action_bar.append(&review_button);
 
-        let confirm_button = Button::with_label("Install Updates");
+        let confirm_button = Button::with_label("Review Installation");
         confirm_button.add_css_class("suggested-action");
         confirm_button.set_sensitive(false);
+        confirm_button.set_tooltip_text(Some(
+            "Authenticate and review the complete native package plan before applying it.",
+        ));
         action_bar.append(&confirm_button);
 
         container.append(&action_bar);
@@ -298,15 +310,32 @@ impl UpdatesPage {
         result_label.set_wrap(true);
         container.append(&result_label);
 
+        let kernels = Rc::new(RefCell::new(crate::ui::kernel_section::KernelSection::new()));
+        let kernel_scroll = ScrolledWindow::builder()
+            .max_content_height(200)
+            .propagate_natural_height(true)
+            .child(kernels.borrow().widget())
+            .build();
+        let kernel_expander = gtk4::Expander::builder()
+            .label("Installed kernels")
+            .expanded(false)
+            .child(&kernel_scroll)
+            .build();
+        container.append(&kernel_expander);
+
         Self {
             container,
             check_button,
+            resume_button,
+            recheck_button,
+            kernel_expander,
+            kernels,
             status_label,
             mode_row,
             custom_selection_label,
             everything_toggle,
             security_toggle,
-            selection_mode: SelectionMode::Everything,
+            selection_mode: Rc::new(Cell::new(SelectionMode::Everything)),
             selected_packages: Rc::new(RefCell::new(HashSet::new())),
             selection_replanned: Rc::new(RefCell::new(false)),
             action_bar,
@@ -331,6 +360,22 @@ impl UpdatesPage {
         &self.container
     }
 
+    pub fn resume_button(&self) -> &Button {
+        &self.resume_button
+    }
+
+    pub fn recheck_button(&self) -> &Button {
+        &self.recheck_button
+    }
+
+    pub fn kernel_expander(&self) -> &gtk4::Expander {
+        &self.kernel_expander
+    }
+
+    pub fn kernels(&self) -> Rc<RefCell<crate::ui::kernel_section::KernelSection>> {
+        self.kernels.clone()
+    }
+
     /// Returns the current update phase.
     pub fn phase(&self) -> UpdatePhase {
         self.phase
@@ -338,7 +383,7 @@ impl UpdatesPage {
 
     /// Returns the current selection mode.
     pub fn selection_mode(&self) -> SelectionMode {
-        self.selection_mode
+        self.selection_mode.get()
     }
 
     /// Returns the "Everything" toggle button for signal connections.
@@ -356,7 +401,7 @@ impl UpdatesPage {
     /// Keeps the visible "Custom selection" indicator in lockstep with the
     /// mode, so Custom can never be active while the indicator is hidden.
     pub fn set_selection_mode(&mut self, mode: SelectionMode) {
-        self.selection_mode = mode;
+        self.selection_mode.set(mode);
         self.custom_selection_label
             .set_visible(mode == SelectionMode::Custom);
     }
@@ -381,12 +426,14 @@ impl UpdatesPage {
     pub fn mark_selection_replanned(&self) {
         *self.selection_replanned.borrow_mut() = true;
         self.review_button.set_visible(false);
-        self.confirm_button.set_sensitive(true);
+        self.confirm_button
+            .set_sensitive(!self.selected_packages.borrow().is_empty());
     }
 
     /// Transition to the checking state.
     pub fn set_checking(&mut self) {
         self.phase = UpdatePhase::Checking;
+        self.review_button.set_sensitive(true);
         self.check_button.set_label("Checking for Updates…");
         self.check_button.set_sensitive(false);
         self.status_label.set_text("Checking for updates…");
@@ -406,15 +453,15 @@ impl UpdatesPage {
         self.check_button.set_sensitive(true);
         self.status_label.set_text(summary);
         self.status_label.set_visible(true);
-        // Show top action bar with summary and enabled Install button
+        // Keep inspection summary visible while installation stays unavailable.
         self.action_bar.set_visible(true);
         self.summary_label.set_text(summary);
-        self.confirm_button.set_sensitive(true);
+        self.confirm_button.set_sensitive(false);
         // Keep coarse mode toggle hidden by default for a clean, unified view
         self.mode_row.set_visible(false);
     }
 
-    /// Show the immutable update plan that will be handed to PackageKit.
+    /// Show the read-only update plan for inspection.
     pub fn set_reviewing_plan(&mut self, summary: &str, plan: &UpdatePlan) {
         self.set_reviewing(summary);
         self.populate_package_list(&plan.candidates);
@@ -449,14 +496,14 @@ impl UpdatesPage {
             let mut selected = self.selected_packages.borrow_mut();
             selected.clear();
             for c in candidates {
-                selected.insert(c.name.clone());
+                selected.insert(c.selection_key());
             }
         }
         // A fresh populate means selection matches the plan; mark as replanned.
         *self.selection_replanned.borrow_mut() = true;
-        // Hide review button and enable confirm since selection == plan.
+        // This enables requesting an authoritative plan; Apply exists only in its later dialog.
         self.review_button.set_visible(false);
-        self.confirm_button.set_sensitive(true);
+        self.confirm_button.set_sensitive(!candidates.is_empty());
 
         let display_rows = group_kernel_candidates(candidates);
 
@@ -490,7 +537,7 @@ impl UpdatesPage {
         let row = GtkBox::new(Orientation::Vertical, 4);
 
         let title_box = GtkBox::new(Orientation::Horizontal, 8);
-        let title = Label::new(Some(&candidate.name));
+        let title = Label::new(Some(&candidate.selection_key()));
         title.set_halign(gtk4::Align::Start);
         title.add_css_class("heading");
         title_box.append(&title);
@@ -578,7 +625,7 @@ impl UpdatesPage {
         self.package_list.append(&outer_row);
 
         // --- Checkbox toggle handler ---
-        let pkg_name = candidate.name.clone();
+        let pkg_name = candidate.selection_key();
         let selected_ref = self.selected_packages.clone();
         let replanned_ref = self.selection_replanned.clone();
         let review_btn = self.review_button.clone();
@@ -586,6 +633,7 @@ impl UpdatesPage {
         let everything_toggle = self.everything_toggle.clone();
         let security_toggle = self.security_toggle.clone();
         let custom_label = self.custom_selection_label.clone();
+        let selection_mode = self.selection_mode.clone();
 
         check.connect_toggled(move |btn| {
             let mut selected = selected_ref.borrow_mut();
@@ -599,6 +647,7 @@ impl UpdatesPage {
             // Any manual checkbox toggle invalidates the current re-plan
             // and switches to Custom mode.
             *replanned_ref.borrow_mut() = false;
+            selection_mode.set(SelectionMode::Custom);
 
             // Deactivate coarse toggle buttons to indicate Custom mode,
             // and show the indicator label so the mode change is visible
@@ -634,7 +683,20 @@ impl UpdatesPage {
         let row = GtkBox::new(Orientation::Vertical, 4);
 
         let title_box = GtkBox::new(Orientation::Horizontal, 8);
-        let title_text = format!("Linux kernel {}", group.version);
+        let architectures: std::collections::BTreeSet<_> = group
+            .package_names
+            .iter()
+            .filter_map(|name| name.rsplit_once(':').map(|(_, architecture)| architecture))
+            .collect();
+        let title_text = if architectures.is_empty() {
+            format!("Linux kernel {}", group.version)
+        } else {
+            format!(
+                "Linux kernel {} ({})",
+                group.version,
+                architectures.into_iter().collect::<Vec<_>>().join(", ")
+            )
+        };
         let title = Label::new(Some(&title_text));
         title.set_halign(gtk4::Align::Start);
         title.add_css_class("heading");
@@ -689,6 +751,7 @@ impl UpdatesPage {
         let everything_toggle = self.everything_toggle.clone();
         let security_toggle = self.security_toggle.clone();
         let custom_label = self.custom_selection_label.clone();
+        let selection_mode = self.selection_mode.clone();
 
         check.connect_toggled(move |btn| {
             let mut selected = selected_ref.borrow_mut();
@@ -708,6 +771,7 @@ impl UpdatesPage {
             // Any manual checkbox toggle invalidates the current re-plan
             // and switches to Custom mode.
             *replanned_ref.borrow_mut() = false;
+            selection_mode.set(SelectionMode::Custom);
 
             // Deactivate coarse toggle buttons to indicate Custom mode.
             everything_toggle.set_active(false);
@@ -1012,6 +1076,7 @@ mod tests {
         is_kernel: bool,
     ) -> UpdateCandidate {
         UpdateCandidate {
+            architecture: None,
             name: name.to_string(),
             installed_version: Some("1.0.0".to_string()),
             available_version: "2.0.0".to_string(),
@@ -1022,6 +1087,95 @@ mod tests {
             is_new: false,
             is_kernel,
         }
+    }
+
+    #[test]
+    fn installation_review_requires_a_matching_selection() {
+        gtk4::init().expect("GTK display required; use scripts/test-native.sh");
+        let mut page = UpdatesPage::new();
+        page.set_checking();
+        assert!(!page.confirm_button.is_sensitive());
+        page.populate_package_list(&[make_candidate(
+            "curl",
+            UpdateClassification::Standard,
+            false,
+        )]);
+        assert!(page.confirm_button.is_sensitive());
+        assert_eq!(
+            page.confirm_button.label().as_deref(),
+            Some("Review Installation")
+        );
+        *page.selection_replanned.borrow_mut() = false;
+        page.confirm_button.set_sensitive(false);
+        page.set_selection_mode(SelectionMode::Custom);
+        assert!(!page.confirm_button.is_sensitive());
+        page.mark_selection_replanned();
+        assert!(page.confirm_button.is_sensitive());
+        assert!(!page.kernel_expander.is_expanded());
+    }
+
+    #[test]
+    fn multiarch_checkboxes_preserve_only_the_selected_exact_request() {
+        gtk4::init().expect("GTK display required; use scripts/test-native.sh");
+        let page = UpdatesPage::new();
+        let mut native = make_candidate("libexample", UpdateClassification::Standard, false);
+        native.architecture = Some("amd64".into());
+        let mut foreign = native.clone();
+        foreign.architecture = Some("i386".into());
+        let candidates = vec![native, foreign];
+        page.populate_package_list(&candidates);
+        assert_eq!(page.selected_packages().len(), 2);
+        let row = page
+            .package_list
+            .first_child()
+            .unwrap()
+            .downcast::<gtk4::ListBoxRow>()
+            .unwrap();
+        let contents = row.child().unwrap().downcast::<GtkBox>().unwrap();
+        let checkbox = contents
+            .first_child()
+            .unwrap()
+            .downcast::<CheckButton>()
+            .unwrap();
+        checkbox.set_active(false);
+        assert_eq!(
+            page.selected_packages(),
+            HashSet::from(["libexample:i386".into()])
+        );
+        assert!(!page.is_selection_replanned());
+        assert!(!page.confirm_button().is_sensitive());
+        let selected = page.selected_packages();
+        let requests: Vec<_> = candidates
+            .iter()
+            .filter(|candidate| selected.contains(&candidate.selection_key()))
+            .map(|candidate| {
+                maintainer_core::updates::UpdateRequest {
+                    name: candidate.name.clone(),
+                    architecture: candidate.architecture.clone(),
+                    version: candidate.available_version.clone(),
+                }
+                .package_spec()
+            })
+            .collect();
+        assert_eq!(requests, vec!["libexample:i386=2.0.0"]);
+        let mut qualified = candidates[1].clone();
+        qualified.name = "libexample:i386".into();
+        assert_eq!(qualified.selection_key(), "libexample:i386");
+    }
+
+    #[test]
+    fn cloned_pages_share_selection_mode() {
+        assert!(
+            !gtk4::is_initialized() || gtk4::is_initialized_main_thread(),
+            "Run each GTK fixture in its own process using scripts/test-native.sh"
+        );
+        gtk4::init().expect("GTK display required; use scripts/test-native.sh");
+        let page = UpdatesPage::new();
+        let mut cloned = page.clone();
+        cloned.set_selection_mode(SelectionMode::SecurityOnly);
+        assert_eq!(page.selection_mode(), SelectionMode::SecurityOnly);
+        cloned.set_selection_mode(SelectionMode::Custom);
+        assert_eq!(page.selection_mode(), SelectionMode::Custom);
     }
 
     #[test]
@@ -1145,7 +1299,7 @@ mod tests {
 
 #[cfg(test)]
 mod progress_tests {
-    use super::{cancellation_allowed_for_progress, progress_fraction};
+    use super::progress_fraction;
 
     #[test]
     fn unknown_total_is_indeterminate_not_zero_percent() {
@@ -1158,16 +1312,5 @@ mod progress_tests {
     fn known_total_produces_clamped_fraction() {
         assert_eq!(progress_fraction(25, Some(100)), Some(0.25));
         assert_eq!(progress_fraction(150, Some(100)), Some(1.0));
-    }
-
-    #[test]
-    fn cancellation_is_allowed_only_during_authentication() {
-        assert!(cancellation_allowed_for_progress(
-            "Waiting for administrator authentication…"
-        ));
-        assert!(!cancellation_allowed_for_progress("Downloading updates…"));
-        assert!(!cancellation_allowed_for_progress(
-            "Verifying installed package versions…"
-        ));
     }
 }

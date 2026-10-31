@@ -116,6 +116,7 @@ fn parse_fwupd_updates(stdout: &str) -> Vec<UpdateCandidate> {
         if !trimmed.contains(':') && !trimmed.is_empty() && !trimmed.starts_with("Devices") {
             if let (Some(name), Some(ver)) = (&current_name, &update_version) {
                 candidates.push(UpdateCandidate {
+                    architecture: None,
                     name: name.clone(),
                     installed_version: current_version.clone(),
                     available_version: ver.clone(),
@@ -153,6 +154,7 @@ fn parse_fwupd_updates(stdout: &str) -> Vec<UpdateCandidate> {
 
     if let (Some(name), Some(ver)) = (&current_name, &update_version) {
         candidates.push(UpdateCandidate {
+            architecture: None,
             name: name.clone(),
             installed_version: current_version.clone(),
             available_version: ver.clone(),

@@ -297,25 +297,79 @@ pub fn summarize_errors(json_errors: Option<&str>, max_chars: usize) -> Option<S
     if raw.is_empty() {
         return None;
     }
-    let trimmed = raw.trim_start_matches('[').trim_end_matches(']');
-    let parts: Vec<&str> = trimmed.split("\",\"").collect();
-    let cleaned: Vec<String> = parts
-        .iter()
-        .map(|p| p.trim_matches('"').trim().to_string())
-        .filter(|p| !p.is_empty())
-        .collect();
-
-    if cleaned.is_empty() {
+    let cleaned = parse_error_strings(raw)?;
+    let joined = cleaned
+        .into_iter()
+        .filter(|error| !error.is_empty())
+        .collect::<Vec<_>>()
+        .join("; ");
+    if joined.is_empty() {
         return None;
     }
-
-    let joined = cleaned.join("; ");
     if joined.len() <= max_chars {
         Some(joined)
     } else {
         let truncated: String = joined.chars().take(max_chars - 1).collect();
         Some(format!("{truncated}…"))
     }
+}
+
+fn parse_error_strings(raw: &str) -> Option<Vec<String>> {
+    let mut chars = raw.chars().peekable();
+    let skip_whitespace = |chars: &mut std::iter::Peekable<std::str::Chars<'_>>| {
+        while chars.peek().is_some_and(|c| c.is_whitespace()) {
+            chars.next();
+        }
+    };
+    skip_whitespace(&mut chars);
+    if chars.next()? != '[' {
+        return None;
+    }
+    let mut values = Vec::new();
+    loop {
+        skip_whitespace(&mut chars);
+        if chars.peek() == Some(&']') {
+            chars.next();
+            break;
+        }
+        if chars.next()? != '"' {
+            return None;
+        }
+        let mut value = String::new();
+        loop {
+            match chars.next()? {
+                '"' => break,
+                '\\' => match chars.next()? {
+                    '"' => value.push('"'),
+                    '\\' => value.push('\\'),
+                    '/' => value.push('/'),
+                    'b' => value.push('\u{08}'),
+                    'f' => value.push('\u{0c}'),
+                    'n' => value.push('\n'),
+                    'r' => value.push('\r'),
+                    't' => value.push('\t'),
+                    'u' => {
+                        let code = (0..4).try_fold(0_u32, |value, _| {
+                            chars.next()?.to_digit(16).map(|digit| (value << 4) | digit)
+                        })?;
+                        value.push(char::from_u32(code)?);
+                    }
+                    _ => return None,
+                },
+                c if c < '\u{20}' => return None,
+                c => value.push(c),
+            }
+        }
+        values.push(value);
+        skip_whitespace(&mut chars);
+        match chars.next()? {
+            ',' => continue,
+            ']' => break,
+            _ => return None,
+        }
+    }
+    skip_whitespace(&mut chars);
+    chars.next().is_none().then_some(values)
 }
 
 #[cfg(test)]
@@ -367,6 +421,15 @@ mod tests {
         let input = r#"["error one","error two"]"#;
         let result = summarize_errors(Some(input), 100);
         assert_eq!(result, Some("error one; error two".to_string()));
+    }
+
+    #[test]
+    fn summarize_errors_decodes_json_escapes_and_embedded_commas() {
+        let input = r#"["quote: \"yes\", path: C:\\temp\nnext\t\u0001"]"#;
+        assert_eq!(
+            summarize_errors(Some(input), 100),
+            Some("quote: \"yes\", path: C:\\temp\nnext\t\u{0001}".to_string())
+        );
     }
 
     #[test]

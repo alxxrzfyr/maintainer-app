@@ -4,7 +4,6 @@
 //! details list.
 
 use std::collections::HashMap;
-use std::fs;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -56,8 +55,7 @@ pub struct NetBaseline {
 /// Read and parse `/proc/net/dev`.
 pub fn read_net_dev(proc_path: &Path) -> Result<HashMap<String, NetCounters>, MaintainerError> {
     let path = proc_path.join("net/dev");
-    let content = fs::read_to_string(&path)
-        .map_err(|e| MaintainerError::io(format!("reading {}", path.display()), e))?;
+    let content = crate::metrics::read_proc_text(&path)?;
 
     parse_net_dev(&content)
 }

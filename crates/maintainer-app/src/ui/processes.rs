@@ -4,12 +4,15 @@
 //! memory, and state. Process termination triggers Polkit authorization.
 
 use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use gtk4::prelude::*;
 use gtk4::{Align, Box as GtkBox, Button, Label, Orientation, ScrolledWindow};
 
 use crate::monitoring::{ProcessSort, ProcessesViewModel};
+use maintainer_core::metrics::ProcessIdentity;
+use maintainer_core::metrics::ProcessSnapshot;
 
 /// Callback type for sort changes.
 type SortCallback = Rc<RefCell<Option<Box<dyn Fn(ProcessSort)>>>>;
@@ -22,8 +25,8 @@ pub struct ProcessesPage {
     root: ScrolledWindow,
     process_list_box: GtkBox,
     process_count_label: Label,
-    #[allow(dead_code)]
-    sort_buttons: SortButtons,
+    overflow_label: Label,
+    rows: RefCell<HashMap<ProcessIdentity, ProcessRow>>,
     operation_status: Label,
     unavailable_box: GtkBox,
     unavailable_label: Label,
@@ -31,12 +34,90 @@ pub struct ProcessesPage {
     on_terminate: TerminateCallback,
 }
 
-#[allow(dead_code)]
-struct SortButtons {
-    cpu_btn: Button,
-    memory_btn: Button,
-    name_btn: Button,
-    pid_btn: Button,
+struct ProcessRow {
+    root: GtkBox,
+    name: Label,
+    state: Label,
+    memory: Label,
+}
+
+impl ProcessRow {
+    fn new(
+        process: &ProcessSnapshot,
+        on_terminate: &TerminateCallback,
+        operation_status: &Label,
+    ) -> Self {
+        let row = GtkBox::new(Orientation::Horizontal, 8);
+        row.set_margin_top(4);
+        row.set_margin_bottom(4);
+        row.set_margin_start(12);
+        row.set_margin_end(12);
+        row.add_css_class("maintainer_process_row");
+
+        let pid_label = Label::new(Some(&process.identity.pid.to_string()));
+        pid_label.set_width_chars(7);
+        pid_label.set_halign(Align::Start);
+        pid_label.add_css_class("maintainer_text_muted");
+        row.append(&pid_label);
+
+        let name = Label::new(None);
+        name.set_halign(Align::Start);
+        name.set_hexpand(true);
+        name.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+        name.set_max_width_chars(30);
+        row.append(&name);
+
+        let state = Label::new(None);
+        state.set_width_chars(3);
+        row.append(&state);
+
+        let memory = Label::new(None);
+        memory.set_width_chars(10);
+        memory.set_halign(Align::End);
+        row.append(&memory);
+
+        let terminate_btn = Button::with_label("End");
+        terminate_btn.add_css_class("maintainer_terminate_button");
+        terminate_btn.set_tooltip_text(Some("Send SIGTERM to this process"));
+        let pid = process.identity.pid;
+        let start_time = process.identity.start_time_ticks;
+        let terminate_cb = on_terminate.clone();
+        let status_label = operation_status.clone();
+        terminate_btn.connect_clicked(move |_| {
+            status_label.remove_css_class("error");
+            status_label.set_text("Preparing process review…");
+            status_label.set_visible(true);
+            if let Some(cb) = terminate_cb.borrow().as_ref() {
+                cb(pid, start_time);
+            }
+        });
+        row.append(&terminate_btn);
+
+        let result = Self {
+            root: row,
+            name,
+            state,
+            memory,
+        };
+        result.update(process);
+        result
+    }
+
+    fn update(&self, process: &ProcessSnapshot) {
+        self.name.set_text(&process.name);
+        self.memory.set_text(&format_memory(process.rss_bytes));
+        self.state.set_text(&String::from(process.state));
+        self.state
+            .remove_css_class("maintainer_process_state_running");
+        self.state
+            .remove_css_class("maintainer_process_state_zombie");
+        self.state.remove_css_class("maintainer_text_muted");
+        match process.state {
+            'R' => self.state.add_css_class("maintainer_process_state_running"),
+            'Z' => self.state.add_css_class("maintainer_process_state_zombie"),
+            _ => self.state.add_css_class("maintainer_text_muted"),
+        }
+    }
 }
 
 impl Default for ProcessesPage {
@@ -107,6 +188,12 @@ impl ProcessesPage {
 
         let process_list_box = GtkBox::new(Orientation::Vertical, 0);
         process_list_box.add_css_class("maintainer_surface");
+        let overflow_label = Label::new(None);
+        overflow_label.add_css_class("maintainer_text_muted");
+        overflow_label.set_margin_top(8);
+        overflow_label.set_margin_bottom(8);
+        overflow_label.set_visible(false);
+        process_list_box.append(&overflow_label);
 
         let process_scroll = ScrolledWindow::new();
         process_scroll.set_child(Some(&process_list_box));
@@ -140,12 +227,20 @@ impl ProcessesPage {
         for (i, btn) in all_buttons.iter().enumerate() {
             let sort = sorts[i];
             let callback = on_sort_changed.clone();
-            let cpu_ref = cpu_btn.clone();
-            let mem_ref = memory_btn.clone();
-            let name_ref = name_btn.clone();
-            let pid_ref = pid_btn.clone();
+            let cpu_ref = cpu_btn.downgrade();
+            let mem_ref = memory_btn.downgrade();
+            let name_ref = name_btn.downgrade();
+            let pid_ref = pid_btn.downgrade();
             let btn_clone = (*btn).clone();
             btn_clone.connect_clicked(move |_| {
+                let (Some(cpu_ref), Some(mem_ref), Some(name_ref), Some(pid_ref)) = (
+                    cpu_ref.upgrade(),
+                    mem_ref.upgrade(),
+                    name_ref.upgrade(),
+                    pid_ref.upgrade(),
+                ) else {
+                    return;
+                };
                 for b in [&cpu_ref, &mem_ref, &name_ref, &pid_ref] {
                     b.remove_css_class("maintainer_sort_active");
                 }
@@ -170,12 +265,8 @@ impl ProcessesPage {
             root,
             process_list_box,
             process_count_label,
-            sort_buttons: SortButtons {
-                cpu_btn,
-                memory_btn,
-                name_btn,
-                pid_btn,
-            },
+            overflow_label,
+            rows: RefCell::new(HashMap::new()),
             operation_status,
             unavailable_box,
             unavailable_label,
@@ -221,78 +312,49 @@ impl ProcessesPage {
         self.process_count_label
             .set_text(&format!("{} processes", vm.total_count));
 
-        // Rebuild process list.
-        while let Some(child) = self.process_list_box.first_child() {
-            self.process_list_box.remove(&child);
-        }
-
         // Show at most 100 processes to keep GTK responsive.
         let display_limit = vm.processes.len().min(100);
+        let mut wanted = HashSet::with_capacity(display_limit);
+        let mut rows = self.rows.borrow_mut();
         for proc in &vm.processes[..display_limit] {
-            let row = GtkBox::new(Orientation::Horizontal, 8);
-            row.set_margin_top(4);
-            row.set_margin_bottom(4);
-            row.set_margin_start(12);
-            row.set_margin_end(12);
-            row.add_css_class("maintainer_process_row");
-
-            let pid_label = Label::new(Some(&proc.identity.pid.to_string()));
-            pid_label.set_width_chars(7);
-            pid_label.set_halign(Align::Start);
-            pid_label.add_css_class("maintainer_text_muted");
-            row.append(&pid_label);
-
-            let name_label = Label::new(Some(&proc.name));
-            name_label.set_halign(Align::Start);
-            name_label.set_hexpand(true);
-            name_label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
-            name_label.set_max_width_chars(30);
-            row.append(&name_label);
-
-            let state_label = Label::new(Some(&String::from(proc.state)));
-            match proc.state {
-                'R' => state_label.add_css_class("maintainer_process_state_running"),
-                'Z' => state_label.add_css_class("maintainer_process_state_zombie"),
-                _ => state_label.add_css_class("maintainer_text_muted"),
-            }
-            state_label.set_width_chars(3);
-            row.append(&state_label);
-
-            let mem_text = format_memory(proc.rss_bytes);
-            let mem_label = Label::new(Some(&mem_text));
-            mem_label.set_width_chars(10);
-            mem_label.set_halign(Align::End);
-            row.append(&mem_label);
-
-            let terminate_btn = Button::with_label("End");
-            terminate_btn.add_css_class("maintainer_terminate_button");
-            terminate_btn.set_tooltip_text(Some("Send SIGTERM to this process"));
-            let pid = proc.identity.pid;
-            let start_time = proc.identity.start_time_ticks;
-            let terminate_cb = self.on_terminate.clone();
-            let status_label = self.operation_status.clone();
-            terminate_btn.connect_clicked(move |_| {
-                status_label.remove_css_class("error");
-                status_label.set_text("Requesting authorization…");
-                status_label.set_visible(true);
-                if let Some(cb) = terminate_cb.borrow().as_ref() {
-                    cb(pid, start_time);
-                }
+            wanted.insert(proc.identity.clone());
+            let row = rows.entry(proc.identity.clone()).or_insert_with(|| {
+                ProcessRow::new(proc, &self.on_terminate, &self.operation_status)
             });
-            row.append(&terminate_btn);
+            row.update(proc);
+            if row.root.parent().is_none() {
+                self.process_list_box.append(&row.root);
+            }
+        }
 
-            self.process_list_box.append(&row);
+        let stale: Vec<_> = rows
+            .keys()
+            .filter(|identity| !wanted.contains(*identity))
+            .cloned()
+            .collect();
+        for identity in stale {
+            if let Some(row) = rows.remove(&identity) {
+                self.process_list_box.remove(&row.root);
+            }
+        }
+
+        let mut previous_row: Option<GtkBox> = None;
+        for process in &vm.processes[..display_limit] {
+            if let Some(row) = rows.get(&process.identity) {
+                self.process_list_box
+                    .reorder_child_after(&row.root, previous_row.as_ref());
+                previous_row = Some(row.root.clone());
+            }
         }
 
         if display_limit < vm.processes.len() {
-            let overflow = Label::new(Some(&format!(
+            self.overflow_label.set_text(&format!(
                 "… and {} more processes",
                 vm.processes.len() - display_limit
-            )));
-            overflow.add_css_class("maintainer_text_muted");
-            overflow.set_margin_top(8);
-            overflow.set_margin_bottom(8);
-            self.process_list_box.append(&overflow);
+            ));
+            self.overflow_label.set_visible(true);
+        } else {
+            self.overflow_label.set_visible(false);
         }
     }
 }

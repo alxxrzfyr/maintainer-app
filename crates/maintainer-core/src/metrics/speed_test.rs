@@ -11,12 +11,15 @@
 //!
 //! Data usage: ~10–25 MB per full test run.
 
-use std::io::Write;
+use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use crate::command::{CommandRunner, CommandSpec, SystemCommandRunner};
 use crate::error::MaintainerError;
+use crate::jobs::Cancellation;
 
 /// Cloudflare latency endpoint (zero-byte download for TTFB measurement).
 pub const LATENCY_URL: &str = "https://speed.cloudflare.com/__down?bytes=0";
@@ -137,14 +140,30 @@ pub fn build_upload_args(payload_path: &Path) -> Vec<String> {
 
 /// Create a finite upload payload file of exactly `UPLOAD_SIZE_BYTES`.
 pub fn create_upload_payload(dir: &Path) -> Result<PathBuf, MaintainerError> {
-    let path = dir.join("maintainer-speedtest-payload.bin");
-    let mut f = std::fs::File::create(&path).map_err(|e| {
-        MaintainerError::io(format!("creating upload payload at {}", path.display()), e)
-    })?;
-    f.write_all(&vec![0u8; UPLOAD_SIZE_BYTES]).map_err(|e| {
-        MaintainerError::io(format!("writing upload payload at {}", path.display()), e)
-    })?;
-    Ok(path)
+    for _ in 0..8 {
+        let path = dir.join(format!("maintainer-speedtest-{}.bin", uuid::Uuid::new_v4()));
+        let file = match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
+            .open(&path)
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(MaintainerError::io("creating upload payload", error)),
+        };
+        if let Err(error) = file.set_len(UPLOAD_SIZE_BYTES as u64) {
+            drop(file);
+            let _ = std::fs::remove_file(&path);
+            return Err(MaintainerError::io("writing upload payload", error));
+        }
+        return Ok(path);
+    }
+    Err(MaintainerError::Internal {
+        context: "creating upload payload".into(),
+        message: "could not reserve a unique temporary file".into(),
+    })
 }
 
 /// Parse curl's `%{speed_download}` or `%{speed_upload}` output (bytes/sec)
@@ -249,75 +268,39 @@ fn run_curl_cancellable(
     args: &[String],
     cancel: &Arc<AtomicBool>,
 ) -> Result<String, MaintainerError> {
-    use std::process::{Command, Stdio};
-
-    let mut child = Command::new(curl_path)
-        .args(args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|e| MaintainerError::CommandFailed {
-            message: format!("failed to start curl: {e}"),
-        })?;
-
-    // Poll for completion or cancellation.
-    loop {
-        if cancel.load(Ordering::SeqCst) {
-            // Kill the child process — do not merely ignore the result.
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(MaintainerError::Cancelled);
-        }
-
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                if !status.success() {
-                    return Err(MaintainerError::CommandFailed {
-                        message: format!(
-                            "curl exited with status {} (non-2xx or network error)",
-                            status.code().unwrap_or(-1)
-                        ),
-                    });
-                }
-                break;
-            }
-            Ok(None) => {
-                // Child still running — brief sleep to avoid busy-wait.
-                std::thread::sleep(std::time::Duration::from_millis(50));
-            }
-            Err(e) => {
-                return Err(MaintainerError::CommandFailed {
-                    message: format!("error waiting for curl: {e}"),
-                });
-            }
+    struct AtomicCancellation<'a>(&'a AtomicBool);
+    impl Cancellation for AtomicCancellation<'_> {
+        fn is_cancelled(&self) -> bool {
+            self.0.load(Ordering::Acquire)
         }
     }
 
-    let output = child
-        .wait_with_output()
-        .map_err(|e| MaintainerError::CommandFailed {
-            message: format!("failed to read curl output: {e}"),
-        })?;
-
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    Ok(stdout)
+    let program = curl_path.to_string_lossy().into_owned();
+    let spec = CommandSpec::new(program, args.iter().cloned())
+        .map_err(|error| MaintainerError::CommandFailed {
+            message: error.to_string(),
+        })?
+        .with_timeout(std::time::Duration::from_secs(40))
+        .with_output_cap(64 * 1024);
+    let output = SystemCommandRunner.run(&spec, &AtomicCancellation(cancel))?;
+    if !output.success() || output.stdout_truncated {
+        return Err(MaintainerError::CommandFailed {
+            message: "curl failed or returned oversized output".into(),
+        });
+    }
+    Ok(output.stdout.trim().to_string())
 }
 
 /// Try to find curl in PATH (fallback if /usr/bin/curl doesn't exist).
 fn which_curl() -> Option<PathBuf> {
-    let output = std::process::Command::new("which")
-        .arg("curl")
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let path_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if path_str.is_empty() {
-        return None;
-    }
-    let p = PathBuf::from(&path_str);
-    if p.is_file() { Some(p) } else { None }
+    std::env::split_paths(&std::env::var_os("PATH")?)
+        .filter(|directory| directory.is_absolute())
+        .map(|directory| directory.join("curl"))
+        .find(|path| {
+            path.metadata().is_ok_and(|metadata| {
+                metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
+            })
+        })
 }
 
 #[cfg(test)]

@@ -32,7 +32,7 @@ fn make_snapshot_with_cpu(pct: f64) -> SystemSnapshot {
         disks: Capability::Available(vec![]),
         network: Capability::Available(vec![]),
         temperatures: Capability::Available(vec![]),
-        processes: Capability::Available(vec![]),
+        processes: Some(Capability::Available(vec![])),
     }
 }
 
@@ -137,16 +137,16 @@ fn process_sorting_stable_by_cpu() {
         disks: Capability::Available(vec![]),
         network: Capability::Available(vec![]),
         temperatures: Capability::Available(vec![]),
-        processes: Capability::Available(procs),
+        processes: Some(Capability::Available(procs)),
     };
 
     state.reduce(MonitoringMessage::SnapshotReady(Box::new(snapshot)));
 
-    assert_eq!(state.system.processes[0].name, "high-cpu");
-    assert_eq!(state.system.processes[1].name, "low-cpu");
+    assert_eq!(state.processes_vm.processes[0].name, "high-cpu");
+    assert_eq!(state.processes_vm.processes[1].name, "low-cpu");
 
     state.reduce(MonitoringMessage::SetProcessSort(ProcessSort::Memory));
-    assert_eq!(state.system.processes[0].name, "low-cpu"); // higher RSS
+    assert_eq!(state.processes_vm.processes[0].name, "low-cpu"); // higher RSS
 }
 
 #[test]
@@ -180,7 +180,7 @@ fn disk_threshold_attention_not_cpu() {
         }]),
         network: Capability::Available(vec![]),
         temperatures: Capability::Available(vec![]),
-        processes: Capability::Available(vec![]),
+        processes: Some(Capability::Available(vec![])),
     };
 
     state.reduce(MonitoringMessage::SnapshotReady(Box::new(snapshot)));
@@ -216,7 +216,7 @@ fn unavailable_metric_shows_reason_text() {
         disks: Capability::Available(vec![]),
         network: Capability::Available(vec![]),
         temperatures: Capability::Available(vec![]),
-        processes: Capability::Available(vec![]),
+        processes: Some(Capability::Available(vec![])),
     };
 
     state.reduce(MonitoringMessage::SnapshotReady(Box::new(snapshot)));
@@ -288,7 +288,7 @@ fn network_vm_populated_from_snapshot() {
             },
         ]),
         temperatures: Capability::Available(vec![]),
-        processes: Capability::Available(vec![]),
+        processes: Some(Capability::Available(vec![])),
     };
 
     state.reduce(MonitoringMessage::SnapshotReady(Box::new(snapshot)));
@@ -354,7 +354,7 @@ fn processes_vm_sorted_by_active_sort() {
         disks: Capability::Available(vec![]),
         network: Capability::Available(vec![]),
         temperatures: Capability::Available(vec![]),
-        processes: Capability::Available(procs),
+        processes: Some(Capability::Available(procs)),
     };
 
     state.reduce(MonitoringMessage::SnapshotReady(Box::new(snapshot)));
@@ -366,9 +366,7 @@ fn processes_vm_sorted_by_active_sort() {
 
     state.reduce(MonitoringMessage::SetProcessSort(ProcessSort::Memory));
     // After re-sort, processes_vm should reflect new order on next snapshot
-    // (SetProcessSort only re-sorts system.processes, not processes_vm directly,
-    // but processes_vm is populated from the sorted system.processes during snapshot)
-    assert_eq!(state.system.processes[0].name, "beta");
+    assert_eq!(state.processes_vm.processes[0].name, "beta");
 }
 
 #[test]
@@ -413,7 +411,7 @@ fn temperature_groups_populated() {
         disks: Capability::Available(vec![]),
         network: Capability::Available(vec![]),
         temperatures: Capability::Available(temps),
-        processes: Capability::Available(vec![]),
+        processes: Some(Capability::Available(vec![])),
     };
 
     state.reduce(MonitoringMessage::SnapshotReady(Box::new(snapshot)));

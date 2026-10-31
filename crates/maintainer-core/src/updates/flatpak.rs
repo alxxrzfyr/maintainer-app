@@ -117,6 +117,7 @@ fn parse_flatpak_updates(stdout: &str) -> Vec<UpdateCandidate> {
         let download_bytes = parts.get(2).and_then(|s| parse_flatpak_size(s));
 
         candidates.push(UpdateCandidate {
+            architecture: None,
             name,
             installed_version: None,
             available_version,

@@ -23,6 +23,11 @@ use gtk4::{Align, Box as GtkBox, Button, Label, Orientation, ScrolledWindow, Sep
 
 use crate::monitoring::NetworkViewModel;
 use crate::ui::icons;
+use maintainer_core::metrics::{SpeedTestResult, SpeedTestStage};
+
+type SpeedTestService = dyn Fn(&Arc<AtomicBool>, &dyn Fn(SpeedTestStage)) -> Result<SpeedTestResult, String>
+    + Send
+    + Sync;
 
 /// Speed test state phases.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,15 +48,11 @@ enum SpeedTestPhase {
     Failed(String),
     /// Test was cancelled by user.
     Cancelled,
-    /// curl binary is not available.
-    Unavailable(String),
 }
 
 /// The network detail page.
 pub struct NetworkPage {
     root: ScrolledWindow,
-    #[allow(dead_code)]
-    content: GtkBox,
     // Top live summary
     summary_rx_label: Label,
     summary_tx_label: Label,
@@ -62,34 +63,28 @@ pub struct NetworkPage {
     // Connection details
     adapter_info_box: GtkBox,
     // Speed test panel
-    #[allow(dead_code)]
     speed_test_section: GtkBox,
-    #[allow(dead_code)]
-    speed_test_status: Label,
-    #[allow(dead_code)]
-    speed_test_result_box: GtkBox,
-    #[allow(dead_code)]
-    speed_test_run_btn: Button,
-    #[allow(dead_code)]
-    speed_test_cancel_btn: Button,
-    #[allow(dead_code)]
-    speed_test_phase: Rc<RefCell<SpeedTestPhase>>,
-    #[allow(dead_code)]
-    speed_test_cancel_flag: Arc<AtomicBool>,
     // Unavailable state
     unavailable_box: GtkBox,
     unavailable_label: Label,
 }
 
-impl Default for NetworkPage {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl NetworkPage {
     /// Create a new network detail page.
-    pub fn new() -> Self {
+    pub fn new(executor: Arc<maintainer_core::jobs::JobExecutor>) -> Self {
+        Self::with_speed_test(
+            executor,
+            Arc::new(|cancel, progress| {
+                maintainer_core::metrics::run_speed_test(cancel, progress)
+                    .map_err(|error| error.to_string())
+            }),
+        )
+    }
+
+    fn with_speed_test(
+        executor: Arc<maintainer_core::jobs::JobExecutor>,
+        service: Arc<SpeedTestService>,
+    ) -> Self {
         let content = GtkBox::new(Orientation::Vertical, 12);
         content.add_css_class("maintainer_page_content");
         content.set_margin_top(24);
@@ -234,16 +229,6 @@ impl NetworkPage {
         let speed_test_phase = Rc::new(RefCell::new(SpeedTestPhase::Idle));
         let speed_test_cancel_flag = Arc::new(AtomicBool::new(false));
 
-        // Check curl availability via core service (no direct command execution).
-        let curl_check = maintainer_core::metrics::speed_test::check_curl_available();
-        if let Err(msg) = &curl_check {
-            *speed_test_phase.borrow_mut() = SpeedTestPhase::Unavailable(msg.clone());
-            speed_test_run_btn.set_sensitive(false);
-            speed_test_run_btn.set_tooltip_text(Some(
-                "curl is required for speed tests but is not installed",
-            ));
-        }
-
         // Wire speed test button.
         {
             let phase = speed_test_phase.clone();
@@ -287,24 +272,24 @@ impl NetworkPage {
                         let cancel_btn_inner = cancel_btn.clone();
                         let cancel_flag_inner = cancel_flag.clone();
 
-                        // Channel for typed results from the worker thread.
-                        let (tx, rx) = std::sync::mpsc::channel::<
-                            Result<maintainer_core::metrics::SpeedTestResult, String>,
-                        >();
-
-                        // Channel for stage progress updates.
-                        let (stage_tx, stage_rx) =
-                            std::sync::mpsc::channel::<maintainer_core::metrics::SpeedTestStage>();
-
-                        std::thread::spawn(move || {
-                            let result = maintainer_core::metrics::run_speed_test(
-                                &cancel_flag_inner,
-                                |stage| {
-                                    let _ = stage_tx.send(stage);
-                                },
+                        let service = service.clone();
+                        let (stage_tx, stage_rx) = std::sync::mpsc::sync_channel(4);
+                        let cancellation =
+                            maintainer_core::jobs::CancellationToken::from_shared_flag(
+                                cancel_flag_inner.clone(),
                             );
-                            let _ = tx.send(result.map_err(|e| e.to_string()));
-                        });
+                        let rx = executor.execute_sized(
+                            vec![move || {
+                                Ok(service(&cancel_flag_inner, &|stage| {
+                                    let _ = stage_tx.try_send(stage);
+                                }))
+                            }],
+                            cancellation,
+                            |result| {
+                                std::mem::size_of_val(result)
+                                    + result.as_ref().err().map_or(0, String::capacity)
+                            },
+                        );
 
                         // Poll for progress and result every 150ms from the main thread.
                         gtk4::glib::timeout_add_local(
@@ -315,7 +300,16 @@ impl NetworkPage {
                                     status_inner.set_text(&format!("{}…", stage.label()));
                                 }
 
-                                match rx.try_recv() {
+                                let result = rx.try_recv().map(|message| match message {
+                                    maintainer_core::jobs::JobMessage::Completed(result) => result,
+                                    maintainer_core::jobs::JobMessage::Failed(error) => {
+                                        Err(error.to_string())
+                                    }
+                                    maintainer_core::jobs::JobMessage::Panicked(message) => {
+                                        Err(message)
+                                    }
+                                });
+                                match result {
                                     Ok(result) => {
                                         status_inner.remove_css_class("maintainer_accent");
                                         cancel_btn_inner.set_visible(false);
@@ -393,7 +387,6 @@ impl NetworkPage {
 
         Self {
             root,
-            content,
             summary_rx_label,
             summary_tx_label,
             summary_link_label,
@@ -403,12 +396,6 @@ impl NetworkPage {
             unavailable_box,
             unavailable_label,
             speed_test_section,
-            speed_test_status,
-            speed_test_result_box,
-            speed_test_run_btn,
-            speed_test_cancel_btn,
-            speed_test_phase,
-            speed_test_cancel_flag,
         }
     }
 
@@ -519,6 +506,12 @@ impl NetworkPage {
             }
         }
 
+        if let Some(reason) = &vm.connection_unavailable_reason {
+            let label = Label::new(Some(reason));
+            label.set_wrap(true);
+            label.set_halign(Align::Start);
+            self.adapter_info_box.append(&label);
+        }
         let details = &vm.connection_details;
 
         let add_detail_row = |label: &str, value: &str, parent: &GtkBox| {
@@ -610,5 +603,197 @@ fn format_bytes_rate(bytes_per_sec: f64) -> String {
         format!("{:.1} KiB", bytes_per_sec / 1024.0)
     } else {
         format!("{:.0} B", bytes_per_sec)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn descendants<T: IsA<gtk4::Widget> + Clone + 'static>(
+        widget: &impl IsA<gtk4::Widget>,
+    ) -> Vec<T> {
+        let mut found = Vec::new();
+        if let Ok(item) = widget.as_ref().clone().downcast::<T>() {
+            found.push(item);
+        }
+        let mut child = widget.as_ref().first_child();
+        while let Some(current) = child {
+            found.extend(descendants::<T>(&current));
+            child = current.next_sibling();
+        }
+        found
+    }
+
+    fn wait_until(mut ready: impl FnMut() -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while !ready() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for speed-test UI"
+            );
+            glib::MainContext::default().iteration(false);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn speed_test_requires_confirmation_runs_off_thread_and_renders_each_stage() {
+        assert!(!gtk4::is_initialized() || gtk4::is_initialized_main_thread());
+        gtk4::init().expect("GTK display required; use scripts/test-native.sh");
+        let main_thread = std::thread::current().id();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let recorded = calls.clone();
+        let (advance, next_stage) = std::sync::mpsc::channel();
+        let next_stage = std::sync::Mutex::new(next_stage);
+        let executor = Arc::new(maintainer_core::jobs::JobExecutor::new(1).unwrap());
+        let page = NetworkPage::with_speed_test(
+            executor,
+            Arc::new(move |cancel, progress| {
+                assert_ne!(std::thread::current().id(), main_thread);
+                recorded.fetch_add(1, Ordering::SeqCst);
+                for stage in [
+                    SpeedTestStage::Latency,
+                    SpeedTestStage::Download,
+                    SpeedTestStage::Upload,
+                ] {
+                    assert!(!cancel.load(Ordering::SeqCst));
+                    progress(stage);
+                    next_stage
+                        .lock()
+                        .unwrap()
+                        .recv_timeout(std::time::Duration::from_secs(3))
+                        .unwrap();
+                }
+                Ok(SpeedTestResult {
+                    download_mbps: 125.0,
+                    upload_mbps: 25.0,
+                    latency_ms: 12.0,
+                })
+            }),
+        );
+        page.update(&NetworkViewModel {
+            available: true,
+            total_rx_rate: 2048.0,
+            total_tx_rate: 1024.0,
+            connection_unavailable_reason: Some("fixture connection unavailable".into()),
+            ..Default::default()
+        });
+        let labels = descendants::<Label>(page.widget());
+        assert!(labels.iter().any(|label| label.text() == "↓ 2.0 KiB/s"));
+        assert!(
+            labels
+                .iter()
+                .any(|label| label.text() == "fixture connection unavailable")
+        );
+        let buttons = descendants::<Button>(page.widget());
+        let run = buttons
+            .iter()
+            .find(|button| button.label().as_deref() == Some("Run Speed Test"))
+            .unwrap();
+        let cancel = buttons
+            .iter()
+            .find(|button| button.label().as_deref() == Some("Cancel"))
+            .unwrap();
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "construction/model rendering must not invoke a service"
+        );
+        run.emit_clicked();
+        assert_eq!(run.label().as_deref(), Some("Confirm & Run"));
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "review must not start network work"
+        );
+        run.emit_clicked();
+        assert!(!run.is_sensitive());
+        assert!(cancel.is_visible());
+        wait_until(|| calls.load(Ordering::SeqCst) == 1);
+        for stage in [
+            SpeedTestStage::Latency,
+            SpeedTestStage::Download,
+            SpeedTestStage::Upload,
+        ] {
+            let expected = format!("{}…", stage.label());
+            wait_until(|| labels.iter().any(|label| label.text() == expected));
+            advance.send(()).unwrap();
+        }
+        wait_until(|| run.is_sensitive());
+        assert!(!cancel.is_visible());
+        let labels = descendants::<Label>(page.widget());
+        for value in ["125.0 Mbps", "25.0 Mbps", "12 ms"] {
+            assert!(
+                labels.iter().any(|label| label.text() == value),
+                "missing result {value}"
+            );
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn speed_test_surfaces_capability_failure_and_cancellation() {
+        assert!(!gtk4::is_initialized() || gtk4::is_initialized_main_thread());
+        gtk4::init().expect("GTK display required; use scripts/test-native.sh");
+        for cancellation in [false, true] {
+            let executor = Arc::new(maintainer_core::jobs::JobExecutor::new(1).unwrap());
+            let page = NetworkPage::with_speed_test(
+                executor,
+                Arc::new(move |cancel, _| {
+                    if cancellation {
+                        let deadline =
+                            std::time::Instant::now() + std::time::Duration::from_secs(3);
+                        while !cancel.load(Ordering::SeqCst) {
+                            assert!(
+                                std::time::Instant::now() < deadline,
+                                "cancel never reached worker"
+                            );
+                            std::thread::sleep(std::time::Duration::from_millis(5));
+                        }
+                        Err("cancelled".into())
+                    } else {
+                        Err("curl is not installed".into())
+                    }
+                }),
+            );
+            let buttons = descendants::<Button>(page.widget());
+            let run = buttons
+                .iter()
+                .find(|button| button.label().as_deref() == Some("Run Speed Test"))
+                .unwrap();
+            let cancel = buttons
+                .iter()
+                .find(|button| button.label().as_deref() == Some("Cancel"))
+                .unwrap();
+            run.emit_clicked();
+            run.emit_clicked();
+            if cancellation {
+                cancel.emit_clicked();
+            }
+            wait_until(|| run.is_sensitive());
+            assert!(!cancel.is_visible());
+            assert_eq!(run.label().as_deref(), Some("Run Speed Test"));
+            let expected = if cancellation {
+                "Speed test cancelled."
+            } else {
+                "Failed: curl is not installed"
+            };
+            let labels = descendants::<Label>(page.widget());
+            let status = labels
+                .iter()
+                .find(|label| label.text() == expected)
+                .unwrap();
+            assert!(status.is_visible());
+            assert_eq!(
+                status.has_css_class("maintainer_danger_text"),
+                !cancellation
+            );
+            assert!(
+                !labels
+                    .iter()
+                    .any(|label| label.has_css_class("maintainer_speed_result_value"))
+            );
+        }
     }
 }

@@ -29,7 +29,7 @@ pub struct DiagnosticsState {
     /// SMART storage health state.
     pub smart: SmartHealthState,
     /// Hardware specifications snapshot (GPU, USB, PCI, BIOS).
-    pub hardware: maintainer_core::hardware::HardwareSnapshot,
+    pub hardware: HardwareState,
 }
 
 impl Default for DiagnosticsState {
@@ -40,9 +40,17 @@ impl Default for DiagnosticsState {
             error: None,
             expanded: Vec::new(),
             smart: SmartHealthState::default(),
-            hardware: maintainer_core::hardware::read_hardware_snapshot(),
+            hardware: HardwareState::Loading,
         }
     }
+}
+
+/// The initial page contains no system data until its bounded worker finishes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HardwareState {
+    Loading,
+    Loaded(Rc<maintainer_core::hardware::HardwareSnapshot>),
+    Failed(String),
 }
 
 /// SMART storage health presentation state.
@@ -107,6 +115,8 @@ impl SmartDriveView {
 /// Intents that drive diagnostics state transitions.
 #[derive(Debug, Clone, PartialEq)]
 pub enum DiagnosticsIntent {
+    /// Hardware collection completed or failed.
+    HardwareUpdated(HardwareState),
     /// Start a diagnostics scan.
     StartScan,
     /// Scan completed with findings.
@@ -129,6 +139,7 @@ impl DiagnosticsState {
     /// Apply an intent to produce the next state.
     pub fn reduce(&mut self, intent: DiagnosticsIntent) {
         match intent {
+            DiagnosticsIntent::HardwareUpdated(hardware) => self.hardware = hardware,
             DiagnosticsIntent::StartScan => {
                 self.scanning = true;
                 self.error = None;
@@ -183,6 +194,8 @@ pub struct DiagnosticsPage {
     smart_status_label: Label,
     smart_drives_list: ListBox,
     on_toggle_expanded: ToggleCallback,
+    hardware_hosts: [GtkBox; 4],
+    rendered_hardware: Rc<RefCell<HardwareState>>,
 }
 
 impl Default for DiagnosticsPage {
@@ -290,17 +303,20 @@ impl DiagnosticsPage {
         health_scrolled.set_hexpand(true);
         health_scrolled.set_child(Some(&health_box));
 
-        let hw = maintainer_core::hardware::read_hardware_snapshot();
-        let gpu_view = build_gpu_view(&hw.gpu);
-        let usb_view = build_usb_view(&hw.usb_devices);
-        let pci_view = build_pci_view(&hw.pci_devices);
-        let bios_view = build_bios_view(&hw.bios);
-
         stack.add_titled(&health_scrolled, Some("health"), "System Health");
-        stack.add_titled(&gpu_view, Some("gpu"), "GPU");
-        stack.add_titled(&usb_view, Some("usb"), "USB");
-        stack.add_titled(&pci_view, Some("pci"), "PCI");
-        stack.add_titled(&bios_view, Some("bios"), "BIOS");
+        let hardware_hosts = std::array::from_fn(|_| {
+            let host = GtkBox::new(Orientation::Vertical, 8);
+            host.append(&Label::new(Some("Loading hardware information…")));
+            host
+        });
+        for (host, (name, title)) in hardware_hosts.iter().zip([
+            ("gpu", "GPU"),
+            ("usb", "USB"),
+            ("pci", "PCI"),
+            ("bios", "BIOS"),
+        ]) {
+            stack.add_titled(host, Some(name), title);
+        }
 
         let switcher = gtk4::StackSwitcher::new();
         switcher.set_stack(Some(&stack));
@@ -320,6 +336,8 @@ impl DiagnosticsPage {
             smart_status_label,
             smart_drives_list,
             on_toggle_expanded,
+            hardware_hosts,
+            rendered_hardware: Rc::new(RefCell::new(HardwareState::Loading)),
         }
     }
 
@@ -393,6 +411,53 @@ impl DiagnosticsPage {
         }
 
         self.update_smart(&state.smart);
+        self.update_hardware(&state.hardware);
+    }
+
+    /// Render only hardware widgets when the background inventory changes.
+    pub(crate) fn update_hardware(&self, hardware: &HardwareState) {
+        if *self.rendered_hardware.borrow() == *hardware {
+            return;
+        }
+        *self.rendered_hardware.borrow_mut() = hardware.clone();
+        for host in &self.hardware_hosts {
+            while let Some(child) = host.first_child() {
+                host.remove(&child);
+            }
+        }
+        match hardware {
+            HardwareState::Loaded(snapshot) => {
+                for host in &self.hardware_hosts {
+                    for issue in &snapshot.collection_issues {
+                        let label = Label::new(Some(issue));
+                        label.set_wrap(true);
+                        label.add_css_class("dim-label");
+                        host.append(&label);
+                    }
+                }
+                for (host, view) in self.hardware_hosts.iter().zip([
+                    build_gpu_view(&snapshot.gpu),
+                    build_usb_view(&snapshot.usb_devices),
+                    build_pci_view(&snapshot.pci_devices),
+                    build_bios_view(&snapshot.bios),
+                ]) {
+                    host.append(&view);
+                }
+            }
+            HardwareState::Loading | HardwareState::Failed(_) => {
+                let message = match hardware {
+                    HardwareState::Failed(message) => {
+                        format!("Hardware information unavailable: {message}")
+                    }
+                    _ => "Loading hardware information…".into(),
+                };
+                for host in &self.hardware_hosts {
+                    let label = Label::new(Some(&message));
+                    label.set_wrap(true);
+                    host.append(&label);
+                }
+            }
+        }
     }
 
     /// Update the SMART storage health section.
@@ -646,6 +711,12 @@ fn build_usb_view(devices: &[maintainer_core::hardware::UsbDevice]) -> ScrolledW
     list.add_css_class("boxed-list");
     list.set_selection_mode(gtk4::SelectionMode::None);
 
+    if devices.is_empty() {
+        container.append(&Label::new(Some(
+            "No devices reported by the available collectors.",
+        )));
+    }
+
     for dev in devices {
         let row = GtkBox::new(Orientation::Horizontal, 12);
         row.set_margin_top(8);
@@ -761,6 +832,12 @@ fn build_pci_view(devices: &[maintainer_core::hardware::PciDevice]) -> ScrolledW
     let list = ListBox::new();
     list.add_css_class("boxed-list");
     list.set_selection_mode(gtk4::SelectionMode::None);
+
+    if devices.is_empty() {
+        container.append(&Label::new(Some(
+            "No devices reported by the available collectors.",
+        )));
+    }
 
     for dev in devices {
         let row = GtkBox::new(Orientation::Horizontal, 12);
@@ -888,6 +965,54 @@ mod tests {
         assert!(state.expanded.is_empty());
         assert!(state.smart.drives.is_empty());
         assert!(!state.smart.refreshing);
+    }
+
+    #[test]
+    fn hardware_collection_state_is_pure_and_records_failure() {
+        let mut state = DiagnosticsState::default();
+        assert_eq!(state.hardware, HardwareState::Loading);
+        state.reduce(DiagnosticsIntent::HardwareUpdated(HardwareState::Failed(
+            "queue unavailable".into(),
+        )));
+        assert_eq!(
+            state.hardware,
+            HardwareState::Failed("queue unavailable".into())
+        );
+    }
+
+    #[test]
+    #[ignore = "requires a GTK display; run this exact test under Xvfb"]
+    fn hardware_views_show_collection_issues_without_rebuilding_unchanged_data() {
+        gtk4::init().unwrap();
+        let page = DiagnosticsPage::new();
+        for host in &page.hardware_hosts {
+            let loading = host.first_child().and_downcast::<Label>().unwrap();
+            assert!(loading.text().contains("Loading hardware"));
+        }
+        let snapshot = maintainer_core::hardware::HardwareSnapshot {
+            collection_issues: vec!["PCI inventory unavailable: permission denied".into()],
+            ..Default::default()
+        };
+        let hardware = HardwareState::Loaded(Rc::new(snapshot));
+        page.update_hardware(&hardware);
+        for host in &page.hardware_hosts {
+            let issue = host.first_child().and_downcast::<Label>().unwrap();
+            assert_eq!(issue.text(), "PCI inventory unavailable: permission denied");
+            assert!(issue.next_sibling().is_some());
+        }
+        let original_view = page.hardware_hosts[0].last_child().unwrap();
+        page.update_hardware(&hardware);
+        assert_eq!(page.hardware_hosts[0].last_child(), Some(original_view));
+        page.update_hardware(&HardwareState::Failed("worker unavailable".into()));
+        for host in &page.hardware_hosts {
+            let failure = host.first_child().and_downcast::<Label>().unwrap();
+            assert!(
+                failure
+                    .text()
+                    .contains("Hardware information unavailable: worker unavailable")
+            );
+            assert!(failure.next_sibling().is_none());
+        }
     }
 
     #[test]

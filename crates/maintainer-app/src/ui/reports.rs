@@ -1,15 +1,13 @@
 //! Reports page: preview, copy, and save redacted system reports.
 //!
 //! Preview is mandatory before copy/save. Save writes through a temporary
-//! sibling file with mode 0600, flush, then atomic rename.
+//! anonymous file with mode 0600, flush, then publish without overwriting.
 //! No upload/share endpoint is provided.
 
 use std::cell::RefCell;
-use std::fs::{self, OpenOptions};
-use std::io::Write;
-use std::os::unix::fs::OpenOptionsExt;
-use std::path::Path;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use gtk4::prelude::*;
 use gtk4::{
@@ -18,11 +16,14 @@ use gtk4::{
 };
 
 use crate::runtime::RuntimeHandle;
+use maintainer_core::reports::export::{ReportExportOutcome, save_report_revision};
 
 /// State for the reports page.
 struct ReportsState {
     /// The rendered report text, available after preview.
     preview_text: Option<String>,
+    revision: Arc<AtomicU64>,
+    commit_lock: Arc<Mutex<()>>,
 }
 
 /// Build the reports page widget tree.
@@ -34,7 +35,11 @@ pub fn build_reports_page(runtime: RuntimeHandle) -> GtkBox {
     container.set_margin_start(24);
     container.set_margin_end(24);
 
-    let state = Rc::new(RefCell::new(ReportsState { preview_text: None }));
+    let state = Rc::new(RefCell::new(ReportsState {
+        preview_text: None,
+        revision: Arc::new(AtomicU64::new(0)),
+        commit_lock: Arc::new(Mutex::new(())),
+    }));
 
     let header = Label::new(Some("System Report"));
     header.add_css_class("title-1");
@@ -94,6 +99,21 @@ pub fn build_reports_page(runtime: RuntimeHandle) -> GtkBox {
         let save_btn_clone = save_btn.clone();
         let runtime_clone = runtime.clone();
         generate_btn.connect_clicked(move |button| {
+            let commit_lock = state_clone.borrow().commit_lock.clone();
+            let Ok(commit_guard) = commit_lock.try_lock() else {
+                button.set_label("Save finishing; retry preview");
+                return;
+            };
+            let revision = {
+                let mut state = state_clone.borrow_mut();
+                let revision = state
+                    .revision
+                    .fetch_add(1, Ordering::AcqRel)
+                    .wrapping_add(1);
+                state.preview_text = None;
+                revision
+            };
+            drop(commit_guard);
             button.set_sensitive(false);
             button.set_label("Generating…");
             copy_btn_clone.set_sensitive(false);
@@ -110,16 +130,18 @@ pub fn build_reports_page(runtime: RuntimeHandle) -> GtkBox {
             let save_button = save_btn_clone.clone();
             let generate_button = button.clone();
             crate::dispatch::dispatch_report_generation(&executor, database, move |outcome| {
-                let text = match outcome {
-                    crate::dispatch::ReportOutcome::Completed { text } => text,
-                    crate::dispatch::ReportOutcome::Failed { message } => {
-                        format!("Could not generate report: {message}")
-                    }
-                };
-                text_view.buffer().set_text(&text);
-                state.borrow_mut().preview_text = Some(text);
-                copy_button.set_sensitive(true);
-                save_button.set_sensitive(true);
+                if state.borrow().revision.load(Ordering::Acquire) != revision {
+                    return;
+                }
+                let preview_text = report_preview_text(outcome);
+                let preview_ready = preview_text.is_some();
+                let display_text = preview_text
+                    .as_deref()
+                    .unwrap_or("Could not generate report. Try again later.");
+                text_view.buffer().set_text(display_text);
+                state.borrow_mut().preview_text = preview_text;
+                copy_button.set_sensitive(preview_ready);
+                save_button.set_sensitive(preview_ready);
                 generate_button.set_label("Generate Preview");
                 generate_button.set_sensitive(true);
             });
@@ -145,10 +167,14 @@ pub fn build_reports_page(runtime: RuntimeHandle) -> GtkBox {
 
     {
         let state_clone = state.clone();
+        let executor = runtime.borrow().executor.clone();
         save_btn.connect_clicked(move |btn| {
             let st = state_clone.borrow();
             if let Some(ref text) = st.preview_text {
                 let text_owned = text.clone();
+                let revision = st.revision.load(Ordering::Acquire);
+                let current_preview = state_clone.clone();
+                let executor = executor.clone();
                 let btn_clone = btn.clone();
                 let dialog = FileChooserDialog::new(
                     Some("Save Report"),
@@ -165,21 +191,53 @@ pub fn build_reports_page(runtime: RuntimeHandle) -> GtkBox {
                     if response == ResponseType::Accept {
                         if let Some(file) = dialog.file() {
                             if let Some(path) = file.path() {
-                                match atomic_save(&path, &text_owned) {
-                                    Ok(()) => {
-                                        btn_clone.set_label("Saved!");
-                                        let btn_restore = btn_clone.clone();
+                                if current_preview.borrow().revision.load(Ordering::Acquire)
+                                    != revision
+                                {
+                                    btn_clone.set_label("Preview changed; save again");
+                                    dialog.close();
+                                    return;
+                                }
+                                let text = text_owned.clone();
+                                let result_button = btn_clone.clone();
+                                let revision_guard = current_preview.borrow().revision.clone();
+                                let commit_lock = current_preview.borrow().commit_lock.clone();
+                                let preview_for_result = current_preview.clone();
+                                btn_clone.set_sensitive(false);
+                                crate::dispatch::dispatch_local_action(
+                                    &executor,
+                                    move || {
+                                        save_report_revision(
+                                            &path,
+                                            &text,
+                                            &revision_guard,
+                                            revision,
+                                            &commit_lock,
+                                        )
+                                    },
+                                    move |result| {
+                                        let current = preview_for_result.borrow();
+                                        if current.revision.load(Ordering::Acquire) != revision {
+                                            result_button
+                                                .set_sensitive(current.preview_text.is_some());
+                                            return;
+                                        }
+                                        result_button.set_label(match result {
+                                            Ok(ReportExportOutcome::Saved) => "Saved!",
+                                            Ok(ReportExportOutcome::DurabilityUnknown) => {
+                                                "File saved; disk durability unconfirmed"
+                                            }
+                                            Err(_) => "Save failed; choose a new filename",
+                                        });
+                                        result_button.set_sensitive(true);
                                         glib::timeout_add_local_once(
                                             std::time::Duration::from_secs(2),
                                             move || {
-                                                btn_restore.set_label("Save to File");
+                                                result_button.set_label("Save to File");
                                             },
                                         );
-                                    }
-                                    Err(e) => {
-                                        eprintln!("Failed to save report: {e}");
-                                    }
-                                }
+                                    },
+                                );
                             }
                         }
                     }
@@ -194,78 +252,20 @@ pub fn build_reports_page(runtime: RuntimeHandle) -> GtkBox {
     container
 }
 
-/// Write report to file atomically: temp sibling with mode 0600, flush, rename.
-fn atomic_save(path: &Path, content: &str) -> std::io::Result<()> {
-    let parent = path.parent().unwrap_or(Path::new("."));
-    let file_name = path
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| "report".to_string());
-    let tmp_name = format!(".{file_name}.tmp");
-    let tmp_path = parent.join(&tmp_name);
-
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(&tmp_path)?;
-
-    file.write_all(content.as_bytes())?;
-    file.flush()?;
-    file.sync_all()?;
-
-    fs::rename(&tmp_path, path)?;
-    Ok(())
+fn report_preview_text(outcome: crate::dispatch::ReportOutcome) -> Option<String> {
+    match outcome {
+        crate::dispatch::ReportOutcome::Completed { text } => Some(text),
+        crate::dispatch::ReportOutcome::Failed { .. } => None,
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
-    fn atomic_save_creates_file_with_content() {
-        let dir = std::env::temp_dir();
-        let path = dir.join("maintainer_test_report.txt");
-        let content = "Test report content\nLine 2\n";
-
-        let result = atomic_save(&path, content);
-        assert!(result.is_ok(), "atomic_save failed: {:?}", result.err());
-
-        let read_back = fs::read_to_string(&path).unwrap();
-        assert_eq!(read_back, content);
-
-        let _ = fs::remove_file(&path);
-    }
-
-    #[test]
-    fn atomic_save_file_permissions() {
-        use std::os::unix::fs::MetadataExt;
-
-        let dir = std::env::temp_dir();
-        let path = dir.join("maintainer_test_report_perms.txt");
-        let content = "secret report";
-
-        let _ = atomic_save(&path, content);
-
-        let metadata = fs::metadata(&path).unwrap();
-        let mode = metadata.mode() & 0o777;
-        assert_eq!(mode, 0o600, "file should have mode 0600, got {:o}", mode);
-
-        let _ = fs::remove_file(&path);
-    }
-
-    #[test]
-    fn atomic_save_overwrites_existing() {
-        let dir = std::env::temp_dir();
-        let path = dir.join("maintainer_test_overwrite.txt");
-
-        let _ = atomic_save(&path, "first");
-        let _ = atomic_save(&path, "second");
-
-        let content = fs::read_to_string(&path).unwrap();
-        assert_eq!(content, "second");
-
-        let _ = fs::remove_file(&path);
+    fn failed_report_does_not_create_a_copyable_preview() {
+        let outcome = crate::dispatch::ReportOutcome::Failed {
+            message: "/home/alice/private-report.log".into(),
+        };
+        assert!(super::report_preview_text(outcome).is_none());
     }
 }

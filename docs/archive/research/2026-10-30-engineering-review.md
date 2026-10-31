@@ -1,7 +1,7 @@
 # Evidence supporting the development roadmap
 
 Research date: 2026-10-30. Source baseline: `07f7b9a096c3a84b57b329fca5e4d4d2d93289c1`; reconciled with `main` at `79b42ac27c9ba7f1e591304305aee1966288a0b2`.
-Companions: [implementation roadmap](../plans/development-roadmap.md), [under-100-MB research](2026-10-30-memory-under-100mb.md) and [safety decisions](../plans/safety-design-decisions.md). Navigation: [documentation index](../README.md).
+Companions: [implementation roadmap](../plans/development-roadmap.md), [under-100-MB research](2026-10-30-memory-under-100mb.md) and [safety decisions](../plans/safety-design-decisions.md). Navigation: [documentation index](../../README.md).
 
 ## Method and limits
 

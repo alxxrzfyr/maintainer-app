@@ -36,7 +36,7 @@ impl Sparkline {
             samples: VecDeque::new(),
             min_value,
             max_value,
-            accessible_text: "No data".into(),
+            accessible_text: "Sparkline chart".into(),
         }));
 
         let data_for_draw = data.clone();
@@ -52,16 +52,25 @@ impl Sparkline {
 
     /// Push new samples from a ring buffer, triggering a redraw.
     pub fn update_from_ring(&self, samples: &VecDeque<f64>, accessible_text: &str) {
-        {
-            let mut d = self.data.borrow_mut();
-            d.samples = samples.clone();
-            d.accessible_text = accessible_text.to_string();
+        let mut data = self.data.borrow_mut();
+        let samples_changed = data.samples != *samples;
+        let text_changed = data.accessible_text != accessible_text;
+        if !samples_changed && !text_changed {
+            return;
         }
-        self.drawing_area
-            .update_property(&[gtk4::accessible::Property::Label(
-                &self.data.borrow().accessible_text,
-            )]);
-        self.drawing_area.queue_draw();
+        if samples_changed {
+            data.samples.clone_from(samples);
+        }
+        if text_changed {
+            data.accessible_text.clear();
+            data.accessible_text.push_str(accessible_text);
+            self.drawing_area
+                .update_property(&[gtk4::accessible::Property::Label(accessible_text)]);
+        }
+        drop(data);
+        if samples_changed {
+            self.drawing_area.queue_draw();
+        }
     }
 
     /// Get the underlying GTK widget.
@@ -113,5 +122,59 @@ impl Sparkline {
         cr.set_source_rgba(0.14, 0.37, 0.84, 0.7);
         cr.set_line_width(2.0);
         let _ = cr.stroke();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+    use std::time::{Duration, Instant};
+
+    fn settle_frames() {
+        let context = gtk4::glib::MainContext::default();
+        let deadline = Instant::now() + Duration::from_millis(150);
+        while Instant::now() < deadline {
+            while context.pending() {
+                context.iteration(false);
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    #[test]
+    fn unchanged_samples_do_not_redraw_and_changed_samples_and_text_are_retained() {
+        gtk4::init().expect("GTK display required; use scripts/test-native.sh");
+        let sparkline = Sparkline::new(0.0, 100.0);
+        let draws = Rc::new(Cell::new(0));
+        let observed = draws.clone();
+        sparkline.drawing_area.set_draw_func(move |_, _, _, _| {
+            observed.set(observed.get() + 1);
+        });
+        let window = gtk4::Window::builder()
+            .default_width(240)
+            .default_height(100)
+            .build();
+        window.set_child(Some(sparkline.widget()));
+        let samples = VecDeque::from([1.0, 2.0]);
+        sparkline.update_from_ring(&samples, "CPU: 2%");
+        window.present();
+        settle_frames();
+        let initial = draws.get();
+        assert!(initial > 0);
+        sparkline.update_from_ring(&samples, "CPU: 2%");
+        settle_frames();
+        assert_eq!(draws.get(), initial);
+        sparkline.update_from_ring(&samples, "CPU: 2.0%");
+        settle_frames();
+        assert_eq!(draws.get(), initial);
+        assert_eq!(sparkline.data.borrow().accessible_text, "CPU: 2.0%");
+        let changed = VecDeque::from([2.0, 3.0]);
+        sparkline.update_from_ring(&changed, "CPU: 3%");
+        settle_frames();
+        assert!(draws.get() > initial);
+        assert_eq!(sparkline.data.borrow().samples, changed);
+        assert_eq!(sparkline.data.borrow().accessible_text, "CPU: 3%");
+        window.close();
     }
 }

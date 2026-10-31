@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 pub struct KernelGroup {
     /// The kernel version string (e.g. "7.0.0-30").
     pub version: String,
-    /// Package names belonging to this group.
+    /// Architecture-qualified selection keys belonging to this group.
     pub package_names: Vec<String>,
     /// Number of packages in the group.
     pub package_count: usize,
@@ -47,14 +47,12 @@ pub fn group_kernel_candidates(candidates: &[UpdateCandidate]) -> Vec<DisplayRow
     // First pass: identify kernel candidates and extract their versions.
     // Use BTreeMap for deterministic ordering of groups by version string.
     let mut kernel_groups: BTreeMap<String, Vec<usize>> = BTreeMap::new();
-    let mut first_kernel_index: BTreeMap<String, usize> = BTreeMap::new();
-    let mut is_kernel_index = vec![false; candidates.len()];
+    let mut versions = vec![None; candidates.len()];
 
     for (i, candidate) in candidates.iter().enumerate() {
         if candidate.is_kernel {
-            is_kernel_index[i] = true;
             let version = extract_kernel_version(candidate);
-            first_kernel_index.entry(version.clone()).or_insert(i);
+            versions[i] = Some(version.clone());
             kernel_groups.entry(version).or_default().push(i);
         }
     }
@@ -63,38 +61,37 @@ pub fn group_kernel_candidates(candidates: &[UpdateCandidate]) -> Vec<DisplayRow
     let mut rows = Vec::new();
     let mut emitted_groups: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-    for (i, candidate) in candidates.iter().enumerate() {
-        if !is_kernel_index[i] {
+    for (i, version) in versions.iter().enumerate() {
+        let Some(version) = version else {
             rows.push(DisplayRow::Single(i));
-        } else {
-            let version = extract_kernel_version(candidate);
-            if emitted_groups.contains(&version) {
-                continue; // Already emitted this group's row.
-            }
-            emitted_groups.insert(version.clone());
-
-            let indices = &kernel_groups[&version];
-            let package_names: Vec<String> = indices
-                .iter()
-                .map(|&idx| candidates[idx].name.clone())
-                .collect();
-            let package_count = package_names.len();
-            let is_security = indices
-                .iter()
-                .any(|&idx| candidates[idx].classification == UpdateClassification::Security);
-
-            // Derive version transition from the first candidate that has an
-            // installed_version (prefer versioned packages over meta-packages).
-            let version_transition = derive_version_transition(indices, candidates, &version);
-
-            rows.push(DisplayRow::KernelGroup(KernelGroup {
-                version,
-                package_names,
-                package_count,
-                is_security,
-                version_transition,
-            }));
+            continue;
+        };
+        if emitted_groups.contains(version) {
+            continue; // Already emitted this group's row.
         }
+        emitted_groups.insert(version.clone());
+
+        let indices = &kernel_groups[version];
+        let package_names: Vec<String> = indices
+            .iter()
+            .map(|&idx| candidates[idx].selection_key())
+            .collect();
+        let package_count = package_names.len();
+        let is_security = indices
+            .iter()
+            .any(|&idx| candidates[idx].classification == UpdateClassification::Security);
+
+        // Derive version transition from the first candidate that has an
+        // installed_version (prefer versioned packages over meta-packages).
+        let version_transition = derive_version_transition(indices, candidates, version);
+
+        rows.push(DisplayRow::KernelGroup(KernelGroup {
+            version: version.clone(),
+            package_names,
+            package_count,
+            is_security,
+            version_transition,
+        }));
     }
 
     rows
@@ -133,23 +130,7 @@ fn extract_kernel_version(candidate: &UpdateCandidate) -> String {
 ///
 /// Returns `None` for meta-packages without an embedded version.
 fn extract_version_from_name(name: &str) -> Option<String> {
-    // Look for a segment matching the kernel ABI pattern: digits.digits.digits-digits
-    // This pattern: X.Y.Z-N where X,Y,Z,N are numeric.
-    for segment in name.split('-') {
-        if let Some(version) = try_parse_version_start(segment, name) {
-            return Some(version);
-        }
-    }
-    None
-}
-
-/// Given a segment that starts a version number (e.g. "7" from "7.0.0-30-generic"),
-/// attempt to reconstruct the full ABI version from the original name.
-fn try_parse_version_start(segment: &str, full_name: &str) -> Option<String> {
-    // We need to find "X.Y.Z-N" within the name.
-    // Strategy: find all occurrences of patterns like "D.D.D-D" in the full name.
-    let _ = segment; // Not used in this approach; we scan the full name.
-    find_kernel_abi_version(full_name)
+    find_kernel_abi_version(name)
 }
 
 /// Scan a string for the first occurrence of a kernel ABI version pattern.
@@ -280,6 +261,7 @@ mod tests {
         is_kernel: bool,
     ) -> UpdateCandidate {
         UpdateCandidate {
+            architecture: None,
             name: name.to_string(),
             installed_version: installed.map(|s| s.to_string()),
             available_version: available.to_string(),
@@ -534,6 +516,26 @@ mod tests {
         assert_eq!(
             extract_version_from_name("linux-tools-7.0.0-30-generic"),
             Some("7.0.0-30".to_string())
+        );
+    }
+
+    #[test]
+    fn version_scan_ignores_partial_versions_and_requires_abi_boundaries() {
+        assert_eq!(
+            extract_version_from_name("linux-hwe-7.0-tools-7.0.0-30-generic"),
+            Some("7.0.0-30".into())
+        );
+        assert_eq!(
+            extract_version_from_name("linux-name7.0.0-30-generic"),
+            None
+        );
+        assert_eq!(
+            extract_version_from_name("linux-image-7.0.0-30suffix"),
+            None
+        );
+        assert_eq!(
+            extract_version_from_name("linux-image-generic-hwe-24.04"),
+            None
         );
     }
 

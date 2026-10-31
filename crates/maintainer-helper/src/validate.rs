@@ -100,11 +100,13 @@ fn validate_package_spec(spec: &str) -> Result<(), HelperError> {
 
 /// Validate a process termination request.
 pub fn validate_terminate_process(request: &TerminateProcessRequest) -> Result<(), HelperError> {
-    if request.pid < MIN_TERMINABLE_PID {
+    if request.pid < MIN_TERMINABLE_PID || request.pid > libc::pid_t::MAX as u32 {
         return Err(HelperError::ValidationFailed {
             reason: format!(
-                "pid {} is below minimum terminable pid {}",
-                request.pid, MIN_TERMINABLE_PID
+                "pid {} is outside the terminable range {}..={}",
+                request.pid,
+                MIN_TERMINABLE_PID,
+                libc::pid_t::MAX
             ),
         });
     }
@@ -369,6 +371,18 @@ mod tests {
         };
         let err = validate_terminate_process(&req).unwrap_err();
         assert!(matches!(err, HelperError::ValidationFailed { .. }));
+    }
+
+    #[test]
+    fn terminate_process_rejects_pid_overflow() {
+        let req = TerminateProcessRequest {
+            pid: u32::MAX,
+            start_time_ticks: 1,
+        };
+        assert!(matches!(
+            validate_terminate_process(&req),
+            Err(HelperError::ValidationFailed { .. })
+        ));
     }
 
     #[test]

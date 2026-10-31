@@ -1,305 +1,306 @@
-//! Safe process termination with PID-reuse protection.
-//!
-//! Before sending a signal, re-reads `/proc/<pid>/stat` and compares the
-//! `start_time_ticks` from `ProcessIdentity`. This prevents killing a
-//! different process that has reused the same PID.
+//! Retained Linux process references for review and SIGTERM delivery.
 
 use std::fs;
+use std::io;
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
 
-use crate::capability::PermissionRequest;
-use crate::error::MaintainerError;
 use crate::metrics::processes::ProcessIdentity;
 
-/// Outcome of a termination attempt.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TerminateResult {
-    /// Signal was sent successfully.
-    Sent,
-    /// Process already exited before signal could be sent.
-    AlreadyExited,
-    /// PID was reused by a different process (start_time mismatch).
-    PidReused,
-    /// Permission denied — requires privilege escalation.
-    PermissionRequired(PermissionRequest),
-    /// Operation was cancelled before signal was sent.
-    Cancelled,
+#[derive(Debug, thiserror::Error)]
+pub enum ProcessHandleError {
+    #[error("invalid process identity")]
+    InvalidIdentity,
+    #[error("the process has exited")]
+    Vanished,
+    #[error("the process identity changed; select it again")]
+    IdentityChanged,
+    #[error("permission is required to access this process")]
+    PermissionRequired,
+    #[error("stable process references are unavailable on this system")]
+    Unavailable,
+    #[error("process operation failed: {0}")]
+    Io(#[source] io::Error),
 }
 
-/// Trait for abstracting filesystem reads during termination.
-///
-/// Allows tests to inject fake process tables without touching real `/proc`.
-pub trait ProcReader: Send + Sync {
-    /// Read the content of `/proc/<pid>/stat`. Returns `None` if the process
-    /// does not exist (already exited).
-    fn read_stat(&self, pid: u32) -> Option<String>;
-
-    /// Send SIGTERM to the specified PID. Returns an IO error on failure.
-    fn send_sigterm(&self, pid: u32) -> std::result::Result<(), std::io::Error>;
-
-    /// Get the current user's UID.
-    fn current_uid(&self) -> u32;
+fn classify(error: io::Error) -> ProcessHandleError {
+    match error.raw_os_error() {
+        Some(libc::ESRCH | libc::ENOENT) => ProcessHandleError::Vanished,
+        Some(libc::EPERM | libc::EACCES) => ProcessHandleError::PermissionRequired,
+        Some(libc::ENOSYS | libc::ENODEV) => ProcessHandleError::Unavailable,
+        _ => ProcessHandleError::Io(error),
+    }
 }
 
-/// Real implementation that reads from `/proc`.
-pub struct RealProcReader {
-    proc_path: std::path::PathBuf,
+/// The descriptor is acquired before review and remains owned until cancellation
+/// or signal delivery. Dropping it closes it, including every failure path.
+#[derive(Debug)]
+pub struct ProcessHandle {
+    fd: OwnedFd,
+    identity: ProcessIdentity,
+    name: String,
 }
 
-impl RealProcReader {
-    /// Create a reader that uses the real `/proc` filesystem.
-    pub fn new() -> Self {
-        Self {
-            proc_path: std::path::PathBuf::from("/proc"),
+impl ProcessHandle {
+    pub fn acquire(identity: ProcessIdentity) -> Result<Self, ProcessHandleError> {
+        validate_identity(&identity)?;
+        // SAFETY: the PID fits pid_t, flags zero are supported by the platform floor.
+        let raw = unsafe { libc::syscall(libc::SYS_pidfd_open, identity.pid as libc::pid_t, 0) };
+        if raw < 0 {
+            return Err(classify(io::Error::last_os_error()));
         }
+        // SAFETY: successful pidfd_open returns a new, uniquely owned descriptor.
+        let fd = unsafe { OwnedFd::from_raw_fd(raw as libc::c_int) };
+        let name = validate_reference(fd.as_fd(), &identity)?;
+        Ok(Self { fd, identity, name })
     }
 
-    /// Create a reader with a custom proc path (for integration tests).
-    pub fn with_path(proc_path: impl Into<std::path::PathBuf>) -> Self {
-        Self {
-            proc_path: proc_path.into(),
-        }
-    }
-}
-
-impl Default for RealProcReader {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl ProcReader for RealProcReader {
-    fn read_stat(&self, pid: u32) -> Option<String> {
-        let stat_path = self.proc_path.join(pid.to_string()).join("stat");
-        fs::read_to_string(stat_path).ok()
+    pub fn identity(&self) -> &ProcessIdentity {
+        &self.identity
     }
 
-    fn send_sigterm(&self, pid: u32) -> std::result::Result<(), std::io::Error> {
-        // Safety: sending SIGTERM to a valid PID is a standard POSIX operation.
-        // The PID has been verified via start_time before this call.
-        let result = unsafe { libc::kill(pid as i32, libc::SIGTERM) };
-        if result == 0 {
-            Ok(())
-        } else {
-            Err(std::io::Error::last_os_error())
-        }
-    }
-
-    fn current_uid(&self) -> u32 {
-        unsafe { libc::getuid() }
+    pub fn name(&self) -> &str {
+        &self.name
     }
 }
 
-/// Extract `start_time_ticks` from a `/proc/<pid>/stat` content string.
-///
-/// The stat format is: `pid (comm) state ppid ... start_time ...`
-/// start_time is field 22 (1-indexed), which is index 19 after the comm field.
-fn parse_start_time(stat_content: &str) -> Result<u64, MaintainerError> {
-    let content = stat_content.trim();
-    let close_paren = content.rfind(')').ok_or_else(|| {
-        MaintainerError::invalid_data("/proc/[pid]/stat", "missing closing parenthesis")
-    })?;
-
-    let rest = content
-        .get(close_paren + 2..)
-        .ok_or_else(|| MaintainerError::invalid_data("/proc/[pid]/stat", "no fields after comm"))?;
-
-    let fields: Vec<&str> = rest.split_whitespace().collect();
-    if fields.len() < 20 {
-        return Err(MaintainerError::invalid_data(
-            "/proc/[pid]/stat",
-            format!("too few fields: {} (need 20)", fields.len()),
-        ));
+impl AsFd for ProcessHandle {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        self.fd.as_fd()
     }
+}
 
-    fields[19].parse::<u64>().map_err(|_| {
-        MaintainerError::invalid_data("/proc/[pid]/stat", "start_time not a valid u64")
+pub fn validate_identity(identity: &ProcessIdentity) -> Result<(), ProcessHandleError> {
+    if identity.pid < 2 || identity.pid > libc::pid_t::MAX as u32 || identity.start_time_ticks == 0
+    {
+        return Err(ProcessHandleError::InvalidIdentity);
+    }
+    Ok(())
+}
+
+/// Validate a received descriptor before authorization. fdinfo comes from the
+/// kernel and binds it to this PID in the helper's namespace. The final liveness
+/// check rejects exit/reuse during the numeric /proc metadata read.
+pub fn validate_reference(
+    fd: BorrowedFd<'_>,
+    identity: &ProcessIdentity,
+) -> Result<String, ProcessHandleError> {
+    validate_reference_with(fd, identity, || {
+        fs::read_to_string(format!("/proc/{}/stat", identity.pid))
     })
 }
 
-/// Attempt to terminate a process identified by `ProcessIdentity`.
-///
-/// Re-reads `/proc/<pid>/stat` and verifies the start time matches before
-/// sending SIGTERM. This prevents killing a different process that reused the PID.
-///
-/// If `cancelled` is true, returns `Cancelled` immediately without sending a signal.
-pub fn terminate_process(
+fn validate_reference_with(
+    fd: BorrowedFd<'_>,
     identity: &ProcessIdentity,
-    reader: &dyn ProcReader,
-    cancelled: bool,
-) -> Result<TerminateResult, MaintainerError> {
-    if cancelled {
-        return Ok(TerminateResult::Cancelled);
+    read_stat: impl FnOnce() -> io::Result<String>,
+) -> Result<String, ProcessHandleError> {
+    validate_identity(identity)?;
+    // Reject other descriptor kinds before fdinfo: epoll watch lists can be unbounded.
+    let origin = fs::read_link(format!("/proc/self/fd/{}", fd.as_raw_fd())).map_err(classify)?;
+    if origin != std::path::Path::new("anon_inode:[pidfd]") {
+        return Err(ProcessHandleError::InvalidIdentity);
     }
+    let info =
+        fs::read_to_string(format!("/proc/self/fdinfo/{}", fd.as_raw_fd())).map_err(classify)?;
+    let pid = info
+        .lines()
+        .find_map(|line| line.strip_prefix("Pid:\t"))
+        .and_then(|pid| pid.trim().parse::<i64>().ok())
+        .ok_or(ProcessHandleError::InvalidIdentity)?;
+    if pid == -1 {
+        return Err(ProcessHandleError::Vanished);
+    }
+    if pid != i64::from(identity.pid) {
+        return Err(ProcessHandleError::IdentityChanged);
+    }
+    check_alive(fd)?;
+    let stat = read_stat().map_err(classify)?;
+    let open = stat.find('(').ok_or(ProcessHandleError::InvalidIdentity)?;
+    let close = stat
+        .rfind(')')
+        .filter(|close| *close > open)
+        .ok_or(ProcessHandleError::InvalidIdentity)?;
+    let start = stat[close + 1..]
+        .split_whitespace()
+        .nth(19)
+        .and_then(|value| value.parse::<u64>().ok())
+        .ok_or(ProcessHandleError::InvalidIdentity)?;
+    check_alive(fd)?;
+    if start != identity.start_time_ticks {
+        return Err(ProcessHandleError::IdentityChanged);
+    }
+    Ok(stat[open + 1..close].to_string())
+}
 
-    let stat_content = match reader.read_stat(identity.pid) {
-        Some(content) => content,
-        None => return Ok(TerminateResult::AlreadyExited),
+fn check_alive(fd: BorrowedFd<'_>) -> Result<(), ProcessHandleError> {
+    let mut event = libc::pollfd {
+        fd: fd.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
     };
-
-    let current_start_time = parse_start_time(&stat_content)?;
-    if current_start_time != identity.start_time_ticks {
-        return Ok(TerminateResult::PidReused);
+    // SAFETY: event is a live writable pollfd, count is one, timeout is zero.
+    let result = unsafe { libc::poll(&mut event, 1, 0) };
+    if result < 0 {
+        return Err(classify(io::Error::last_os_error()));
     }
+    if event.revents != 0 {
+        return Err(ProcessHandleError::Vanished);
+    }
+    Ok(())
+}
 
-    match reader.send_sigterm(identity.pid) {
-        Ok(()) => Ok(TerminateResult::Sent),
-        Err(e) if e.raw_os_error() == Some(libc::EPERM) => {
-            Ok(TerminateResult::PermissionRequired(PermissionRequest {
-                action_id: "io.github.maintainerapp.terminate-process".into(),
-                explanation: format!("Terminate process {} (PID {})", "(foreign)", identity.pid),
-            }))
-        }
-        Err(e)
-            if e.kind() == std::io::ErrorKind::NotFound
-                || e.raw_os_error() == Some(libc::ESRCH) =>
-        {
-            Ok(TerminateResult::AlreadyExited)
-        }
-        Err(e) => Err(MaintainerError::io(
-            format!("sending SIGTERM to PID {}", identity.pid),
-            e,
-        )),
+/// Success means the kernel accepted SIGTERM, not that the process has exited.
+/// There is deliberately no numeric PID signal path.
+pub fn send_sigterm(fd: BorrowedFd<'_>) -> Result<(), ProcessHandleError> {
+    // SAFETY: the borrowed descriptor remains live for the call, the signal is
+    // fixed, siginfo is null, and flags zero preserve kernel permission checks.
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_pidfd_send_signal,
+            fd.as_raw_fd(),
+            libc::SIGTERM,
+            std::ptr::null::<libc::siginfo_t>(),
+            0,
+        )
+    };
+    if result < 0 {
+        Err(classify(io::Error::last_os_error()))
+    } else {
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
+    use std::process::{Child, Command};
 
-    /// Fake proc reader for testing.
-    struct FakeProcReader {
-        stat_content: Mutex<Option<String>>,
-        sigterm_result: Mutex<std::result::Result<(), std::io::Error>>,
-        uid: u32,
-        sigterm_called: Mutex<bool>,
-    }
-
-    impl FakeProcReader {
-        fn with_stat(stat: &str) -> Self {
-            Self {
-                stat_content: Mutex::new(Some(stat.to_string())),
-                sigterm_result: Mutex::new(Ok(())),
-                uid: 1000,
-                sigterm_called: Mutex::new(false),
-            }
-        }
-
-        fn exited() -> Self {
-            Self {
-                stat_content: Mutex::new(None),
-                sigterm_result: Mutex::new(Ok(())),
-                uid: 1000,
-                sigterm_called: Mutex::new(false),
-            }
-        }
-
-        fn with_permission_denied(stat: &str) -> Self {
-            Self {
-                stat_content: Mutex::new(Some(stat.to_string())),
-                sigterm_result: Mutex::new(Err(std::io::Error::from_raw_os_error(libc::EPERM))),
-                uid: 1000,
-                sigterm_called: Mutex::new(false),
-            }
-        }
-
-        fn was_sigterm_called(&self) -> bool {
-            *self.sigterm_called.lock().unwrap()
-        }
-    }
-
-    impl ProcReader for FakeProcReader {
-        fn read_stat(&self, _pid: u32) -> Option<String> {
-            self.stat_content.lock().unwrap().clone()
-        }
-
-        fn send_sigterm(&self, _pid: u32) -> std::result::Result<(), std::io::Error> {
-            *self.sigterm_called.lock().unwrap() = true;
-            let mut result = self.sigterm_result.lock().unwrap();
-            std::mem::replace(&mut *result, Ok(()))
-        }
-
-        fn current_uid(&self) -> u32 {
-            self.uid
-        }
-    }
-
-    const SAMPLE_STAT: &str = "1234 (firefox) S 1100 1234 1100 0 -1 4194304 50000 0 0 0 12345 6789 0 0 20 0 30 0 98765 1234567890 234567 18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 1 0 0 0 0 0 0 0 0 0 0 0 0 0";
-
-    #[test]
-    fn same_pid_same_start_time_sends_sigterm() {
+    fn child() -> (Child, ProcessIdentity) {
+        let child = Command::new("sleep").arg("60").spawn().unwrap();
+        let stat = fs::read_to_string(format!("/proc/{}/stat", child.id())).unwrap();
+        let start_time_ticks = stat[stat.rfind(')').unwrap() + 1..]
+            .split_whitespace()
+            .nth(19)
+            .unwrap()
+            .parse()
+            .unwrap();
         let identity = ProcessIdentity {
-            pid: 1234,
-            start_time_ticks: 98765,
+            pid: child.id(),
+            start_time_ticks,
         };
-        let reader = FakeProcReader::with_stat(SAMPLE_STAT);
-
-        let result = terminate_process(&identity, &reader, false).unwrap();
-        assert_eq!(result, TerminateResult::Sent);
-        assert!(reader.was_sigterm_called());
+        (child, identity)
     }
 
     #[test]
-    fn pid_reused_different_start_time() {
-        let identity = ProcessIdentity {
-            pid: 1234,
-            start_time_ticks: 11111, // Different from 98765 in stat
-        };
-        let reader = FakeProcReader::with_stat(SAMPLE_STAT);
-
-        let result = terminate_process(&identity, &reader, false).unwrap();
-        assert_eq!(result, TerminateResult::PidReused);
-        assert!(!reader.was_sigterm_called());
+    fn permission_vanished_and_unavailable_are_distinct() {
+        for errno in [libc::EPERM, libc::EACCES] {
+            assert!(matches!(
+                classify(io::Error::from_raw_os_error(errno)),
+                ProcessHandleError::PermissionRequired
+            ));
+        }
+        assert!(matches!(
+            classify(io::Error::from_raw_os_error(libc::ESRCH)),
+            ProcessHandleError::Vanished
+        ));
+        assert!(matches!(
+            classify(io::Error::from_raw_os_error(libc::ENOSYS)),
+            ProcessHandleError::Unavailable
+        ));
+        assert!(matches!(
+            classify(io::Error::from_raw_os_error(libc::EMFILE)),
+            ProcessHandleError::Io(_)
+        ));
     }
 
     #[test]
-    fn already_exited_process() {
-        let identity = ProcessIdentity {
-            pid: 1234,
-            start_time_ticks: 98765,
-        };
-        let reader = FakeProcReader::exited();
-
-        let result = terminate_process(&identity, &reader, false).unwrap();
-        assert_eq!(result, TerminateResult::AlreadyExited);
-        assert!(!reader.was_sigterm_called());
+    fn invalid_pids_and_start_times_are_rejected_before_open() {
+        for (pid, start_time_ticks) in [(0, 1), (1, 1), (u32::MAX, 1), (2, 0)] {
+            assert!(matches!(
+                ProcessHandle::acquire(ProcessIdentity {
+                    pid,
+                    start_time_ticks
+                }),
+                Err(ProcessHandleError::InvalidIdentity)
+            ));
+        }
     }
 
     #[test]
-    fn permission_denied_for_foreign_process() {
-        let identity = ProcessIdentity {
-            pid: 1234,
-            start_time_ticks: 98765,
-        };
-        let reader = FakeProcReader::with_permission_denied(SAMPLE_STAT);
-
-        let result = terminate_process(&identity, &reader, false).unwrap();
-        assert!(matches!(result, TerminateResult::PermissionRequired(_)));
+    fn retained_reference_signals_only_its_process() {
+        let (mut target, identity) = child();
+        let (mut unrelated, _) = child();
+        let handle = ProcessHandle::acquire(identity).unwrap();
+        send_sigterm(handle.as_fd()).unwrap();
+        assert!(!target.wait().unwrap().success());
+        assert!(unrelated.try_wait().unwrap().is_none());
+        unrelated.kill().unwrap();
+        unrelated.wait().unwrap();
     }
 
     #[test]
-    fn cancellation_before_signal() {
-        let identity = ProcessIdentity {
-            pid: 1234,
-            start_time_ticks: 98765,
-        };
-        let reader = FakeProcReader::with_stat(SAMPLE_STAT);
-
-        let result = terminate_process(&identity, &reader, true).unwrap();
-        assert_eq!(result, TerminateResult::Cancelled);
-        assert!(!reader.was_sigterm_called());
+    fn exit_during_metadata_read_rejects_review() {
+        let (mut target, identity) = child();
+        let handle = ProcessHandle::acquire(identity.clone()).unwrap();
+        let result = validate_reference_with(handle.as_fd(), &identity, || {
+            let stat = fs::read_to_string(format!("/proc/{}/stat", identity.pid))?;
+            target.kill()?;
+            target.wait()?;
+            Ok(stat)
+        });
+        assert!(matches!(result, Err(ProcessHandleError::Vanished)));
     }
 
     #[test]
-    fn parse_start_time_from_stat() {
-        let start_time = parse_start_time(SAMPLE_STAT).unwrap();
-        assert_eq!(start_time, 98765);
+    fn exit_after_review_cannot_signal_a_replacement() {
+        let (mut target, identity) = child();
+        let handle = ProcessHandle::acquire(identity).unwrap();
+        target.kill().unwrap();
+        target.wait().unwrap();
+        let (mut replacement, _) = child();
+        assert!(matches!(
+            send_sigterm(handle.as_fd()),
+            Err(ProcessHandleError::Vanished)
+        ));
+        assert!(replacement.try_wait().unwrap().is_none());
+        replacement.kill().unwrap();
+        replacement.wait().unwrap();
     }
 
     #[test]
-    fn parse_start_time_with_spaces_in_name() {
-        let stat = "12345 (Web Content) S 1000 12345 1000 0 -1 4194304 100 0 0 0 200 50 0 0 20 0 5 0 5000 1234567890 5678 18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 1 0 0 0 0 0 0 0 0 0 0 0 0 0";
-        let start_time = parse_start_time(stat).unwrap();
-        assert_eq!(start_time, 5000);
+    fn mismatched_metadata_or_non_pidfd_is_rejected() {
+        let (mut target, mut identity) = child();
+        let handle = ProcessHandle::acquire(identity.clone()).unwrap();
+        identity.start_time_ticks += 1;
+        assert!(matches!(
+            validate_reference(handle.as_fd(), &identity),
+            Err(ProcessHandleError::IdentityChanged)
+        ));
+        let file = fs::File::open("/dev/null").unwrap();
+        assert!(matches!(
+            validate_reference(file.as_fd(), &identity),
+            Err(ProcessHandleError::InvalidIdentity)
+        ));
+        target.kill().unwrap();
+        target.wait().unwrap();
+    }
+
+    #[test]
+    fn cancellation_drops_owned_descriptor() {
+        let (mut target, identity) = child();
+        let handle = ProcessHandle::acquire(identity).unwrap();
+        let raw = handle.as_fd().as_raw_fd();
+        drop(handle);
+        // Other parallel tests may reuse the descriptor number after close.
+        // They cannot recreate a reference to this test's still-live child.
+        let info = fs::read_to_string(format!("/proc/self/fdinfo/{raw}")).unwrap_or_default();
+        assert!(
+            !info
+                .lines()
+                .any(|line| line == format!("Pid:\t{}", target.id()))
+        );
+        assert!(target.try_wait().unwrap().is_none());
+        target.kill().unwrap();
+        target.wait().unwrap();
     }
 }

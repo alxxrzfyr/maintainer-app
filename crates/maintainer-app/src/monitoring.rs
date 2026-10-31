@@ -132,7 +132,17 @@ pub struct DeviceInfo {
 
 impl Default for DeviceInfo {
     fn default() -> Self {
-        collect_device_info()
+        Self {
+            model: "Detecting…".into(),
+            os: "Detecting…".into(),
+            kernel: "Detecting…".into(),
+            cpu: "Detecting…".into(),
+            gpu: "Detecting…".into(),
+            memory: "Detecting…".into(),
+            storage: "Detecting…".into(),
+            desktop_env: "Detecting…".into(),
+            display_server: "Detecting…".into(),
+        }
     }
 }
 
@@ -214,12 +224,6 @@ pub struct SystemViewModel {
     pub temperatures: Vec<TemperatureReading>,
     /// Temperature groups (grouped by chip with representative).
     pub temperature_groups: Vec<TemperatureGroup>,
-    /// Process list (sorted).
-    pub processes: Vec<ProcessSnapshot>,
-    /// Current sort mode.
-    pub process_sort: ProcessSort,
-    /// Whether process data is available.
-    pub processes_available: bool,
 }
 
 impl Default for SystemViewModel {
@@ -234,9 +238,6 @@ impl Default for SystemViewModel {
             networks: Vec::new(),
             temperatures: Vec::new(),
             temperature_groups: Vec::new(),
-            processes: Vec::new(),
-            process_sort: ProcessSort::default(),
-            processes_available: false,
         }
     }
 }
@@ -260,6 +261,7 @@ pub struct NetworkViewModel {
     pub unavailable_reason: Option<String>,
     /// Connection details (IP, gateway, DNS, WiFi) from core collector.
     pub connection_details: ConnectionDetails,
+    pub connection_unavailable_reason: Option<String>,
 }
 
 impl Default for NetworkViewModel {
@@ -273,6 +275,7 @@ impl Default for NetworkViewModel {
             available: false,
             unavailable_reason: None,
             connection_details: ConnectionDetails::default(),
+            connection_unavailable_reason: None,
         }
     }
 }
@@ -305,6 +308,8 @@ pub struct MonitoringState {
     pub window_visible: bool,
     /// Current sampling interval.
     pub interval: Duration,
+    visible_interval: Duration,
+    hidden_interval: Duration,
     /// Whether an immediate sample is pending (e.g., after becoming visible).
     pub immediate_sample_pending: bool,
 }
@@ -318,6 +323,8 @@ impl Default for MonitoringState {
             processes_vm: ProcessesViewModel::default(),
             window_visible: true,
             interval: VISIBLE_INTERVAL,
+            visible_interval: VISIBLE_INTERVAL,
+            hidden_interval: HIDDEN_INTERVAL,
             immediate_sample_pending: false,
         }
     }
@@ -346,22 +353,32 @@ impl MonitoringState {
             MonitoringMessage::VisibilityChanged(visible) => {
                 self.window_visible = visible;
                 if visible {
-                    self.interval = VISIBLE_INTERVAL;
+                    self.interval = self.visible_interval;
                     self.immediate_sample_pending = true;
                 } else {
-                    self.interval = HIDDEN_INTERVAL;
+                    self.interval = self.hidden_interval;
                     self.immediate_sample_pending = false;
                 }
                 false
             }
             MonitoringMessage::SetProcessSort(sort) => {
-                if self.system.process_sort != sort {
-                    self.system.process_sort = sort;
+                if self.processes_vm.sort != sort {
+                    self.processes_vm.sort = sort;
                     self.sort_processes();
                 }
                 false
             }
         }
+    }
+
+    pub fn set_sampling_intervals(&mut self, visible_secs: u32, hidden_secs: u32) {
+        self.visible_interval = Duration::from_secs(u64::from(visible_secs.max(1)));
+        self.hidden_interval = Duration::from_secs(u64::from(hidden_secs.max(1)));
+        self.interval = if self.window_visible {
+            self.visible_interval
+        } else {
+            self.hidden_interval
+        };
     }
 
     fn apply_snapshot(&mut self, snapshot: SystemSnapshot) {
@@ -370,8 +387,10 @@ impl MonitoringState {
         self.apply_disks(&snapshot.disks);
         self.apply_network(&snapshot.network);
         self.apply_temperatures(&snapshot.temperatures);
-        self.apply_processes(&snapshot.processes);
         self.derive_attention(&snapshot);
+        if let Some(processes) = snapshot.processes {
+            self.apply_processes(processes);
+        }
     }
 
     fn apply_cpu(&mut self, cpu: &Capability<CpuSnapshot>) {
@@ -476,25 +495,23 @@ impl MonitoringState {
             self.network_vm.unavailable_reason = None;
             self.network_vm.total_rx_rate = total_rx;
             self.network_vm.total_tx_rate = total_tx;
+            let mut previous: std::collections::HashMap<_, _> =
+                std::mem::take(&mut self.network_vm.interfaces)
+                    .into_iter()
+                    .zip(std::mem::take(&mut self.network_vm.rx_rings))
+                    .zip(std::mem::take(&mut self.network_vm.tx_rings))
+                    .map(|((interface, rx), tx)| (interface.interface, (rx, tx)))
+                    .collect();
+            for interface in snaps {
+                let (mut rx, mut tx) = previous
+                    .remove(&interface.interface)
+                    .unwrap_or_else(|| (SampleRing::new(), SampleRing::new()));
+                rx.push(interface.rx_bytes_per_sec.unwrap_or(0.0));
+                tx.push(interface.tx_bytes_per_sec.unwrap_or(0.0));
+                self.network_vm.rx_rings.push(rx);
+                self.network_vm.tx_rings.push(tx);
+            }
             self.network_vm.interfaces = snaps.clone();
-
-            // Grow ring buffers to match interface count.
-            while self.network_vm.rx_rings.len() < snaps.len() {
-                self.network_vm.rx_rings.push(SampleRing::new());
-                self.network_vm.tx_rings.push(SampleRing::new());
-            }
-            for (i, iface) in snaps.iter().enumerate() {
-                if let Some(rx_ring) = self.network_vm.rx_rings.get_mut(i) {
-                    rx_ring.push(iface.rx_bytes_per_sec.unwrap_or(0.0));
-                }
-                if let Some(tx_ring) = self.network_vm.tx_rings.get_mut(i) {
-                    tx_ring.push(iface.tx_bytes_per_sec.unwrap_or(0.0));
-                }
-            }
-
-            // Refresh connection details (IP, gateway, DNS, WiFi) from core.
-            self.network_vm.connection_details =
-                maintainer_core::metrics::read_connection_details();
         } else {
             self.overview.network_text = "Unavailable".into();
             self.overview.net_rx_text = "—".into();
@@ -502,10 +519,14 @@ impl MonitoringState {
             self.system.networks.clear();
 
             self.network_vm.available = false;
+            self.network_vm.connection_details =
+                maintainer_core::metrics::ConnectionDetails::default();
             if let Capability::Unavailable(reason) = network {
                 self.network_vm.unavailable_reason = Some(reason.message.clone());
             }
             self.network_vm.interfaces.clear();
+            self.network_vm.rx_rings.clear();
+            self.network_vm.tx_rings.clear();
         }
     }
 
@@ -519,33 +540,22 @@ impl MonitoringState {
         }
     }
 
-    fn apply_processes(&mut self, processes: &Capability<Vec<ProcessSnapshot>>) {
+    fn apply_processes(&mut self, processes: Capability<Vec<ProcessSnapshot>>) {
         match processes {
             Capability::Available(procs) => {
-                self.system.processes = procs.clone();
-                self.system.processes_available = true;
-                self.sort_processes();
-
-                // Populate processes view model.
                 self.processes_vm.available = true;
                 self.processes_vm.unavailable_reason = None;
                 self.processes_vm.total_count = procs.len();
-                self.processes_vm.processes = self.system.processes.clone();
-                self.processes_vm.sort = self.system.process_sort;
+                self.processes_vm.processes = procs;
+                self.sort_processes();
             }
             Capability::Unavailable(reason) => {
-                self.system.processes_available = false;
-                self.system.processes.clear();
-
                 self.processes_vm.available = false;
-                self.processes_vm.unavailable_reason = Some(reason.message.clone());
+                self.processes_vm.unavailable_reason = Some(reason.message);
                 self.processes_vm.processes.clear();
                 self.processes_vm.total_count = 0;
             }
             _ => {
-                self.system.processes_available = false;
-                self.system.processes.clear();
-
                 self.processes_vm.available = false;
                 self.processes_vm.processes.clear();
                 self.processes_vm.total_count = 0;
@@ -554,24 +564,26 @@ impl MonitoringState {
     }
 
     fn sort_processes(&mut self) {
-        match self.system.process_sort {
+        match self.processes_vm.sort {
             ProcessSort::Cpu => {
-                self.system.processes.sort_by(|a, b| {
+                self.processes_vm.processes.sort_by(|a, b| {
                     let a_cpu = a.utime_ticks + a.stime_ticks;
                     let b_cpu = b.utime_ticks + b.stime_ticks;
                     b_cpu.cmp(&a_cpu)
                 });
             }
             ProcessSort::Memory => {
-                self.system
+                self.processes_vm
                     .processes
                     .sort_by(|a, b| b.rss_bytes.cmp(&a.rss_bytes));
             }
             ProcessSort::Name => {
-                self.system.processes.sort_by(|a, b| a.name.cmp(&b.name));
+                self.processes_vm
+                    .processes
+                    .sort_by(|a, b| a.name.cmp(&b.name));
             }
             ProcessSort::Pid => {
-                self.system.processes.sort_by_key(|p| p.identity.pid);
+                self.processes_vm.processes.sort_by_key(|p| p.identity.pid);
             }
         }
     }
@@ -818,86 +830,12 @@ pub fn collect_device_info() -> DeviceInfo {
 
 /// Detect graphics card model name via lspci or sysfs.
 fn detect_gpu() -> String {
-    use std::fs;
-    use std::process::Command;
-
-    if let Ok(output) = Command::new("lspci").args(["-mm"]).output() {
-        if output.status.success() {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let mut gpus = Vec::new();
-            for line in stdout.lines() {
-                if line.contains("VGA compatible controller")
-                    || line.contains("3D controller")
-                    || line.contains("Display controller")
-                {
-                    let parts: Vec<&str> = line
-                        .split('"')
-                        .enumerate()
-                        .filter_map(|(idx, s)| if idx % 2 == 1 { Some(s.trim()) } else { None })
-                        .collect();
-                    if parts.len() >= 3 {
-                        let vendor = parts[1];
-                        let device = parts[2];
-                        let name = if device.to_lowercase().starts_with(&vendor.to_lowercase()) {
-                            device.to_string()
-                        } else {
-                            format!("{vendor} {device}")
-                        };
-                        if !gpus.contains(&name) {
-                            gpus.push(name);
-                        }
-                    }
-                }
-            }
-            if !gpus.is_empty() {
-                return gpus.join(" / ");
-            }
-        }
+    let gpu = maintainer_core::hardware::read_gpu_info();
+    if gpu.brand == "Unknown" {
+        "Integrated Graphics".to_string()
+    } else {
+        format!("{} {}", gpu.brand, gpu.name)
     }
-
-    if let Ok(entries) = fs::read_dir("/sys/bus/pci/devices") {
-        let mut gpus = Vec::new();
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if let Ok(class) = fs::read_to_string(path.join("class")) {
-                let class_trimmed = class.trim();
-                if class_trimmed.starts_with("0x0300")
-                    || class_trimmed.starts_with("0x0302")
-                    || class_trimmed.starts_with("0x0380")
-                {
-                    let vendor_id = fs::read_to_string(path.join("vendor"))
-                        .unwrap_or_default()
-                        .trim()
-                        .to_string();
-                    let driver = fs::read_link(path.join("driver"))
-                        .ok()
-                        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
-                        .unwrap_or_default();
-
-                    let vendor_name = match vendor_id.to_lowercase().as_str() {
-                        "0x8086" => "Intel Corporation",
-                        "0x10de" => "NVIDIA Corporation",
-                        "0x1002" => "AMD",
-                        _ => "Integrated",
-                    };
-
-                    let entry_desc = if !driver.is_empty() {
-                        format!("{vendor_name} Graphics ({driver})")
-                    } else {
-                        format!("{vendor_name} Graphics")
-                    };
-                    if !gpus.contains(&entry_desc) {
-                        gpus.push(entry_desc);
-                    }
-                }
-            }
-        }
-        if !gpus.is_empty() {
-            return gpus.join(" / ");
-        }
-    }
-
-    "Integrated Graphics".to_string()
 }
 
 #[cfg(test)]
@@ -936,8 +874,50 @@ mod tests {
             disks: Capability::Available(vec![]),
             network: Capability::Available(vec![]),
             temperatures: Capability::Available(vec![]),
-            processes: Capability::Available(vec![]),
+            processes: Some(Capability::Available(vec![])),
         }
+    }
+
+    #[test]
+    fn omitted_process_updates_preserve_rows_without_cloning_and_fresh_errors_clear_them() {
+        let mut state = MonitoringState::default();
+        let mut initial = make_minimal_snapshot();
+        let proc_path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/proc");
+        initial.processes = Some(Capability::Available(
+            maintainer_core::metrics::read_processes(&proc_path).unwrap(),
+        ));
+        let incoming_rows = initial
+            .processes
+            .as_ref()
+            .unwrap()
+            .as_value()
+            .unwrap()
+            .as_ptr();
+        state.reduce(MonitoringMessage::SnapshotReady(Box::new(initial)));
+        assert_eq!(state.processes_vm.processes.as_ptr(), incoming_rows);
+        assert!(!state.processes_vm.processes.is_empty());
+        let page_rows = state.processes_vm.processes.as_ptr();
+        let mut omitted = make_minimal_snapshot();
+        omitted.processes = None;
+        state.reduce(MonitoringMessage::SnapshotReady(Box::new(omitted)));
+        assert_eq!(state.processes_vm.processes.as_ptr(), page_rows);
+        assert!(state.processes_vm.available);
+        let mut failed = make_minimal_snapshot();
+        failed.processes = Some(Capability::Unavailable(
+            maintainer_core::capability::UnavailableReason {
+                code: "proc-read",
+                message: "Process list cannot be read".into(),
+                remediation: None,
+            },
+        ));
+        state.reduce(MonitoringMessage::SnapshotReady(Box::new(failed)));
+        assert!(state.processes_vm.processes.is_empty());
+        assert!(!state.processes_vm.available);
+        assert_eq!(
+            state.processes_vm.unavailable_reason.as_deref(),
+            Some("Process list cannot be read")
+        );
     }
 
     #[test]
@@ -966,6 +946,51 @@ mod tests {
     }
 
     #[test]
+    fn network_history_follows_interface_name_and_releases_removed_interfaces() {
+        let interface = |name: &str, rate| NetworkSnapshot {
+            interface: name.into(),
+            is_loopback: false,
+            rx_bytes: 0,
+            tx_bytes: 0,
+            rx_packets: 0,
+            tx_packets: 0,
+            rx_errors: 0,
+            tx_errors: 0,
+            rx_bytes_per_sec: Some(rate),
+            tx_bytes_per_sec: Some(rate),
+        };
+        let mut state = MonitoringState::default();
+        state.apply_network(&Capability::Available(vec![
+            interface("eth0", 1.0),
+            interface("wlan0", 10.0),
+        ]));
+        state.apply_network(&Capability::Available(vec![
+            interface("wlan0", 20.0),
+            interface("eth0", 2.0),
+        ]));
+        assert_eq!(
+            state.network_vm.rx_rings[0]
+                .samples()
+                .iter()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![10.0, 20.0]
+        );
+        assert_eq!(
+            state.network_vm.rx_rings[1]
+                .samples()
+                .iter()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![1.0, 2.0]
+        );
+        state.apply_network(&Capability::Available(vec![interface("eth0", 3.0)]));
+        assert_eq!(state.network_vm.rx_rings.len(), 1);
+        state.apply_network(&Capability::Available(vec![interface("wlan0", 30.0)]));
+        assert_eq!(state.network_vm.rx_rings[0].len(), 1);
+    }
+
+    #[test]
     fn hidden_window_changes_interval_to_10s() {
         let mut state = MonitoringState::default();
         state.reduce(MonitoringMessage::VisibilityChanged(false));
@@ -984,6 +1009,19 @@ mod tests {
         assert_eq!(state.interval, VISIBLE_INTERVAL);
         assert!(state.window_visible);
         assert!(state.immediate_sample_pending);
+    }
+
+    #[test]
+    fn saved_sampling_intervals_apply_to_visible_and_hidden_windows() {
+        let mut state = MonitoringState::default();
+        state.set_sampling_intervals(5, 30);
+        assert_eq!(state.interval, Duration::from_secs(5));
+
+        state.reduce(MonitoringMessage::VisibilityChanged(false));
+        assert_eq!(state.interval, Duration::from_secs(30));
+
+        state.reduce(MonitoringMessage::VisibilityChanged(true));
+        assert_eq!(state.interval, Duration::from_secs(5));
     }
 
     #[test]
@@ -1027,14 +1065,16 @@ mod tests {
             disks: Capability::Available(vec![]),
             network: Capability::Available(vec![]),
             temperatures: Capability::Available(vec![]),
-            processes: Capability::Available(processes),
+            processes: Some(Capability::Available(processes)),
         };
 
         state.reduce(MonitoringMessage::SnapshotReady(Box::new(snapshot)));
         state.reduce(MonitoringMessage::SetProcessSort(ProcessSort::Memory));
 
-        assert_eq!(state.system.processes[0].name, "big");
-        assert_eq!(state.system.processes[1].name, "small");
+        assert_eq!(state.processes_vm.processes[0].name, "big");
+        assert_eq!(state.processes_vm.processes[1].name, "small");
+        assert_eq!(state.processes_vm.sort, ProcessSort::Memory);
+        assert_eq!(state.processes_vm.processes[0].name, "big");
     }
 
     #[test]
@@ -1078,14 +1118,14 @@ mod tests {
             disks: Capability::Available(vec![]),
             network: Capability::Available(vec![]),
             temperatures: Capability::Available(vec![]),
-            processes: Capability::Available(processes),
+            processes: Some(Capability::Available(processes)),
         };
 
         state.reduce(MonitoringMessage::SnapshotReady(Box::new(snapshot)));
         state.reduce(MonitoringMessage::SetProcessSort(ProcessSort::Name));
 
-        assert_eq!(state.system.processes[0].name, "aaa");
-        assert_eq!(state.system.processes[1].name, "zzz");
+        assert_eq!(state.processes_vm.processes[0].name, "aaa");
+        assert_eq!(state.processes_vm.processes[1].name, "zzz");
     }
 
     #[test]
@@ -1120,7 +1160,7 @@ mod tests {
             disks: Capability::Available(vec![disk]),
             network: Capability::Available(vec![]),
             temperatures: Capability::Available(vec![]),
-            processes: Capability::Available(vec![]),
+            processes: Some(Capability::Available(vec![])),
         };
 
         state.reduce(MonitoringMessage::SnapshotReady(Box::new(snapshot)));
@@ -1154,7 +1194,7 @@ mod tests {
             disks: Capability::Available(vec![disk]),
             network: Capability::Available(vec![]),
             temperatures: Capability::Available(vec![]),
-            processes: Capability::Available(vec![]),
+            processes: Some(Capability::Available(vec![])),
         };
 
         state.reduce(MonitoringMessage::SnapshotReady(Box::new(snapshot)));
@@ -1176,7 +1216,7 @@ mod tests {
             disks: Capability::Available(vec![]),
             network: Capability::Available(vec![]),
             temperatures: Capability::Available(vec![]),
-            processes: Capability::Available(vec![]),
+            processes: Some(Capability::Available(vec![])),
         };
 
         state.reduce(MonitoringMessage::SnapshotReady(Box::new(snapshot)));
@@ -1201,7 +1241,7 @@ mod tests {
             disks: Capability::Available(vec![]),
             network: Capability::Available(vec![]),
             temperatures: Capability::Available(vec![]),
-            processes: Capability::Available(vec![]),
+            processes: Some(Capability::Available(vec![])),
         };
 
         state.reduce(MonitoringMessage::SnapshotReady(Box::new(snapshot)));

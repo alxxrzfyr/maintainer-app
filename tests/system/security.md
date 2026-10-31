@@ -1,12 +1,12 @@
 # Security validation procedure
 
-Status: reusable procedure; no tests are marked passed. Revised 2026-10-30 for the [current threat model](../../docs/threat-model.md) and [roadmap](../../docs/plans/development-roadmap.md).
+Procedure only; completed results belong in dated validation reports. Use the [threat model](../../docs/threat-model.md) and [release status](../../docs/release-status.md) for current controls and acceptance.
 
 Run privileged/destructive cases only in a disposable VM with a recoverable snapshot, a nonroot desktop account and a real system bus/Polkit agent. Install the exact candidate .deb. Use owned test files/processes. Ordinary unit tests must use injected adapters and must not contact the developer host's live helper.
 
 ## Record a result
 
-Create a dated result under `docs/validation/` only after testing. Record package SHA-256, commit, dirty state, distro/kernel/GTK, display/renderer, Polkit version and effective rules, account/session class, operator and date. Per case record command/action, expected result, actual result and sanitized evidence. Use `pass`, `fail`, `unverified`, or `not applicable` with a reason. Missing services or tools do not count as a pass.
+Create a dated result under `docs/validation/YYYY-MM-DD/report.md` only after testing. Record package SHA-256, commit, dirty state, distro/kernel/GTK, display/renderer, Polkit version and effective rules, account/session class, operator and date. Per case record command/action, expected result, actual result and sanitized evidence. Use `pass`, `fail`, `unverified`, or `not applicable` with a reason. Missing services or tools do not count as a pass.
 
 ## Identity, authorization and packaging
 
@@ -17,7 +17,7 @@ Create a dated result under `docs/validation/` only after testing. Record packag
 | Sender identity | No request payload can impersonate another bus caller. Disconnected/unresolvable callers are refused before mutation. A different valid UID is judged by policy, not assumed automatically unauthorized. |
 | Each protected action | Separately exercise terminate, vacuum, kernel removal and install-updates: allow, deny, dismissed prompt, missing agent/authority and repeated invocation. Record host policy overrides. |
 | Active-session exceptions | Cache clean/SMART use their shipped active-session policy; no password prompt may be expected there. Test inactive/other-session behavior separately. |
-| Installed upgrade | Matching unit/bus/Polkit files load after package upgrade; exact helper path/action mapping is checked. Exercise both D-Bus maintenance and pkexec update entrypoints. |
+| Installed upgrade | Matching unit/bus/Polkit files load after package upgrade; exact helper path/action mapping is checked. Exercise both D-Bus maintenance and PackageOwner transaction entrypoints. |
 
 ## Parameters, lifetime and data integrity
 
@@ -31,7 +31,7 @@ Create a dated result under `docs/validation/` only after testing. Record packag
 | Partial results | Inject failed package configuration, child failure, disk full and history-write failure. Preserve successful item outcomes; identify recovery-required/unknown states and prevent blind replay. |
 | Cleanup substitution | Swap file/ancestor/symlink between review and action; add/remove directory children. No out-of-scope target changes. Reject duplicate/overlapping selections. |
 | Trash | Test hostile symlink/owner/permissions, custom XDG path, both mount layouts, simultaneous same-name moves, EXDEV and ENOSPC. Never overwrite an existing entry or permanently delete without stronger confirmation. |
-| Report saving | Precreate the temporary name as a symlink and as a permissive file; test simultaneous saves and failed rename. Unrelated files remain unchanged and new reports remain private. |
+| Report saving | Precreate the destination as a regular file, symlink, and directory; race simultaneous saves and replace a parent path. Existing targets stay unchanged. The anonymous output has no named temporary file; unsupported filesystems fail explicitly. A directory-sync failure after publication reports durability uncertainty without retrying publication. |
 | Flood/stuck operations | Saturate helper and app queues, generate verbose output and hold pipes open. Observe bounded resources, denial/busy states and capacity recovery; test actual installed sandbox behavior. |
 | Retained results/scans | Hold completed receivers without consuming them, then submit more work. Include speed tests; verify the global limits. Deep/wide trees, long names and many errors must stop with visible incomplete coverage within the approved scan budget. |
 | Duplicate evidence | Known equal files are found through app dispatch, including below the top-200 large-file ranking; hard links are not counted as extra recoverable copies. Changed files and partial scans cannot authorize a stale removal plan. |
@@ -49,4 +49,4 @@ Create a dated result under `docs/validation/` only after testing. Record packag
 
 ## Release sign-off
 
-The reviewer records passed/failed/unverified case names, related T IDs, open defects, disabled capabilities and any explicit scope approval. Link evidence to D2/D5-D8/D11-D13 and the relevant A1-A3 decision. Blank procedures, mock tests and policy-string assertions cannot substitute for installed tests. No unresolved release blocker may be labelled passed.
+The reviewer records passed/failed/unverified case names, related threat-model controls, open defects, disabled capabilities and any explicit scope approval. Link evidence to the tested revision, current threat controls, and open release checks. Blank procedures, mock tests and policy-string assertions cannot substitute for installed tests. No unresolved release blocker may be labelled passed.

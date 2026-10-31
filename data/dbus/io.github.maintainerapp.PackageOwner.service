@@ -1,0 +1,5 @@
+[D-BUS Service]
+Name=io.github.maintainerapp.PackageOwner
+Exec=/usr/libexec/maintainer-helper --package-owner
+User=root
+SystemdService=maintainer-package-owner.service

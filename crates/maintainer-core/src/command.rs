@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::io::Read;
 use std::process::Command;
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
@@ -56,6 +57,8 @@ static ALLOWED_RELATIVE: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
         "umount",
         "blkid",
         "lscpu",
+        "lspci",
+        "lsusb",
         "nproc",
         "xdg-open",
         "gio",
@@ -66,6 +69,7 @@ static ALLOWED_RELATIVE: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
 
 /// Maximum bytes captured from stdout or stderr.
 const DEFAULT_OUTPUT_CAP_BYTES: usize = 10 * 1024 * 1024; // 10 MiB
+const MAX_STREAM_LINE_BYTES: usize = 64 * 1024;
 
 /// Default command timeout.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
@@ -107,7 +111,7 @@ impl CommandSpec {
         }
 
         // If it's not an absolute path, it must be in the allowlist.
-        if !program.starts_with('/') && !ALLOWED_RELATIVE.contains(basename) {
+        if !program.starts_with('/') && !ALLOWED_RELATIVE.contains(program.as_str()) {
             return Err(CommandSpecError::RelativePath(program));
         }
 
@@ -193,73 +197,342 @@ impl CommandRunner for SystemCommandRunner {
         spec: &CommandSpec,
         cancel: &dyn Cancellation,
     ) -> crate::error::Result<CommandOutput> {
-        if cancel.is_cancelled() {
-            return Err(MaintainerError::Cancelled);
+        run_lifecycle(spec, cancel, None)
+    }
+}
+
+struct ChildLifecycle {
+    child: std::process::Child,
+    grouped: bool,
+    armed: bool,
+}
+
+impl ChildLifecycle {
+    fn terminate(&mut self) {
+        if self.grouped {
+            let _ = terminate_process_group(self.child.id());
         }
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
 
-        let mut child = Command::new(spec.program())
-            .args(spec.args())
-            .env("LC_ALL", "C")
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .map_err(|e| MaintainerError::io(format!("spawning {}", spec.program()), e))?;
+impl Drop for ChildLifecycle {
+    fn drop(&mut self) {
+        if self.armed {
+            self.terminate();
+        }
+    }
+}
 
-        let deadline = Instant::now() + spec.timeout();
+fn command_failure(message: &str) -> MaintainerError {
+    MaintainerError::CommandFailed {
+        message: message.to_owned(),
+    }
+}
 
+fn run_lifecycle(
+    spec: &CommandSpec,
+    cancel: &dyn Cancellation,
+    mut on_line: Option<&mut dyn FnMut(&str)>,
+) -> crate::error::Result<CommandOutput> {
+    use std::os::unix::process::CommandExt;
+    use std::sync::mpsc;
+    if cancel.is_cancelled() {
+        return Err(MaintainerError::Cancelled);
+    }
+    let streaming = on_line.is_some();
+    // Elevated transaction cancellation retains its existing direct-child behavior.
+    let grouped = spec.program().rsplit('/').next() != Some("pkexec");
+    let mut command = Command::new(spec.program());
+    command
+        .args(spec.args())
+        .env("LC_ALL", "C")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    if grouped {
+        command.process_group(0);
+    }
+    let child = command
+        .spawn()
+        .map_err(|error| MaintainerError::io("spawning command", error))?;
+    let mut child = ChildLifecycle {
+        child,
+        grouped,
+        armed: true,
+    };
+    let start = Instant::now();
+    let readers = ReaderControl::new();
+    let stdout = child
+        .child
+        .stdout
+        .take()
+        .ok_or_else(|| command_failure("command stdout pipe unavailable"))?;
+    let stderr = child
+        .child
+        .stderr
+        .take()
+        .ok_or_else(|| command_failure("command stderr pipe unavailable"))?;
+    let stdout = readers
+        .wrap(stdout)
+        .map_err(|error| MaintainerError::io("configuring stdout capture", error))?;
+    let stderr = readers
+        .wrap(stderr)
+        .map_err(|error| MaintainerError::io("configuring stderr capture", error))?;
+    let cap = spec.output_cap_bytes().min(DEFAULT_OUTPUT_CAP_BYTES);
+    let (line_tx, line_rx) = mpsc::sync_channel(64);
+    let stdout_reader = std::thread::Builder::new()
+        .name("command-stdout".into())
+        .spawn(move || {
+            if streaming {
+                read_stream_lines(stdout, cap, MAX_STREAM_LINE_BYTES, &line_tx)
+            } else {
+                read_capped(stdout, cap)
+            }
+        })
+        .map_err(|error| MaintainerError::io("starting stdout capture", error))?;
+    let stderr_reader = match std::thread::Builder::new()
+        .name("command-stderr".into())
+        .spawn(move || read_capped(stderr, cap))
+    {
+        Ok(reader) => reader,
+        Err(error) => {
+            drop(line_rx);
+            readers.stop();
+            child.terminate();
+            let _ = stdout_reader.join();
+            return Err(MaintainerError::io("starting stderr capture", error));
+        }
+    };
+    let outcome = (|| {
+        let mut status = None;
+        let mut channel_closed = !streaming;
         loop {
             if cancel.is_cancelled() {
-                let _ = child.kill();
-                let _ = child.wait();
                 return Err(MaintainerError::Cancelled);
             }
-
-            if Instant::now() >= deadline {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(MaintainerError::CommandFailed {
-                    message: format!("{} timed out after {:?}", spec.program(), spec.timeout()),
-                });
+            if start.elapsed() >= spec.timeout() {
+                return Err(command_failure(
+                    "command timed out before process and capture completed",
+                ));
             }
-
-            match child.try_wait() {
-                Ok(Some(_status)) => break,
-                Ok(None) => {
-                    std::thread::sleep(Duration::from_millis(10));
+            if status.is_none() {
+                status = child
+                    .child
+                    .try_wait()
+                    .map_err(|error| MaintainerError::io("waiting for command", error))?;
+            }
+            if streaming && !channel_closed {
+                match line_rx.recv_timeout(Duration::from_millis(5)) {
+                    Ok(Ok(line)) => {
+                        if let Some(callback) = on_line.as_mut() {
+                            callback(&line);
+                        }
+                    }
+                    Ok(Err(message)) => {
+                        return Err(MaintainerError::invalid_data("command output", message));
+                    }
+                    Err(mpsc::RecvTimeoutError::Disconnected) => channel_closed = true,
+                    Err(mpsc::RecvTimeoutError::Timeout) => {}
                 }
-                Err(e) => {
-                    return Err(MaintainerError::io(
-                        format!("waiting for {}", spec.program()),
-                        e,
-                    ));
+            } else {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            if let Some(status) = status {
+                if channel_closed && stdout_reader.is_finished() && stderr_reader.is_finished() {
+                    return Ok(status);
                 }
             }
         }
+    })();
+    // Release channel backpressure before stopping/joining a streaming reader.
+    drop(line_rx);
+    if outcome.is_err() {
+        child.terminate();
+        readers.stop();
+    }
+    let stdout_result = stdout_reader.join();
+    let stderr_result = stderr_reader.join();
+    child.armed = false;
+    let status = outcome?;
+    let (stdout_bytes, stdout_truncated) = stdout_result
+        .map_err(|_| command_failure("stdout capture stopped unexpectedly"))?
+        .map_err(|error| MaintainerError::io("reading stdout", error))?;
+    let (stderr_bytes, stderr_truncated) = stderr_result
+        .map_err(|_| command_failure("stderr capture stopped unexpectedly"))?
+        .map_err(|error| MaintainerError::io("reading stderr", error))?;
+    if streaming && stdout_truncated {
+        return Err(MaintainerError::invalid_data(
+            "command output",
+            "stdout exceeded capture limit",
+        ));
+    }
+    // Raw diagnostics are lossy text; streaming protocol lines are validated UTF-8.
+    Ok(CommandOutput {
+        exit_code: status.code(),
+        stdout: String::from_utf8_lossy(&stdout_bytes).into_owned(),
+        stderr: String::from_utf8_lossy(&stderr_bytes).into_owned(),
+        stdout_truncated,
+        stderr_truncated,
+    })
+}
 
-        let output = child
-            .wait_with_output()
-            .map_err(|e| MaintainerError::io(format!("reading output of {}", spec.program()), e))?;
+fn terminate_process_group(child_pid: u32) -> std::io::Result<()> {
+    // The child is started as its own process-group leader, so its negative PID
+    // cannot target the GUI or unrelated processes.
+    let result = unsafe { libc::kill(-(child_pid as libc::pid_t), libc::SIGKILL) };
+    if result == 0 {
+        return Ok(());
+    }
+    let error = std::io::Error::last_os_error();
+    if error.raw_os_error() == Some(libc::ESRCH) {
+        Ok(())
+    } else {
+        Err(error)
+    }
+}
 
-        let (stdout, stdout_truncated) = truncate_output(&output.stdout, spec.output_cap_bytes());
-        let (stderr, stderr_truncated) = truncate_output(&output.stderr, spec.output_cap_bytes());
+struct ReaderControl(std::sync::Arc<std::sync::atomic::AtomicBool>);
 
-        Ok(CommandOutput {
-            exit_code: output.status.code(),
-            stdout,
-            stderr,
-            stdout_truncated,
-            stderr_truncated,
+impl ReaderControl {
+    fn new() -> Self {
+        Self(std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+            false,
+        )))
+    }
+
+    fn stop(&self) {
+        self.0.store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    fn wrap<R: Read + std::os::fd::AsRawFd>(
+        &self,
+        reader: R,
+    ) -> std::io::Result<InterruptibleReader<R>> {
+        // SAFETY: the owned pipe descriptor is valid; only its nonblocking flag changes.
+        let flags = unsafe { libc::fcntl(reader.as_raw_fd(), libc::F_GETFL) };
+        if flags == -1
+            || unsafe { libc::fcntl(reader.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) }
+                == -1
+        {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(InterruptibleReader {
+            reader,
+            stop: self.0.clone(),
         })
     }
 }
 
-/// Truncate byte output to a string, handling the cap.
-fn truncate_output(bytes: &[u8], cap: usize) -> (String, bool) {
-    let truncated = bytes.len() > cap;
-    let slice = if truncated { &bytes[..cap] } else { bytes };
-    let text = String::from_utf8_lossy(slice).into_owned();
-    (text, truncated)
+impl Drop for ReaderControl {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+struct InterruptibleReader<R> {
+    reader: R,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl<R: Read> Read for InterruptibleReader<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        loop {
+            if self.stop.load(std::sync::atomic::Ordering::Acquire) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "command capture stopped",
+                ));
+            }
+            match self.reader.read(buffer) {
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                result => return result,
+            }
+        }
+    }
+}
+
+fn read_capped(mut reader: impl Read, cap: usize) -> std::io::Result<(Vec<u8>, bool)> {
+    let mut captured = Vec::with_capacity(cap.min(64 * 1024));
+    let mut buffer = [0_u8; 8192];
+    let mut truncated = false;
+    loop {
+        let bytes_read = reader.read(&mut buffer)?;
+        if bytes_read == 0 {
+            return Ok((captured, truncated));
+        }
+        let remaining = cap.saturating_sub(captured.len());
+        let captured_bytes = bytes_read.min(remaining);
+        captured.extend_from_slice(&buffer[..captured_bytes]);
+        truncated |= captured_bytes < bytes_read;
+    }
+}
+
+fn read_stream_lines(
+    mut reader: impl Read,
+    output_cap: usize,
+    line_cap: usize,
+    sender: &std::sync::mpsc::SyncSender<std::result::Result<String, String>>,
+) -> std::io::Result<(Vec<u8>, bool)> {
+    let mut output = Vec::with_capacity(output_cap.min(64 * 1024));
+    let mut line = Vec::with_capacity(line_cap.min(4096));
+    let mut buffer = [0_u8; 8192];
+    let mut output_truncated = false;
+    let mut line_overflow = false;
+
+    loop {
+        let count = reader.read(&mut buffer)?;
+        if count == 0 {
+            if !line.is_empty() && !line_overflow {
+                match String::from_utf8(line.clone()) {
+                    Ok(text) => {
+                        let _ = sender.send(Ok(text));
+                    }
+                    Err(_) => {
+                        let _ = sender.send(Err("stdout protocol contains invalid UTF-8".into()));
+                        return Ok((output, output_truncated));
+                    }
+                }
+            }
+            return Ok((output, output_truncated));
+        }
+
+        let remaining = output_cap.saturating_sub(output.len());
+        let captured = count.min(remaining);
+        output.extend_from_slice(&buffer[..captured]);
+        output_truncated |= captured < count;
+
+        for byte in &buffer[..count] {
+            if *byte == b'\n' {
+                if !line_overflow {
+                    match String::from_utf8(line.clone()) {
+                        Ok(text) => {
+                            let _ = sender.send(Ok(text));
+                        }
+                        Err(_) => {
+                            let _ =
+                                sender.send(Err("stdout protocol contains invalid UTF-8".into()));
+                            return Ok((output, output_truncated));
+                        }
+                    }
+                }
+                line.clear();
+                line_overflow = false;
+            } else if line.len() < line_cap {
+                line.push(*byte);
+            } else if !line_overflow {
+                let _ = sender.send(Err(format!(
+                    "stdout line exceeded the {line_cap}-byte limit"
+                )));
+                line.clear();
+                line_overflow = true;
+            }
+        }
+    }
 }
 
 /// Run a validated `CommandSpec` while streaming stdout line-by-line to a callback.
@@ -294,127 +567,7 @@ pub fn run_streaming(
     cancel: &dyn Cancellation,
     mut on_line: impl FnMut(&str),
 ) -> crate::error::Result<CommandOutput> {
-    use std::io::{BufRead, BufReader, Read};
-    use std::sync::mpsc;
-
-    if cancel.is_cancelled() {
-        return Err(MaintainerError::Cancelled);
-    }
-
-    let mut child = Command::new(spec.program())
-        .args(spec.args())
-        .env("LC_ALL", "C")
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|e| MaintainerError::io(format!("spawning {}", spec.program()), e))?;
-
-    let deadline = Instant::now() + spec.timeout();
-    let output_cap = spec.output_cap_bytes();
-
-    // Collect stderr in a background thread to prevent deadlock.
-    let stderr_pipe = child.stderr.take().expect("stderr was piped");
-    let stderr_handle = std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        let mut reader = stderr_pipe;
-        let _ = reader.read_to_end(&mut buf);
-        buf
-    });
-
-    // Read stdout lines in a background thread, sending them through a channel.
-    let stdout_pipe = child.stdout.take().expect("stdout was piped");
-    let (line_tx, line_rx) = mpsc::sync_channel::<String>(64);
-    let stdout_handle = std::thread::spawn(move || {
-        let reader = BufReader::new(stdout_pipe);
-        let mut all_bytes = Vec::new();
-        for line_result in reader.lines() {
-            match line_result {
-                Ok(line) => {
-                    // Accumulate raw bytes for final output
-                    if all_bytes.len() < output_cap {
-                        let remaining = output_cap - all_bytes.len();
-                        let line_bytes = line.as_bytes();
-                        let to_copy = (line_bytes.len() + 1).min(remaining); // +1 for newline
-                        if to_copy > 0 {
-                            let copy_line = to_copy.min(line_bytes.len());
-                            all_bytes.extend_from_slice(&line_bytes[..copy_line]);
-                            if to_copy > line_bytes.len() {
-                                all_bytes.push(b'\n');
-                            }
-                        }
-                    }
-                    // Send line to the main thread; if receiver is gone, stop.
-                    if line_tx.send(line).is_err() {
-                        break;
-                    }
-                }
-                Err(_) => break,
-            }
-        }
-        all_bytes
-    });
-
-    // Poll the channel, delivering lines to the callback while checking
-    // cancellation and timeout.
-    loop {
-        if cancel.is_cancelled() {
-            let _ = child.kill();
-            let _ = child.wait();
-            // Drop receiver so stdout thread exits
-            drop(line_rx);
-            let _ = stdout_handle.join();
-            let _ = stderr_handle.join();
-            return Err(MaintainerError::Cancelled);
-        }
-
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            drop(line_rx);
-            let _ = stdout_handle.join();
-            let _ = stderr_handle.join();
-            return Err(MaintainerError::CommandFailed {
-                message: format!("{} timed out after {:?}", spec.program(), spec.timeout()),
-            });
-        }
-
-        match line_rx.recv_timeout(Duration::from_millis(50)) {
-            Ok(line) => {
-                on_line(&line);
-            }
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                // Check if child has exited (stdout thread will have finished)
-                // by seeing if the channel is disconnected on next iteration.
-                continue;
-            }
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                // Stdout thread finished (EOF or error). Break to collect results.
-                break;
-            }
-        }
-    }
-
-    // Wait for the child to exit.
-    let status = child
-        .wait()
-        .map_err(|e| MaintainerError::io(format!("waiting for {}", spec.program()), e))?;
-
-    // Collect outputs from background threads.
-    let stdout_bytes = stdout_handle.join().unwrap_or_default();
-    let stderr_raw = stderr_handle.join().unwrap_or_default();
-
-    let stdout_truncated = stdout_bytes.len() >= output_cap;
-    let stdout = String::from_utf8_lossy(&stdout_bytes).into_owned();
-    let (stderr, stderr_truncated) = truncate_output(&stderr_raw, output_cap);
-
-    Ok(CommandOutput {
-        exit_code: status.code(),
-        stdout,
-        stderr,
-        stdout_truncated,
-        stderr_truncated,
-    })
+    run_lifecycle(spec, cancel, Some(&mut on_line))
 }
 
 #[cfg(test)]
@@ -586,6 +739,26 @@ mod tests {
     }
 
     #[test]
+    fn command_runner_timeout_kills_descendant_holding_pipe() {
+        let spec = CommandSpec::new(
+            "/usr/bin/python3",
+            [
+                "-c",
+                "import subprocess,time; subprocess.Popen(['/bin/sleep','10']); print('ready', flush=True); time.sleep(10)",
+            ],
+        )
+        .unwrap()
+        .with_timeout(Duration::from_millis(200));
+        let token = CancellationToken::new();
+        let started = Instant::now();
+
+        let result = SystemCommandRunner.run(&spec, &token);
+
+        assert!(matches!(result, Err(MaintainerError::CommandFailed { .. })));
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
     fn command_runner_output_cap_truncates() {
         let runner = SystemCommandRunner;
         let spec = CommandSpec::new("/usr/bin/yes", Vec::<String>::new())
@@ -601,6 +774,74 @@ mod tests {
             Err(MaintainerError::CommandFailed { .. }) => {}
             Err(e) => panic!("unexpected error: {e}"),
         }
+    }
+
+    #[test]
+    fn capped_reader_drains_past_capture_limit() {
+        let input = vec![b'x'; 1024];
+        let (captured, truncated) = read_capped(input.as_slice(), 16).unwrap();
+        assert_eq!(captured, vec![b'x'; 16]);
+        assert!(truncated);
+    }
+
+    #[test]
+    fn relative_directory_cannot_bypass_program_allowlist() {
+        assert!(CommandSpec::new("untrusted/apt", ["--version"]).is_err());
+        assert!(CommandSpec::new("./apt", ["--version"]).is_err());
+    }
+
+    #[test]
+    fn descendant_retained_pipes_obey_capture_deadline() {
+        for streaming in [false, true] {
+            let spec = CommandSpec::new("/usr/bin/python3", ["-c", "import os,time; child=os.fork(); os.close(1) if child == 0 else None; time.sleep(1) if child == 0 else None; os._exit(0)"])
+                .unwrap().with_timeout(Duration::from_millis(100));
+            let started = Instant::now();
+            let result = if streaming {
+                run_streaming(&spec, &CancellationToken::new(), |_| {})
+            } else {
+                SystemCommandRunner.run(&spec, &CancellationToken::new())
+            };
+            assert!(result.is_err());
+            assert!(started.elapsed() < Duration::from_millis(700));
+        }
+    }
+
+    #[test]
+    fn both_capture_modes_drain_both_pipes_past_capacity() {
+        for streaming in [false, true] {
+            let spec = CommandSpec::new("/usr/bin/python3", ["-c", "import os,threading; t=threading.Thread(target=lambda: [os.write(2,b'e'*4096) for _ in range(512)]); t.start(); [os.write(1,b'x'*1023+b'\\n') for _ in range(2048)]; t.join()"])
+                .unwrap().with_timeout(Duration::from_secs(5)).with_output_cap(8192);
+            let started = Instant::now();
+            if streaming {
+                assert!(run_streaming(&spec, &CancellationToken::new(), |_| {}).is_err());
+            } else {
+                let output = SystemCommandRunner
+                    .run(&spec, &CancellationToken::new())
+                    .unwrap();
+                assert!(output.success());
+                assert!(output.stdout_truncated && output.stderr_truncated);
+                assert_eq!(output.stdout.len(), 8192);
+                assert_eq!(output.stderr.len(), 8192);
+            }
+            assert!(started.elapsed() < Duration::from_secs(5));
+        }
+    }
+
+    #[test]
+    fn streaming_rejects_invalid_utf8_while_raw_diagnostics_are_lossy() {
+        let spec = CommandSpec::new(
+            "/usr/bin/python3",
+            ["-c", "import os; os.write(1,bytes([255,10]))"],
+        )
+        .unwrap();
+        assert!(matches!(
+            run_streaming(&spec, &CancellationToken::new(), |_| {}),
+            Err(MaintainerError::InvalidData { .. })
+        ));
+        let output = SystemCommandRunner
+            .run(&spec, &CancellationToken::new())
+            .unwrap();
+        assert!(output.stdout.contains('\u{fffd}'));
     }
 
     #[test]
@@ -634,6 +875,41 @@ mod tests {
         let token = CancellationToken::new();
         let result = run_streaming(&spec, &token, |_| {});
         assert!(matches!(result, Err(MaintainerError::CommandFailed { .. })));
+    }
+
+    #[test]
+    fn run_streaming_timeout_still_applies_after_stdout_eof() {
+        let spec = CommandSpec::new(
+            "/usr/bin/python3",
+            ["-c", "import os,time; os.close(1); time.sleep(10)"],
+        )
+        .unwrap()
+        .with_timeout(Duration::from_millis(200));
+        let token = CancellationToken::new();
+        let started = Instant::now();
+
+        let result = run_streaming(&spec, &token, |_| {});
+
+        assert!(matches!(result, Err(MaintainerError::CommandFailed { .. })));
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn run_streaming_rejects_newline_free_output_over_line_limit() {
+        let spec = CommandSpec::new(
+            "/usr/bin/python3",
+            [
+                "-c",
+                "import sys; [sys.stdout.write('x' * 65536) for _ in range(512)]",
+            ],
+        )
+        .unwrap()
+        .with_timeout(Duration::from_secs(3));
+        let token = CancellationToken::new();
+
+        let result = run_streaming(&spec, &token, |_| {});
+
+        assert!(matches!(result, Err(MaintainerError::InvalidData { .. })));
     }
 
     #[test]

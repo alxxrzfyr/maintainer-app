@@ -9,6 +9,7 @@ pub mod hardware;
 pub mod jobs;
 pub mod kernel;
 pub mod metrics;
+pub mod package_transaction;
 pub mod persistence;
 pub mod reports;
 pub mod settings;

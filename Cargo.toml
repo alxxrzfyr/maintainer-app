@@ -13,6 +13,7 @@ license = "MIT"
 
 [workspace.dependencies]
 blake3 = "=1.8.2"
+libc = "=0.2.191"
 glib = "=0.20.12"
 gio = "=0.20.12"
 gtk4 = { version = "=0.9.7", features = ["v4_6"] }

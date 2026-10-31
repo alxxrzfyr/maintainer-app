@@ -4,17 +4,22 @@ Priority: optional
 Maintainer: Alex Berin <maintainer@maintainerapp.io>
 Build-Depends:
  debhelper-compat (= 13),
- cargo (>= 0.70),
- rustc (>= 1.70),
+ cargo (>= 1.85),
+ rustc (>= 1.85),
  libgtk-4-dev (>= 4.6),
  libsqlite3-dev,
  libpolkit-gobject-1-dev,
- pkg-config
+ pkg-config,
+ python3,
+ python3-apt,
+ xvfb,
+ xauth,
+ dbus-x11
 Standards-Version: 4.6.2
-Homepage: https://github.com/maintainerapp/maintainer
-Vcs-Git: https://github.com/maintainerapp/maintainer.git
-Vcs-Browser: https://github.com/maintainerapp/maintainer
-Rules-Requires-Root: binary-targets
+Homepage: https://github.com/alxxrzfyr/maintainer-app
+Vcs-Git: https://github.com/alxxrzfyr/maintainer-app.git
+Vcs-Browser: https://github.com/alxxrzfyr/maintainer-app
+Rules-Requires-Root: no
 
 Package: maintainer
 Architecture: any
@@ -26,6 +31,8 @@ Architecture: any
 Depends:
  ${shlibs:Depends},
  ${misc:Depends},
+ python3,
+ python3-apt,
  libgtk-4-1 (>= 4.6),
  libglib2.0-0 (>= 2.72),
  libsqlite3-0,

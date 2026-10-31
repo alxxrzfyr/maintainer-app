@@ -6,7 +6,9 @@
 //! - Drawer/switcher (below 640 px)
 
 use gtk4::prelude::*;
-use gtk4::{Align, Box as GtkBox, Button, Label, Orientation, Separator, Widget};
+use gtk4::{
+    Align, Box as GtkBox, Button, Label, Orientation, PolicyType, ScrolledWindow, Separator, Widget,
+};
 
 use crate::state::{FOOTER_PAGES, NAVIGATION_GROUPS, Page};
 use crate::ui::icons;
@@ -100,7 +102,13 @@ pub fn build_sidebar(
             buttons.push((page, button));
         }
     }
-    sidebar.append(&groups);
+    // Keep the shell and footer fixed while tall navigation remains reachable.
+    let navigation_scroll = ScrolledWindow::new();
+    navigation_scroll.set_policy(PolicyType::Never, PolicyType::Automatic);
+    navigation_scroll.set_min_content_height(0);
+    navigation_scroll.set_vexpand(true);
+    navigation_scroll.set_child(Some(&groups));
+    sidebar.append(&navigation_scroll);
 
     let footer = GtkBox::new(Orientation::Vertical, 4);
     footer.add_css_class("maintainer_sidebar_footer");
@@ -121,10 +129,13 @@ pub fn build_sidebar(
     sidebar.append(&footer);
 
     for (page, button) in buttons {
-        let sidebar_ref = sidebar.clone();
+        let sidebar_ref = sidebar.downgrade();
         let navigate = on_navigate.clone();
         button.connect_clicked(move |_| {
-            update_active_buttons(&sidebar_ref, page);
+            let Some(sidebar) = sidebar_ref.upgrade() else {
+                return;
+            };
+            update_active_buttons(&sidebar, page);
             navigate(page);
         });
     }

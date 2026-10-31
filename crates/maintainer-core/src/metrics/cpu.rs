@@ -1,5 +1,6 @@
 //! CPU metric collector that reads `/proc/stat` and computes utilization from deltas.
 
+#[cfg(test)]
 use std::fs;
 use std::path::Path;
 use std::time::Instant;
@@ -93,8 +94,7 @@ fn parse_cpu_line(line: &str) -> Result<CpuCounters, MaintainerError> {
 /// Read and parse `/proc/stat` from the given base path.
 pub fn read_cpu_sample(proc_path: &Path, now: Instant) -> Result<CpuSample, MaintainerError> {
     let stat_path = proc_path.join("stat");
-    let content = fs::read_to_string(&stat_path)
-        .map_err(|e| MaintainerError::io(format!("reading {}", stat_path.display()), e))?;
+    let content = crate::metrics::read_proc_text(&stat_path)?;
 
     let mut total = None;
     let mut cores = Vec::new();

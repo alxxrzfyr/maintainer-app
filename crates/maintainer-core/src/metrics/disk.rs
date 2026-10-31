@@ -88,8 +88,7 @@ const SECTOR_SIZE_BYTES: u64 = 512;
 /// Parse `/proc/mounts` and return only real filesystem mounts.
 pub fn read_mounts(proc_path: &Path) -> Result<Vec<MountEntry>, MaintainerError> {
     let mounts_path = proc_path.join("mounts");
-    let content = fs::read_to_string(&mounts_path)
-        .map_err(|e| MaintainerError::io(format!("reading {}", mounts_path.display()), e))?;
+    let content = crate::metrics::read_proc_text(&mounts_path)?;
 
     parse_mounts(&content)
 }
