@@ -46,6 +46,9 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Build and verification
 
+- Keep multiarch transaction fixtures independent of host dpkg administration
+  defaults while still executing and verifying both native package installs.
+
 - Preserve Ubuntu 22.04 system-SQLite compatibility for private backup/recovery.
   Use the stable snapshot ABI without enabling newer SQL error-offset symbols.
 

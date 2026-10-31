@@ -317,8 +317,9 @@ class RetainedPlanTests(AptFixture):
         self.publish()
         apt_pkg.config.set('APT::Architectures::', 'i386')
         apt_pkg.init_system()
-        subprocess.run(['/usr/bin/dpkg', f'--root={self.root}', '--force-not-root',
-                        '--add-architecture', 'i386'], check=True, capture_output=True)
+        # Configure only this disposable dpkg database. Distribution dpkg
+        # administration defaults must not affect a native APT transaction test.
+        (self.root / 'var/lib/dpkg/arch').write_text('amd64\ni386\n')
         apt.Cache().update()
         transaction = self.transaction()
         changes, identifier = transaction.resolve([('maintainer-fixture-multi:amd64', '1'),

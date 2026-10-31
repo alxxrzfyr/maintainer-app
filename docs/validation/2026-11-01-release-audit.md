@@ -140,3 +140,9 @@ buffer-safety defect. Cargo.lock was not regenerated. Hosted results for the
 follow-up commit determine whether the compatibility failure is resolved.
 The interrupted performance matrix belongs to the preceding binary and is not
 a complete measurement or an application crash.
+
+The next hosted run passed the SQLite link boundary but failed while preparing
+the multiarch fixture with `dpkg --add-architecture`. The tested transaction had
+not started. Fixture setup now writes the private temporary dpkg architecture
+file directly. The test still resolves, approves, installs and verifies both
+architectures through native APT/dpkg. No test is skipped or marked optional.
