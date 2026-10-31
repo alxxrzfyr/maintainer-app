@@ -5,6 +5,8 @@
 | [README](../README.md) | Product overview, setup, and commands |
 | [Contributor instructions](../AGENTS.md) | Development rules and performance acceptance |
 | [Release status](release-status.md) | Current scope, remaining work, and verification links |
+| [Release guide](releasing.md) | Version preparation, tagging, artifact verification, and publication |
+| [1.3.0 release notes](releases/1.3.0.md) | Draft announcement and user-facing changes |
 | [Threat model](threat-model.md) | Trust boundaries, controls, and residual risks |
 | [Validation records](validation/README.md) | Dated observations for specific artifacts |
 | [Local logs](../logs/README.md) | Private raw output, ignored by Git |

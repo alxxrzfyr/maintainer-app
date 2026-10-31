@@ -5,118 +5,90 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.3.0] - 2026-11-01
 
-### Changed
+Publication status and outstanding acceptance checks are tracked in
+[release status](docs/release-status.md).
 
-- Check duplicate-row bindings and clear recycled rows safely; allow selection
-  callbacks to replace themselves without borrowing panics. Keep removal opt-in.
-- Replace UI source-spelling assertions with widget, allocation, animation, and
-  worker-stage tests. Resolve speed-test availability inside the confirmed worker,
-  keeping network page construction free of capability filesystem checks.
-- Group application state and background dispatch by feature while preserving
-  their existing imports and cancellation/result handling.
+### Added
 
-- Run Diagnostics hardware collection once in a bounded worker instead of GTK
-  constructors. Show loading, collection failures, and evidence-based hardware
-  values; report unprobed acceleration and missing USB/DMI fields honestly.
-- Allow hardware inspection tools through the command boundary and parse their
-  machine-readable output with fixtures. Extract shell feature wiring, simplify
-  kernel grouping, and replace theme/installer source checks with behavior tests.
+- Native APT transactions retain the reviewed resolver plan and package locks
+  through execution. A separate transaction owner provides scoped authorization,
+  durable receipts, Resume, cancellation boundaries, and read-only recovery audits.
+  Shutdown/sleep inhibition is required through mutation and final verification.
+- Regular-file cleanup supports protected quarantine, batch approval bound to
+  reviewed file identities, and recovery without overwriting existing entries.
+  Restore elsewhere handles missing original folders; durability failures do not
+  offer unsafe retries. Folder cleanup and unsupported filesystem operations
+  remain unavailable, and physical reclaimed space is not guaranteed.
+- Settings and application history support private backup and recovery into new
+  databases. Existing databases are preserved, including schemas created by a
+  newer application version.
+- A local release candidate gate runs three complete native/Python test passes
+  and binds source, lockfile, packages, and runtime hashes without installing on
+  the host. Versioned release notes and tagging/publication instructions document
+  how to use the verified artifacts.
 
-- Target 0.35% average idle CPU, with the user-approved fallback strictly below
-  0.5%. Enforce full precision; exactly 0.5% is a failure.
-- Skip redundant network labels and storage style changes. Preallocate growing
-  proc-text buffers while preserving complete input and contextual errors.
+### Improved
 
-- Bound shared background work, retained results and child output; report
-  saturation, cancellation and unavailable integrations explicitly.
-- Load secondary pages on demand, reuse process/disk/sensor widgets, coalesce
-  metrics, and save settings off the GTK thread with close-time draining.
-- Discover duplicates using real file identity with bounded traversal and clear
-  partial-coverage warnings. Store settings/history privately and support bounded
-  backup-to-new-file recovery without overwriting existing databases.
-- Bind process confirmation and Polkit authorization to a retained pidfd. Send
-  SIGTERM through that handle; report delivery acceptance separately from exit.
-- Export previews through anonymous private files and no-replace publication.
-  Existing files and symlinks are preserved; choose a new filename to save again.
-- Retain the native APT resolver cache and locks through authoritative review and
-  commit. A separate short-lived owner provides scoped authorization, durable
-  receipts, Resume, safe cancellation boundaries and read-only recovery audit.
-  Protect held/essential/running-kernel/tracking packages and prevent self-update
-  deadlocks. Same-name package selections remain distinct by architecture.
-  Hold a verified shutdown/sleep inhibitor through package mutation and
-  postcondition checks; refuse mutation if it cannot be acquired.
-- Clean reviewed regular files through protected quarantine, with one approval
-  bound to each batch. Raced replacements are restored or retained, never deleted.
-  Trash and recovery never overwrite; explicit Restore elsewhere handles missing
-  original folders. Postcommit durability failures do not offer unsafe retries.
-  Folders, unsupported filesystems and cross-filesystem operations stay explicit;
-  physical reclaimed bytes are conservatively not claimed. Trash follows custom
-  XDG data-home settings, and directory review responds to cancellation.
-- Make the same-machine release gate authoritative: three complete native/Python
-  test passes, native builds and exact package/source/lock/runtime hashes. No
-  host package installation is performed. Hosted CI independently checks the
-  pushed source and disposable amd64/arm64 package lifecycle. Manual acceptance
-  remains separate. Version 1.3.0 has not been published.
+- GTK pages load on demand and reuse process, disk, and sensor widgets. Retained
+  collectors, reusable proc-text buffers, and skipped unchanged labels/styles
+  reduce repeated work while preserving complete input and contextual errors.
+- Background jobs, retained results, command output, and filesystem scans have
+  explicit limits. Saturation, cancellation, and unavailable integrations produce
+  explained outcomes. Settings writes run outside GTK and drain during shutdown.
+- Diagnostics collects hardware inventory once in a worker and shows loading,
+  partial availability, and failure states. USB/DMI fields use observed values;
+  graphics acceleration remains unverified until its API is probed.
+- Shell controllers, presentation state, and background dispatch are organized
+  by feature. Kernel grouping avoids repeated parsing while preserving public
+  imports and cancellation/result handling.
+- Behavioral tests exercise widget allocation, animation, theme changes,
+  installer verification, and speed-test stages. CI covers release branches,
+  native amd64/arm64 packages, and disposable install, upgrade, root-refusal,
+  removal, and purge cases, with pinned Actions and audit tools.
+- README explains setup, features, and architecture; contributor instructions
+  own coding rules and performance budgets. Dated validation and release status
+  distinguish automated checks from remaining performance and manual acceptance.
+  Historical plans and failed measurements are preserved; raw logs stay ignored.
 
-### Build and verification
+### Fixed
 
-- Keep generated Debian packages and validation artifacts outside the checkout;
-  reject direct or symlinked output paths inside the source tree.
-
-- Keep multiarch transaction fixtures independent of host dpkg administration
-  defaults while still executing and verifying both native package installs.
-
-- Preserve Ubuntu 22.04 system-SQLite compatibility for private backup/recovery.
-  Use the stable snapshot ABI without enabling newer SQL error-offset symbols.
-
-- Build release artifacts through a locked Cargo wrapper that remaps local source,
-  Cargo and home paths while preserving existing compiler flags.
-- Run CI on release branches, use the system Python APT binding, and pin Actions
-  by commit. Add redacted history scans, current dependency advisories and workflow
-  validation with checksum-pinned audit tools.
-- Remove duplicate Debian install/compatibility declarations, correct toolchain
-  prerequisites and repository links, and verify installed root-launch refusal.
+- Process confirmation and Polkit authorization retain a pidfd so PID reuse
+  cannot redirect SIGTERM to another process. Accepted signal delivery is
+  distinguished from confirmed process exit.
+- Duplicate discovery verifies file identity during bounded scans and reports
+  incomplete coverage. Recycled rows and detached checkboxes no longer affect
+  unrelated selections, and callbacks can replace themselves without borrowing
+  panics. Removal remains opt-in.
+- Cleanup restores or retains raced replacements, preserves Trash/recovery
+  destinations, respects custom XDG data-home settings, and supports cancellation
+  during directory review. Cross-filesystem operations remain unavailable.
+- APT preserves architecture-specific selections, protects held, essential,
+  running-kernel, and kernel-tracking packages, and avoids self-update deadlocks.
+  Package mutation is refused if shutdown/sleep inhibition cannot be acquired.
+- Hardware inspection utilities pass command validation, and fixture-tested
+  parsers handle their machine-readable output. Speed-test capability checks run
+  only after confirmation in the worker, keeping Network construction free of I/O.
+- Backup/recovery remains compatible with Ubuntu 22.04's system SQLite through
+  the stable snapshot API. Multiarch fixtures use isolated dpkg configuration
+  while still installing and verifying both real package architectures.
+- Debian packaging removes duplicate declarations and rejects output inside the
+  checkout, including symlinked destinations. Locked release builds remap local
+  source, Cargo, and home paths while preserving existing compiler flags.
 
 ### Privacy
 
-- Default diagnostic reports omit unrestricted service descriptions, journal
-  text, and capability failure details that may contain private system data.
-  Failed previews show a generic message and cannot be copied or saved.
-- Default SQLite storage resolves empty XDG values through HOME, rejects
-  relative paths and symlinked components, and verifies the owned private
-  directory and database inode before migrations. Newer schemas are preserved
-  and rejected rather than silently treated as current.
-
-### Documentation
-
-- Assign setup/commands to README, contributor rules and acceptance to AGENTS,
-  and current evidence to release status. Reconcile installed lifecycle results,
-  verification entry points, prerequisites, and stale CSS design references.
-
-- Group validation evidence by date and keep a short index. Store raw local logs
-  in an ignored `logs/` directory; publish only reviewed reports and measurements.
-
-- Consolidate 15 superseded validation notes and profiler outputs into one dated
-  summary. Preserve failed measurements and the historical archive; repair links
-  in reusable system validation procedures.
-
-- Archive superseded PRDs, implementation plans, designs and research with Git
-  provenance. Repository instructions treat them as historical records; current
-  release status retains unfinished work and validation limits.
-- Correct the threat model and security, compatibility, and accessibility
-  procedures to distinguish current controls, open gaps, and unverified results.
-- Consolidate development plans and research; align README performance ceilings
-  with repository instructions and remove unsupported security guarantees.
-- Add concrete safety decisions, resource limits proposed for validation, and
-  work packages for duplicate-scan integration, report privacy and persistence.
-  Record dependency-overlay uncertainty and preserve installed-test evidence gates.
-- Retain fast, lightweight, native GTK4 GUI as explicit product values; set the
-  next memory milestone below 100 MB combined idle PSS, with profiling experiments
-  and lower exploratory targets. Attainment remains unverified.
-  Runtime privacy and persistence controls are implemented; full privacy and
-  installed acceptance remain unverified.
+- Report exports create private files without replacing existing files or
+  symlinks. Default reports omit unrestricted service descriptions, journal text,
+  and capability details that may expose private data. Failed previews cannot
+  be copied or saved; reports still require review before sharing.
+- SQLite storage validates private owned directories and database identities
+  before migration. Empty XDG values fall back to HOME; relative paths and
+  symlinked components are rejected.
+- Release verification scans reachable history with redacted output, checks
+  dependency advisories, and validates workflows. Reviewed evidence is published
+  separately from private raw logs.
 
 ## [1.2.0] - 2026-08-23
 
@@ -210,6 +182,8 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
     versioned kernel packages the metapackage view collapses.
 
 
+## [1.1.2] - 2026-08-22
+
 ### Added
 
 - Updates page redesign:
@@ -259,6 +233,9 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
     color tokens.
 
 ## [1.1.1] - 2026-08-22
+
+Historical development entry; no `v1.1.1` tag is present. The version link
+points to the original change, which was included in [1.1.2].
 
 ### Fixed
 
@@ -317,8 +294,6 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - hwmon topology and sensor labels are discovered once, so each sample reads
   only the temperature value files.
 
-[1.1.0]: https://github.com/alxxrzfyr/maintainer-app/releases/tag/v1.1.0
-
 ## [1.0.0] - 2026-08-22
 
 First release.
@@ -376,4 +351,10 @@ First release.
 - Idle CPU measured at roughly 0.9% under a software rasterizer, down from
   about 10% before these changes.
 
+[1.3.0]: https://github.com/alxxrzfyr/maintainer-app/releases/tag/v1.3.0
+[1.2.0]: https://github.com/alxxrzfyr/maintainer-app/releases/tag/v1.2.0
+[1.1.3]: https://github.com/alxxrzfyr/maintainer-app/releases/tag/v1.1.3
+[1.1.2]: https://github.com/alxxrzfyr/maintainer-app/releases/tag/v1.1.2
+[1.1.1]: https://github.com/alxxrzfyr/maintainer-app/commit/09b15ee
+[1.1.0]: https://github.com/alxxrzfyr/maintainer-app/releases/tag/v1.1.0
 [1.0.0]: https://github.com/alxxrzfyr/maintainer-app/releases/tag/v1.0.0

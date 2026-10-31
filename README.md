@@ -221,6 +221,7 @@ A short diagnostic or one passing page does not certify the full protocol.
 - [Documentation index](docs/README.md): guides, validation records, and manual checks.
 - [Contributor instructions](AGENTS.md): coding rules, architecture boundaries, and performance budgets.
 - [Release status](docs/release-status.md): current scope, verification evidence, and remaining acceptance work.
+- [Release guide](docs/releasing.md): version preparation, tags, verified artifacts, and publication.
 - [Threat model](docs/threat-model.md): security controls and their limitations.
 - [Changelog](CHANGELOG.md): changes across releases.
 
