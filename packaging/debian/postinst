@@ -1,12 +1,36 @@
 #!/bin/sh
 set -e
 
+# Restore only masks created by this exact package transaction.
+restore_helper_activation() {
+    for service in maintainer-helper maintainer-package-owner; do
+        state=/run/${service}-package-upgrade
+        [ "$service" != maintainer-helper ] || state=/run/maintainer-package-upgrade
+        mask=/run/systemd/system/${service}.service
+        [ -d "$state" ] || continue
+        [ ! -L "$state" ] && [ "$(stat -c '%u:%a' "$state")" = 0:700 ] || return 1
+        [ -f "$state/mask-identity" ] && [ ! -L "$state/mask-identity" ] || return 1
+        if [ -L "$mask" ] && [ "$(readlink "$mask")" = /dev/null ] &&
+           [ "$(stat -c '%d:%i' "$mask")" = "$(cat "$state/mask-identity")" ]; then
+            rm -- "$mask" "$state/mask-identity"
+            rmdir -- "$state"
+            systemctl daemon-reload
+        else
+            echo 'Maintainer activation mask changed; administrator review required.' >&2
+            return 1
+        fi
+    done
+}
+
+trap 'result=$?; restore_helper_activation || result=1; exit "$result"' 0
+# Refresh installed unit metadata while activation remains blocked.
+systemctl daemon-reload
+
 # DEBHELPER#
 
-# Compile GSettings schemas if glib-compile-schemas is available
-if command -v glib-compile-schemas >/dev/null 2>&1; then
-    glib-compile-schemas /usr/share/glib-2.0/schemas/ || true
-fi
+# Installed settings are required for a configured GUI package.
+command -v glib-compile-schemas >/dev/null
+glib-compile-schemas --strict /usr/share/glib-2.0/schemas/
 
 # Update icon cache
 if command -v gtk-update-icon-cache >/dev/null 2>&1; then
@@ -16,9 +40,4 @@ fi
 # Update desktop database
 if command -v update-desktop-database >/dev/null 2>&1; then
     update-desktop-database /usr/share/applications || true
-fi
-
-# Reload PolicyKit so new action definitions are recognized without reboot.
-if systemctl is-active --quiet polkit.service 2>/dev/null; then
-    systemctl restart polkit.service || true
 fi

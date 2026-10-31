@@ -1,0 +1,85 @@
+#!/bin/sh
+set -eu
+
+# Restore only masks created by this exact package transaction.
+restore_helper_activation() {
+    for service in maintainer-helper maintainer-package-owner; do
+        state=/run/${service}-package-upgrade
+        [ "$service" != maintainer-helper ] || state=/run/maintainer-package-upgrade
+        mask=/run/systemd/system/${service}.service
+        [ -d "$state" ] || continue
+        [ ! -L "$state" ] && [ "$(stat -c '%u:%a' "$state")" = 0:700 ] || return 1
+        [ -f "$state/mask-identity" ] && [ ! -L "$state/mask-identity" ] || return 1
+        if [ -L "$mask" ] && [ "$(readlink "$mask")" = /dev/null ] &&
+           [ "$(stat -c '%d:%i' "$mask")" = "$(cat "$state/mask-identity")" ]; then
+            rm -- "$mask" "$state/mask-identity"
+            rmdir -- "$state"
+            systemctl daemon-reload
+        else
+            echo 'Maintainer activation mask changed; administrator review required.' >&2
+            return 1
+        fi
+    done
+}
+
+[ "${1:-}" = upgrade ] || exit 0
+# Activation is blocked while existing work drains; never signal active APT.
+command -v systemctl >/dev/null
+command -v busctl >/dev/null
+command -v timeout >/dev/null
+command -v flock >/dev/null
+[ -d /run/systemd/system ] || { echo 'Upgrade requires a running systemd system.' >&2; exit 1; }
+trap 'result=$?; restore_helper_activation || result=1; exit "$result"' 0
+for service in maintainer-helper maintainer-package-owner; do
+    state=/run/${service}-package-upgrade
+    [ "$service" != maintainer-helper ] || state=/run/maintainer-package-upgrade
+    mask=/run/systemd/system/${service}.service
+    if [ -e "$state" ] || [ -L "$state" ]; then
+        [ -d "$state" ] && [ ! -L "$state" ] &&
+        [ "$(stat -c '%u:%a' "$state")" = 0:700 ] &&
+        [ -f "$state/mask-identity" ] && [ ! -L "$state/mask-identity" ] &&
+        [ -L "$mask" ] && [ "$(readlink "$mask")" = /dev/null ] &&
+        [ "$(stat -c '%d:%i' "$mask")" = "$(cat "$state/mask-identity")" ] || {
+            echo 'Unrecognized Maintainer activation mask requires administrator review.' >&2; exit 1;
+        }
+    elif { [ -L "$mask" ] && [ "$(readlink "$mask")" = /dev/null ]; } ||
+         { [ -L /etc/systemd/system/${service}.service ] && [ "$(readlink /etc/systemd/system/${service}.service)" = /dev/null ]; }; then
+        : # An administrator owns this mask.
+    else
+        mkdir -m 700 "$state"
+        if ! ln -s /dev/null "$mask"; then
+            rmdir "$state"
+            echo 'Cannot safely block Maintainer helper activation.' >&2; exit 1
+        fi
+        stat -c '%d:%i' "$mask" > "$state/mask-identity"
+    fi
+    systemctl daemon-reload
+    effective=$(timeout 5 systemctl show "${service}.service" --property=LoadState --value)
+    [ "$effective" = masked ] || { echo 'Cannot block effective Maintainer helper activation; upgrade refused.' >&2; exit 1; }
+done
+# Orphaned approved backends survive an owner restart. Refuse payload changes
+# while their native lock is held, even if neither D-Bus name is owned.
+transactions=/var/lib/maintainer/transactions
+if [ -e "$transactions" ] || [ -L "$transactions" ]; then
+    [ -d "$transactions" ] && [ ! -L "$transactions" ] &&
+    [ "$(stat -c '%u:%a' "$transactions")" = 0:700 ] || exit 1
+    lock="$transactions/current.lock"
+    [ ! -L "$lock" ] || exit 1
+    exec 9>"$lock"
+    flock -n 9 || { echo 'Maintainer package backend is busy; retry after active work finishes.' >&2; exit 1; }
+fi
+deadline=$(( $(date +%s) + 120 ))
+while :; do
+    idle=true
+    for service in maintainer-helper maintainer-package-owner; do
+        bus=io.github.maintainerapp.Helper
+        [ "$service" != maintainer-package-owner ] || bus=io.github.maintainerapp.PackageOwner
+        active=$(timeout 5 systemctl show "${service}.service" --property=ActiveState --value)
+        pid=$(timeout 5 systemctl show "${service}.service" --property=MainPID --value)
+        owner=$(timeout 5 busctl --system call org.freedesktop.DBus /org/freedesktop/DBus org.freedesktop.DBus NameHasOwner s "$bus")
+        if ! { { [ "$active" = inactive ] || [ "$active" = failed ]; } && [ "$pid" = 0 ] && [ "$owner" = 'b false' ]; }; then idle=false; fi
+    done
+    if [ "$idle" = true ]; then trap - 0; exit 0; fi
+    [ "$(date +%s)" -lt "$deadline" ] || { echo 'Maintainer helper is busy; retry the upgrade after active work finishes.' >&2; exit 1; }
+    sleep 1
+done

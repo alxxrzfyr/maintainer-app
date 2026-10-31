@@ -7,7 +7,7 @@ export CARGO_HOME = $(CURDIR)/debian/.cargo
 	dh $@
 
 override_dh_auto_build:
-	cargo build --workspace --release
+	python3 scripts/build-release.py
 
 override_dh_auto_install:
 	# Application binary
@@ -16,6 +16,8 @@ override_dh_auto_install:
 	# Privileged helper binary
 	install -Dm755 target/release/maintainer-helper \
 		debian/maintainer/usr/libexec/maintainer-helper
+	install -Dm755 scripts/maintainer-apt-backend.py \
+		debian/maintainer/usr/libexec/maintainer-apt-backend.py
 	# Desktop file
 	install -Dm644 data/io.github.maintainerapp.Maintainer.desktop \
 		debian/maintainer/usr/share/applications/io.github.maintainerapp.Maintainer.desktop
@@ -37,6 +39,12 @@ override_dh_auto_install:
 
 	install -Dm644 data/systemd/maintainer-helper.service \
 		debian/maintainer/lib/systemd/system/maintainer-helper.service
+	install -Dm644 data/dbus/io.github.maintainerapp.PackageOwner.service \
+		debian/maintainer/usr/share/dbus-1/system-services/io.github.maintainerapp.PackageOwner.service
+	install -Dm644 data/dbus/io.github.maintainerapp.PackageOwner.conf \
+		debian/maintainer/usr/share/dbus-1/system.d/io.github.maintainerapp.PackageOwner.conf
+	install -Dm644 data/systemd/maintainer-package-owner.service \
+		debian/maintainer/lib/systemd/system/maintainer-package-owner.service
 	# Icons
 	install -Dm644 data/icons/hicolor/scalable/apps/io.github.maintainerapp.Maintainer.svg \
 		debian/maintainer/usr/share/icons/hicolor/scalable/apps/io.github.maintainerapp.Maintainer.svg
@@ -51,7 +59,10 @@ override_dh_auto_install:
 		debian/maintainer/usr/share/maintainer/styles/dark.css
 
 override_dh_auto_test:
-	cargo test --workspace --all-features
+	bash scripts/test-native.sh
+	python3 -W error::ResourceWarning -m unittest discover -s tests/performance -p 'test_*.py'
+	python3 -W error::ResourceWarning -m unittest discover -s tests/release -p 'test_*.py'
+	/usr/bin/python3 -W error::ResourceWarning -m unittest discover -s tests/package_transaction -p 'test_*.py'
 
 override_dh_auto_clean:
 	cargo clean || true

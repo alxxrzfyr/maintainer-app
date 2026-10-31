@@ -31,8 +31,8 @@
 
   <launchable type="desktop-id">io.github.maintainerapp.Maintainer.desktop</launchable>
 
-  <url type="homepage">https://github.com/maintainerapp/maintainer</url>
-  <url type="bugtracker">https://github.com/maintainerapp/maintainer/issues</url>
+  <url type="homepage">https://github.com/alxxrzfyr/maintainer-app</url>
+  <url type="bugtracker">https://github.com/alxxrzfyr/maintainer-app/issues</url>
 
   <provides>
     <binary>maintainer</binary>
@@ -55,6 +55,16 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="1.3.0" date="2026-10-31" type="development">
+      <description>
+        <p>
+          Development candidate with bounded background work, stable process
+          confirmation, duplicate inspection, settings recovery, and private
+          report export. Package operations retain their reviewed native APT
+          plan; file cleanup uses protected quarantine and recoverable outcomes.
+        </p>
+      </description>
+    </release>
     <release version="1.2.0" date="2026-08-23" type="stable">
       <description>
         <p>
@@ -102,10 +112,5 @@
     </release>
   </releases>
 
-  <screenshots>
-    <screenshot type="default">
-      <caption>System overview dashboard showing CPU, memory, and storage</caption>
-      <image type="source" width="1280" height="720">https://raw.githubusercontent.com/maintainerapp/maintainer/main/data/screenshots/overview.png</image>
-    </screenshot>
-  </screenshots>
+
 </component>
