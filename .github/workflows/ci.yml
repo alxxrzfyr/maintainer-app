@@ -2,10 +2,13 @@ name: CI
 
 on:
   push:
-    branches: [main, "feat/**"]
+    branches: [main, "feat/**", "implementation/**", "release/**"]
     tags: ["v*"]
   pull_request:
     branches: [main]
+
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -15,68 +18,31 @@ jobs:
   check:
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Install system dependencies
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install check dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq \
-            libgtk-4-dev \
-            libsqlite3-dev \
-            libpolkit-gobject-1-dev \
-            pkg-config \
-            xvfb
-
-      - name: Install Rust toolchain
-        run: rustup show
-
-      - name: Format check
-        run: cargo fmt --all -- --check
-
-      - name: Clippy
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
-
-      - name: Test
+          sudo apt-get install -y -qq libgtk-4-dev libsqlite3-dev libpolkit-gobject-1-dev pkg-config xvfb xauth dbus-x11 desktop-file-utils appstream fakeroot dpkg-dev python3-apt
+      - run: rustup show
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+      - name: Strict full tests (three passes)
         run: |
-          # GTK is process-global and main-thread-affine. Keep ordinary tests
-          # parallel, then run each native widget regression in its own process
-          # with a real display so GTK cannot leak thread state between tests.
-          cargo test --workspace --all-features -- \
-            --skip regression_tests::storage_apply_state_does_not_reenter_borrowed_state \
-            --skip regression_tests::sidebar_is_fixed_pinned_and_updates_active_destination \
-            --skip regression_tests::update_execution_buttons_follow_transaction_safety
-          xvfb-run -a bash -c '
-            cargo test -p maintainer-app --lib --all-features \
-              regression_tests::storage_apply_state_does_not_reenter_borrowed_state -- --exact &&
-            cargo test -p maintainer-app --lib --all-features \
-              regression_tests::sidebar_is_fixed_pinned_and_updates_active_destination -- --exact &&
-            cargo test -p maintainer-app --lib --all-features \
-              regression_tests::update_execution_buttons_follow_transaction_safety -- --exact
-          '
-
-      - name: Build release
-        run: cargo build --workspace --release
-
-      - name: Validate desktop file
-        run: |
-          sudo apt-get install -y -qq desktop-file-utils
-          desktop-file-validate data/io.github.maintainerapp.Maintainer.desktop
-
-      - name: Validate AppStream metainfo
-        run: |
-          sudo apt-get install -y -qq appstream
-          appstreamcli validate --no-net data/io.github.maintainerapp.Maintainer.metainfo.xml || true
-
-      - name: Compile GSettings schema
-        run: |
-          glib-compile-schemas --strict data/
-          rm -f data/gschemas.compiled
+          for pass in 1 2 3; do
+            echo "Full native and Python test pass $pass/3"
+            bash scripts/test-native.sh
+            /usr/bin/python3 -W error::ResourceWarning -m unittest discover -s tests/performance -p 'test_*.py'
+            /usr/bin/python3 -W error::ResourceWarning -m unittest discover -s tests/release -p 'test_*.py'
+            /usr/bin/python3 -W error::ResourceWarning -m unittest discover -s tests/package_transaction -p 'test_*.py'
+          done
+      - run: python3 scripts/build-release.py
+      - run: desktop-file-validate data/io.github.maintainerapp.Maintainer.desktop
+      - run: appstreamcli validate --no-net data/io.github.maintainerapp.Maintainer.metainfo.xml
+      - run: glib-compile-schemas --strict --dry-run data/
 
   package:
+    name: package-${{ matrix.deb_arch }}
     needs: check
-    # Built natively per architecture rather than cross-compiled, because the
-    # GTK4, GLib, SQLite and Polkit development libraries have to be present
-    # for the target architecture at link time.
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -86,195 +52,79 @@ jobs:
             deb_arch: amd64
           - runner: ubuntu-22.04-arm
             deb_arch: arm64
-    # Required by the "Upload to release" step below: softprops/action-gh-release
-    # creates a release and attaches artifacts, which needs write access to
-    # repository contents. GITHUB_TOKEN defaults to read-only when the
-    # repository or organisation sets read-only workflow permissions, in which
-    # case every build step succeeds and only the upload fails. Scoped to this
-    # job so the other jobs keep the read-only default.
-    permissions:
-      contents: write
-    if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main'
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Install system dependencies
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install build dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq \
-            libgtk-4-dev \
-            libsqlite3-dev \
-            libpolkit-gobject-1-dev \
-            pkg-config \
-            dpkg-dev \
-            fakeroot \
-            debhelper
-
-      - name: Install Rust toolchain
-        run: rustup show
-
-      - name: Build release binaries
-        run: cargo build --workspace --release
-
-      - name: Build .deb package
-        run: |
-          set -e
-          PKG_NAME="maintainer"
-          PKG_VERSION="1.2.0"
-          # Read from dpkg rather than hardcoding, so the package metadata can
-          # never disagree with the architecture the binaries were built for.
-          PKG_ARCH="$(dpkg --print-architecture)"
-          if [ "$PKG_ARCH" != "${{ matrix.deb_arch }}" ]; then
-            echo "Runner architecture $PKG_ARCH does not match expected ${{ matrix.deb_arch }}" >&2
-            exit 1
-          fi
-          PKG_DIR="${PKG_NAME}_${PKG_VERSION}-1_${PKG_ARCH}"
-
-          mkdir -p "${PKG_DIR}/DEBIAN"
-          mkdir -p "${PKG_DIR}/usr/bin"
-          mkdir -p "${PKG_DIR}/usr/libexec"
-          mkdir -p "${PKG_DIR}/usr/share/applications"
-          mkdir -p "${PKG_DIR}/usr/share/metainfo"
-          mkdir -p "${PKG_DIR}/usr/share/glib-2.0/schemas"
-          mkdir -p "${PKG_DIR}/usr/share/dbus-1/system-services"
-          mkdir -p "${PKG_DIR}/usr/share/dbus-1/system.d"
-          mkdir -p "${PKG_DIR}/usr/share/polkit-1/actions"
-          mkdir -p "${PKG_DIR}/lib/systemd/system"
-          mkdir -p "${PKG_DIR}/usr/share/icons/hicolor/scalable/apps"
-          mkdir -p "${PKG_DIR}/usr/share/icons/hicolor/symbolic/apps"
-          mkdir -p "${PKG_DIR}/usr/share/maintainer/styles"
-
-          # Binaries
-          install -m755 target/release/maintainer-app "${PKG_DIR}/usr/bin/maintainer"
-          install -m755 target/release/maintainer-helper "${PKG_DIR}/usr/libexec/maintainer-helper"
-
-          # Data files
-          install -m644 data/io.github.maintainerapp.Maintainer.desktop \
-            "${PKG_DIR}/usr/share/applications/io.github.maintainerapp.Maintainer.desktop"
-          install -m644 data/io.github.maintainerapp.Maintainer.metainfo.xml \
-            "${PKG_DIR}/usr/share/metainfo/io.github.maintainerapp.Maintainer.metainfo.xml"
-          install -m644 data/io.github.maintainerapp.Maintainer.gschema.xml \
-            "${PKG_DIR}/usr/share/glib-2.0/schemas/io.github.maintainerapp.Maintainer.gschema.xml"
-          install -m644 data/dbus/io.github.maintainerapp.Helper.service \
-            "${PKG_DIR}/usr/share/dbus-1/system-services/io.github.maintainerapp.Helper.service"
-          install -m644 data/dbus/io.github.maintainerapp.Helper.conf \
-            "${PKG_DIR}/usr/share/dbus-1/system.d/io.github.maintainerapp.Helper.conf"
-          install -m644 data/polkit/io.github.maintainerapp.policy \
-            "${PKG_DIR}/usr/share/polkit-1/actions/io.github.maintainerapp.policy"
-          install -m644 data/systemd/maintainer-helper.service \
-            "${PKG_DIR}/lib/systemd/system/maintainer-helper.service"
-          install -m644 data/icons/hicolor/scalable/apps/io.github.maintainerapp.Maintainer.svg \
-            "${PKG_DIR}/usr/share/icons/hicolor/scalable/apps/io.github.maintainerapp.Maintainer.svg"
-          install -m644 data/icons/hicolor/symbolic/apps/io.github.maintainerapp.Maintainer-symbolic.svg \
-            "${PKG_DIR}/usr/share/icons/hicolor/symbolic/apps/io.github.maintainerapp.Maintainer-symbolic.svg"
-          install -m644 data/styles/light.css "${PKG_DIR}/usr/share/maintainer/styles/light.css"
-          install -m644 data/styles/dark.css "${PKG_DIR}/usr/share/maintainer/styles/dark.css"
-
-          # DEBIAN control file
-          cat > "${PKG_DIR}/DEBIAN/control" <<EOF
-          Package: maintainer
-          Version: ${PKG_VERSION}-1
-          Architecture: ${PKG_ARCH}
-          Maintainer: Alex Berin <maintainer@maintainerapp.io>
-          Depends: libgtk-4-1 (>= 4.6), libglib2.0-0 (>= 2.72), libsqlite3-0, polkitd | policykit-1, systemd
-          Recommends: packagekit, udisks2
-          Suggests: flatpak, fwupd
-          Section: admin
-          Priority: optional
-          Homepage: https://github.com/maintainerapp/maintainer
-          Description: System monitor and maintenance tool for Ubuntu-based Linux
-           Maintainer is a modern, lightweight native desktop application for
-           monitoring, maintaining, diagnosing, and understanding Ubuntu-based
-           Linux computers.
-           .
-           The GUI always runs unprivileged. No permanent daemon. No telemetry.
-          EOF
-
-          # Strip leading whitespace from heredoc
-          sed -i 's/^          //' "${PKG_DIR}/DEBIAN/control"
-
-          # Maintainer scripts
-          install -m755 packaging/debian/postinst "${PKG_DIR}/DEBIAN/postinst"
-          install -m755 packaging/debian/postrm "${PKG_DIR}/DEBIAN/postrm"
-
-          # Build the package
-          fakeroot dpkg-deb --build "${PKG_DIR}"
-
-          echo "Built: ${PKG_DIR}.deb"
-          dpkg-deb --info "${PKG_DIR}.deb"
-
-      - name: Generate checksums
-        run: |
-          # Named per architecture: both matrix jobs attach files to the same
-          # release, and a shared SHA256SUMS would have one arch overwrite the
-          # other.
-          sha256sum maintainer_*.deb > "SHA256SUMS-${{ matrix.deb_arch }}"
-          cat "SHA256SUMS-${{ matrix.deb_arch }}"
-
-      - name: Upload .deb artifact
-        uses: actions/upload-artifact@v4
+          sudo apt-get install -y -qq libgtk-4-dev libsqlite3-dev libpolkit-gobject-1-dev pkg-config dpkg-dev fakeroot
+      - run: rustup show
+      - run: python3 scripts/build-release.py
+      - name: Package once for this architecture
+        env:
+          EXPECTED_DEB_ARCH: ${{ matrix.deb_arch }}
+        run: bash scripts/build-package.sh
+      - name: Record candidate checksums
+        run: sha256sum maintainer_*.deb > SHA256SUMS-${{ matrix.deb_arch }}
+      - name: Bind source and immutable candidate
+        env:
+          DEB_ARCH: ${{ matrix.deb_arch }}
+        run: python3 scripts/validate-candidate.py manifest . "$DEB_ARCH"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: maintainer-deb-${{ matrix.deb_arch }}
+          if-no-files-found: error
           path: |
             maintainer_*.deb
             SHA256SUMS-${{ matrix.deb_arch }}
+            SOURCE-${{ matrix.deb_arch }}.json
+            Cargo.lock
 
-      - name: Upload to release
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
+  installed-artifact:
+    name: installed-${{ matrix.deb_arch }}
+    needs: package
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            deb_arch: amd64
+          - runner: ubuntu-22.04-arm
+            deb_arch: arm64
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          files: |
-            maintainer_*.deb
-            SHA256SUMS-${{ matrix.deb_arch }}
-
-  smoke-test:
-    needs: check
-    runs-on: ubuntu-22.04
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq \
-            libgtk-4-dev \
-            libsqlite3-dev \
-            libpolkit-gobject-1-dev \
-            pkg-config \
-            xvfb
-
-      - name: Install Rust toolchain
-        run: rustup show
-
-      - name: Run release smoke test
-        run: tests/system/release-smoke.sh
-
-  performance:
-    needs: check
-    runs-on: ubuntu-22.04
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq \
-            libgtk-4-dev \
-            libsqlite3-dev \
-            libpolkit-gobject-1-dev \
-            pkg-config \
-            xvfb \
-            bc
-
-      - name: Install Rust toolchain
-        run: rustup show
-
-      - name: Build release
-        run: cargo build --workspace --release
-
-      - name: Measure performance (short sample)
+          name: maintainer-deb-${{ matrix.deb_arch }}
+          path: candidate
+      - name: Download mandatory previous release artifact
         env:
-          PERF_DURATION_SECS: "30"
-          PERF_SETTLE_SECS: "10"
-        run: scripts/measure-performance.sh target/release/maintainer-app
+          GH_TOKEN: ${{ github.token }}
+          DEB_ARCH: ${{ matrix.deb_arch }}
+        run: |
+          mkdir previous
+          # Latest published release must predate this candidate. The installed
+          # test rejects equal/newer versions and requires a real upgrade.
+          gh release download --repo "$GITHUB_REPOSITORY" --pattern "maintainer_*_${DEB_ARCH}.deb" --dir previous
+          test "$(find previous -name '*.deb' | wc -l)" -eq 1
+      - name: Install disposable runner test dependencies
+        run: |
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq dbus-x11 policykit-1 xvfb xauth desktop-file-utils appstream python3 libgtk-4-1
+          sudo systemctl start dbus polkit
+      - name: Verify exact artifact install, upgrade, unprivileged readiness, remove and purge
+        env:
+          DEB_ARCH: ${{ matrix.deb_arch }}
+        run: |
+          (cd candidate && sha256sum --check "SHA256SUMS-${DEB_ARCH}")
+          test "$(find candidate -name '*.deb' | wc -l)" -eq 1
+          sudo env MAINTAINER_PACKAGE_TEST_DISPOSABLE=1 bash scripts/test-package.sh candidate/*.deb --previous-deb previous/*.deb
+          (cd candidate && sha256sum --check "SHA256SUMS-${DEB_ARCH}")
+      - name: Preserve installed-validated bytes and source manifest
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: maintainer-validated-${{ matrix.deb_arch }}
+          if-no-files-found: error
+          path: candidate/*

@@ -1,0 +1,26 @@
+name: Native candidate gate
+
+on:
+  push:
+    branches: ["release/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  local-equivalent:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install validation dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libgtk-4-dev libsqlite3-dev libpolkit-gobject-1-dev pkg-config xvfb xauth dbus-x11 desktop-file-utils appstream fakeroot dpkg-dev python3-apt
+      - name: Bind native tests, source and exact package bytes
+        run: python3 scripts/check-release-local.py build "$RUNNER_TEMP/maintainer-candidate"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: native-candidate
+          if-no-files-found: error
+          path: ${{ runner.temp }}/maintainer-candidate/

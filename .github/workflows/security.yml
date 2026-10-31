@@ -1,0 +1,44 @@
+name: Security and workflow audit
+
+on:
+  push:
+    branches: [main, "feat/**", "implementation/**", "release/**"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  security:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Obtain pinned audit tools
+        working-directory: ${{ runner.temp }}
+        run: |
+          curl --fail --silent --show-error --location --proto '=https' -o gitleaks.tar.gz https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+          echo '551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  gitleaks.tar.gz' | sha256sum --check
+          curl --fail --silent --show-error --location --proto '=https' -o actionlint.tar.gz https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+          echo '8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  actionlint.tar.gz' | sha256sum --check
+          curl --fail --silent --show-error --location --proto '=https' -o cargo-audit.tar.gz https://github.com/rustsec/rustsec/releases/download/cargo-audit/v0.22.2/cargo-audit-x86_64-unknown-linux-musl-v0.22.2.tgz
+          echo '7fb9497f8594b389e5fce5ef9b92db08432996895b2e0c5a0167a69ed445c428  cargo-audit.tar.gz' | sha256sum --check
+          tar -xzf gitleaks.tar.gz gitleaks
+          tar -xzf actionlint.tar.gz actionlint
+          tar -xzf cargo-audit.tar.gz --strip-components=1 cargo-audit-x86_64-unknown-linux-musl-v0.22.2/cargo-audit
+      - name: Scan reachable history without exposing matched secrets
+        env:
+          AUDIT_TOOLS: ${{ runner.temp }}
+        run: '"$AUDIT_TOOLS/gitleaks" git --redact --log-opts="--all"'
+      - name: Validate workflow syntax and shell steps
+        env:
+          AUDIT_TOOLS: ${{ runner.temp }}
+        run: '"$AUDIT_TOOLS/actionlint"'
+      - name: Check locked dependencies against current RustSec advisories
+        env:
+          AUDIT_TOOLS: ${{ runner.temp }}
+        run: '"$AUDIT_TOOLS/cargo-audit" audit'
