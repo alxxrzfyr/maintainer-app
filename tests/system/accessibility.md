@@ -37,4 +37,4 @@ Contrast figures are review targets from the existing checklist, not evidence of
 
 ## Retain results
 
-After testing, save a dated report under `docs/validation/` with case/page, input sequence, expected/actual behavior, screenshots or spoken observations where useful, sanitized evidence, defect ID, operator and reviewer. Use pass/fail/unverified/not-applicable with reasons. Do not invent results or delete failing cases to obtain sign-off.
+After testing, save a dated report under `docs/validation/YYYY-MM-DD/report.md` with case/page, input sequence, expected/actual behavior, screenshots or spoken observations where useful, sanitized evidence, defect ID, operator and reviewer. Use pass/fail/unverified/not-applicable with reasons. Do not invent results or delete failing cases to obtain sign-off.

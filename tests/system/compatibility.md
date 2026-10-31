@@ -42,4 +42,4 @@ Do not call an intentionally unavailable capability a product failure when that 
 
 ## Retain results
 
-Save a dated report under `docs/validation/` after the run, with environment IDs, package checksum, actions/commands, expected/actual behavior, sanitized evidence, issue links, operator and reviewer. Record D10/M0-M6 results with whole-app PSS, renderer, scaling, all-pages-visited and after-job idle states; a short Xvfb survival test is insufficient. This file remains a reusable procedure and must not accumulate undated checkmarks.
+Save a dated report under `docs/validation/YYYY-MM-DD/report.md` after the run, with environment IDs, package checksum, actions/commands, expected/actual behavior, sanitized evidence, issue links, operator and reviewer. Record D10/M0-M6 results with whole-app PSS, renderer, scaling, all-pages-visited and after-job idle states; a short Xvfb survival test is insufficient. This file remains a reusable procedure and must not accumulate undated checkmarks.

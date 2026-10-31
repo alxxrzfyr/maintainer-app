@@ -33,3 +33,7 @@ gschemas.compiled
 .gstack/
 /SHA256SUMS-*
 /SOURCE-*.json
+
+# Private raw logs; only the storage guide is public
+/logs/*
+!/logs/README.md

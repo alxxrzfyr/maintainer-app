@@ -143,6 +143,10 @@ Code is the source of truth for UI structure and styling; the CSS in
 security, performance, or platform contract, update `README.md` and
 `CHANGELOG.md` in the same change.
 
+Validation reports use `docs/validation/YYYY-MM-DD/report.md`, with reviewed
+measurements beside them. Keep raw local output under ignored `logs/YYYY-MM-DD/`;
+never force-add logs. Build packages and candidate bundles outside the checkout.
+
 ### Historical documents
 
 `docs/archive/` contains historical plans, PRDs, specifications, research, and

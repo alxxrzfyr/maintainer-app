@@ -6,7 +6,7 @@ Run privileged/destructive cases only in a disposable VM with a recoverable snap
 
 ## Record a result
 
-Create a dated result under `docs/validation/` only after testing. Record package SHA-256, commit, dirty state, distro/kernel/GTK, display/renderer, Polkit version and effective rules, account/session class, operator and date. Per case record command/action, expected result, actual result and sanitized evidence. Use `pass`, `fail`, `unverified`, or `not applicable` with a reason. Missing services or tools do not count as a pass.
+Create a dated result under `docs/validation/YYYY-MM-DD/report.md` only after testing. Record package SHA-256, commit, dirty state, distro/kernel/GTK, display/renderer, Polkit version and effective rules, account/session class, operator and date. Per case record command/action, expected result, actual result and sanitized evidence. Use `pass`, `fail`, `unverified`, or `not applicable` with a reason. Missing services or tools do not count as a pass.
 
 ## Identity, authorization and packaging
 

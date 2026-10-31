@@ -1,22 +1,14 @@
-# Maintainer documentation
-
-[Release status](release-status.md) records remaining work, validation evidence,
-and release gates. Archiving a plan does not complete its unfinished tasks.
+# Documentation
 
 | Document | Purpose |
 |---|---|
-| [Release status](release-status.md) | Current handoff, remaining validation and evidence |
-| [Threat model](threat-model.md) | Current controls, open threats and evidence requirements |
-| [Validation records](validation/) | Actual observations and their environment and limitations |
-| [Historical archive](archive/README.md) | Superseded plans, PRD, specifications, research and release draft |
+| [Release status](release-status.md) | Current scope, blockers and acceptance |
+| [Threat model](threat-model.md) | Trust boundaries, controls and remaining risks |
+| [Validation](validation/README.md) | Dated reports and reviewed measurements |
+| [Archive](archive/README.md) | Historical records; not current requirements |
+| [Local logs](../logs/README.md) | Raw output kept private and ignored by Git |
 
-Product behavior and release history are in [README](../README.md) and
-[CHANGELOG](../CHANGELOG.md). Reusable [security](../tests/system/security.md),
-[compatibility](../tests/system/compatibility.md) and
-[accessibility](../tests/system/accessibility.md) procedures remain beside the
-system tests; a procedure alone is not a completed result.
-
-Keep this index, release status, threat model, and referenced procedures current.
-Record validation with the tested revision/artifact, environment, commands,
-observations, and limitations. Historical archive documents are not current
-requirements, repository instructions, or an active task queue.
+Product/setup: [README](../README.md). Release history: [CHANGELOG](../CHANGELOG.md).
+Manual procedures: [security](../tests/system/security.md),
+[compatibility](../tests/system/compatibility.md),
+[accessibility](../tests/system/accessibility.md).

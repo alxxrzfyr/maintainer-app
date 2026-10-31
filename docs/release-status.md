@@ -28,9 +28,9 @@ and bind a native candidate to source and exact package bytes.
 
 ## Evidence and acceptance
 
-The [November audit](validation/2026-11-01-release-audit.md) records concrete
+The [November audit](validation/2026-11-01/report.md) records concrete
 commands, observations, cleanup and review limitations. Earlier failed experiments
-are consolidated in the [October summary](validation/2026-10-31-summary.md), with
+are consolidated in the [October summary](validation/2026-10-31/report.md), with
 representative raw records retained. Historical counts and hashes do not prove
 that a later revision passes.
 
@@ -56,7 +56,7 @@ performance or interactive authorization.
 
 ## Latest local hardware result
 
-The [November hardware sample](validation/2026-11-01-hardware.json) recorded
+The [November hardware sample](validation/2026-11-01/hardware.json) recorded
 0.62968% CPU over 300 seconds, failing the 0.35% preferred target and the strictly
 below 0.5% fallback. Usable startup was 1,870 ms, peak PSS 74,650,624 bytes and
 private dirty 33,456,128 bytes. Those limits passed in this one hardware sample;

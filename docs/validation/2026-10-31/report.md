@@ -10,11 +10,11 @@ does not turn failed or incomplete checks into passes.
 | Early hardware candidate | 2.83823% CPU; 2,013 ms usable startup over 300 seconds | Both budgets failed |
 | Packaged early candidate | Clean exit after about 225 seconds; 102,222,848 bytes observed peak PSS | Incomplete; observed memory exceeded 100 MB |
 | Before retained sensor descriptors | 0.55645% CPU over 300 seconds | CPU fallback failed |
-| Retained sensor descriptors | 0.53639% CPU; 1,376 ms startup; 76,537,856 bytes peak PSS | CPU fallback failed; [raw measurement](2026-10-31-final-hardware.json) and [GPU evidence](2026-10-31-final-gpu.json) retained |
+| Retained sensor descriptors | 0.53639% CPU; 1,376 ms startup; 76,537,856 bytes peak PSS | CPU fallback failed; [raw measurement](hardware.json) and [GPU evidence](gpu.json) retained |
 | Custom metric text prototypes | 0.97616% CPU without layout reuse; 0.91285% with reuse | Rejected and removed; native GtkLabel retained |
-| Final native candidate | 0.61631% CPU; 2,096 ms startup over 300 seconds | Both budgets failed; [raw measurement](2026-10-31-final-native.json) retained |
+| Final native candidate | 0.61631% CPU; 2,096 ms startup over 300 seconds | Both budgets failed; [raw measurement](native.json) retained |
 | Explicit alternate GL backend | 0.48194% CPU over only 60 seconds; 8,347 ms startup; 113,891,328 bytes PSS | Startup/memory failed; short diagnostic, not adopted |
-| Software renderer | 1.96250% CPU over 300 seconds | Cannot certify hardware acceptance; [raw diagnostic](2026-10-31-software-session.json) retained |
+| Software renderer | 1.96250% CPU over 300 seconds | Cannot certify hardware acceptance; [raw diagnostic](software.json) retained |
 | Inactive-session and initial-launch attempts | Measurement environment errors | Neither a pass nor a demonstrated application crash |
 
 Earlier test inventories included 868 tests before additional integration-target
@@ -25,5 +25,5 @@ software on the personal host. Installed authorization, upgrades, accessibility,
 cold boot, full page/scale/hidden-state performance and broader hardware remained
 unverified.
 
-Use [release status](../release-status.md) and its current evidence links for
-the release decision. Historical plans remain in the [archive](../archive/README.md).
+Use [release status](../../release-status.md) and its current evidence links for
+the release decision. Historical plans remain in the [archive](../../archive/README.md).

@@ -75,6 +75,9 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Documentation
 
+- Group validation evidence by date and keep a short index. Store raw local logs
+  in an ignored `logs/` directory; publish only reviewed reports and measurements.
+
 - Consolidate 15 superseded validation notes and profiler outputs into one dated
   summary. Preserve failed measurements and the historical archive; repair links
   in reusable system validation procedures.
