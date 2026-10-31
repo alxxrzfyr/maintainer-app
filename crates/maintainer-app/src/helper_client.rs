@@ -35,6 +35,10 @@ pub enum HelperCallError {
     ValidationFailed(String),
     /// Operation failed after authorization.
     OperationFailed(String),
+    /// The retained target exited.
+    ProcessVanished,
+    /// The kernel cannot provide stable process references.
+    ProcessUnavailable,
     /// Helper is at capacity.
     Busy,
 }
@@ -46,17 +50,31 @@ pub enum HelperCallError {
 #[derive(Debug, Clone, Default)]
 pub struct HelperClient {
     _private: (),
+    #[cfg(test)]
+    test_bus_address: Option<String>,
 }
 
 impl HelperClient {
     /// Create a new client. Does not connect immediately.
     pub fn new() -> Self {
-        Self { _private: () }
+        Self::default()
     }
 
-    /// Terminate a process by PID with start-time verification.
-    pub fn terminate_process(&self, pid: u32, start_time_ticks: u64) -> HelperResult {
-        self.call_method("TerminateProcess", &(pid, start_time_ticks))
+    /// Transport the retained review descriptor; never reopen by numeric PID.
+    pub fn terminate_process(
+        &self,
+        handle: maintainer_core::metrics::ProcessHandle,
+    ) -> HelperResult {
+        use std::os::fd::AsFd;
+        let fd = zbus::zvariant::Fd::from(handle.as_fd());
+        self.call_method(
+            "TerminateProcess",
+            &(
+                handle.identity().pid,
+                handle.identity().start_time_ticks,
+                fd,
+            ),
+        )
     }
 
     /// Clean the APT package cache.
@@ -74,9 +92,13 @@ impl HelperClient {
         self.call_method("RefreshSmart", &(drive_id.to_string(),))
     }
 
-    /// Remove an old kernel package via the privileged helper.
-    pub fn remove_kernel(&self, package_name: &str) -> HelperResult {
-        self.call_method("RemoveKernel", &(package_name.to_string(),))
+    /// Deny before contacting an installed helper that may predate the safety gate.
+    pub fn remove_kernel(&self, _package_name: &str) -> HelperResult {
+        Capability::Unavailable(UnavailableReason {
+            code: "package-execution-unavailable",
+            message: maintainer_core::updates::PACKAGE_EXECUTION_UNAVAILABLE_REASON.to_string(),
+            remediation: None,
+        })
     }
 
     /// Make a blocking D-Bus method call and classify the result.
@@ -118,6 +140,18 @@ impl HelperClient {
                     remediation: None,
                 })
             }
+            Err(HelperCallError::ProcessUnavailable) => {
+                Capability::Unavailable(UnavailableReason {
+                    code: "stable-process-unavailable",
+                    message: "Stable process references are unavailable in the helper.".into(),
+                    remediation: None,
+                })
+            }
+            Err(HelperCallError::ProcessVanished) => Capability::Unavailable(UnavailableReason {
+                code: "process-vanished",
+                message: "The reviewed process has exited; no signal was sent.".into(),
+                remediation: None,
+            }),
             Err(HelperCallError::Busy) => Capability::Unavailable(UnavailableReason {
                 code: "helper-busy",
                 message: "The helper is processing the maximum number of concurrent requests."
@@ -131,7 +165,15 @@ impl HelperClient {
     where
         A: serde::Serialize + zbus::zvariant::DynamicType,
     {
-        let connection = zbus::blocking::Connection::system().map_err(|e| {
+        #[cfg(test)]
+        let connection_result = match self.test_bus_address.as_deref() {
+            Some(address) => zbus::blocking::connection::Builder::address(address)
+                .and_then(|builder| builder.build()),
+            None => zbus::blocking::Connection::system(),
+        };
+        #[cfg(not(test))]
+        let connection_result = zbus::blocking::Connection::system();
+        let connection = connection_result.map_err(|e| {
             HelperCallError::Unavailable(format!("cannot connect to system bus: {e}"))
         })?;
 
@@ -156,6 +198,12 @@ fn classify_dbus_error(err: zbus::Error, method: &str) -> HelperCallError {
 /// Classify an error message body, split out so the mapping can be tested
 /// without constructing live D-Bus errors.
 fn classify_message(msg: &str, method: &str) -> HelperCallError {
+    if msg.contains("UnixProcessIdUnknown") {
+        return HelperCallError::ProcessVanished;
+    }
+    if msg.contains("NotSupported") {
+        return HelperCallError::ProcessUnavailable;
+    }
     if msg.contains("ServiceUnknown")
         || msg.contains("org.freedesktop.DBus.Error.ServiceUnknown")
         || msg.contains("NameHasNoOwner")
@@ -216,19 +264,52 @@ pub fn create_helper_client() -> SharedHelperClient {
 mod tests {
     use super::*;
 
-    /// Without an activatable helper the call must refuse, but which refusal
-    /// depends on the machine: with no reachable system bus the name cannot be
-    /// resolved and the result is `Unavailable`, while on a desktop with a bus
-    /// and Polkit present the authorization is refused first and the result is
-    /// `PermissionRequired`. Both are correct; succeeding would not be.
-    ///
-    /// `terminate_process` is safe to call for real here: it targets a PID
-    /// that cannot exist, so `PidReuse`/`AlreadyExited` is the worst outcome
-    /// even if a real helper is installed and the action is authorized.
+    fn unreachable_client() -> HelperClient {
+        HelperClient {
+            test_bus_address: Some("unix:path=/dev/null/maintainer-test-bus".into()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn kernel_removal_is_unavailable_before_any_bus_or_authorization_attempt() {
+        for name in ["linux-image-6.5.0-35-generic", "invalid", ""] {
+            assert!(matches!(unreachable_client().remove_kernel(name),
+                Capability::Unavailable(reason) if reason.code == "package-execution-unavailable"
+                    && reason.message == maintainer_core::updates::PACKAGE_EXECUTION_UNAVAILABLE_REASON
+            ));
+        }
+    }
+
+    #[test]
+    fn process_vanished_is_distinct_from_permissions_and_unavailability() {
+        assert!(matches!(
+            classify_message(
+                "org.freedesktop.DBus.Error.UnixProcessIdUnknown: exited",
+                "TerminateProcess"
+            ),
+            HelperCallError::ProcessVanished
+        ));
+        assert!(matches!(
+            classify_message(
+                "org.freedesktop.DBus.Error.NotSupported",
+                "TerminateProcess"
+            ),
+            HelperCallError::ProcessUnavailable
+        ));
+        assert!(matches!(
+            classify_message(
+                "org.freedesktop.DBus.Error.AccessDenied",
+                "TerminateProcess"
+            ),
+            HelperCallError::PermissionDenied(_)
+        ));
+    }
+
     #[test]
     fn client_refuses_without_activatable_helper() {
-        let client = HelperClient::new();
-        let result = client.terminate_process(1234, 99999);
+        let client = unreachable_client();
+        let result = client.clean_package_cache("unreachable-test");
         assert!(
             matches!(
                 result,
@@ -238,19 +319,9 @@ mod tests {
         );
     }
 
-    /// `clean-package-cache` resolves to `yes` for an active local session
-    /// (Recommendation: it only discards files APT can refetch, so no
-    /// password is required — see `data/polkit/io.github.maintainerapp.policy`).
-    /// A developer machine with the helper installed will therefore execute
-    /// this operation for real rather than refusing it, which makes it unsafe
-    /// to assert a refusal unconditionally: this test previously ran a live
-    /// `apt-get clean` against the machine running the test suite whenever the
-    /// bus policy and Polkit policy were installed. Both outcomes are
-    /// legitimate depending on whether a helper is reachable and authorized,
-    /// so only structural properties of the response are checked.
     #[test]
     fn client_package_cache_does_not_panic_without_activatable_helper() {
-        let client = HelperClient::new();
+        let client = unreachable_client();
         let result = client.clean_package_cache("test-req-1");
         match result {
             Capability::Unavailable(_) | Capability::PermissionRequired(_) => {}
@@ -264,14 +335,9 @@ mod tests {
         }
     }
 
-    /// `vacuum-journal` is `auth_admin`, not retained, so an unattended test
-    /// run cannot supply a password and the call cannot succeed even with a
-    /// real, authorized helper present. Refusal is the only legitimate
-    /// outcome, and this assertion is safe to keep because that gate is by
-    /// design (see the systemd/Polkit policy for this action).
     #[test]
     fn client_vacuum_journal_refuses_without_activatable_helper() {
-        let client = HelperClient::new();
+        let client = unreachable_client();
         let result = client.vacuum_journal(500, 30);
         assert!(
             matches!(
@@ -283,15 +349,9 @@ mod tests {
         );
     }
 
-    /// `refresh-smart` resolves to `yes` for an active local session, the
-    /// same reasoning as the package-cache case above: a real, reachable
-    /// helper will execute it rather than refuse, and refusal is not the only
-    /// legitimate outcome. `refresh_smart` only re-reads drive health over
-    /// D-Bus and changes no state, so allowing it to run for real here is
-    /// safe.
     #[test]
     fn client_refresh_smart_does_not_panic_without_activatable_helper() {
-        let client = HelperClient::new();
+        let client = unreachable_client();
         let result = client.refresh_smart("test-drive-id");
         match result {
             Capability::Unavailable(_) | Capability::PermissionRequired(_) => {}

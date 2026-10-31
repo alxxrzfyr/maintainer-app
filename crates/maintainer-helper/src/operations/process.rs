@@ -1,126 +1,68 @@
-//! Process termination with PID reuse prevention.
-//!
-//! Always sends SIGTERM. Never exposes signal selection.
-//! Validates process start time immediately before kill to prevent
-//! sending signals to a recycled PID.
+//! SIGTERM delivery through a descriptor retained across review and Polkit.
 
-use std::fs;
-use std::io;
+use std::os::fd::BorrowedFd;
+
+use maintainer_core::metrics::ProcessIdentity;
+use maintainer_core::metrics::terminate::{ProcessHandleError, send_sigterm, validate_reference};
 
 use crate::api::{HelperError, OperationResponse, TerminateProcessRequest};
 
-/// Read the start time (field 22, `starttime`) from `/proc/<pid>/stat`.
-///
-/// Returns `None` if the process does not exist or the file cannot be parsed.
-pub fn read_process_start_time(pid: u32) -> Result<u64, HelperError> {
-    let stat_path = format!("/proc/{pid}/stat");
-    let contents = fs::read_to_string(&stat_path).map_err(|e| match e.kind() {
-        io::ErrorKind::NotFound => HelperError::OperationFailed {
-            reason: format!("process {pid} does not exist"),
+fn process_error(error: ProcessHandleError) -> HelperError {
+    match error {
+        ProcessHandleError::InvalidIdentity => HelperError::ValidationFailed {
+            reason: error.to_string(),
         },
-        io::ErrorKind::PermissionDenied => HelperError::OperationFailed {
-            reason: format!("permission denied reading /proc/{pid}/stat"),
+        ProcessHandleError::IdentityChanged => HelperError::PidReuse,
+        ProcessHandleError::Vanished => HelperError::ProcessVanished,
+        ProcessHandleError::Unavailable => HelperError::ProcessUnavailable,
+        ProcessHandleError::PermissionRequired => HelperError::AuthorizationDenied {
+            action: crate::api::actions::TERMINATE_PROCESS.into(),
         },
         _ => HelperError::OperationFailed {
-            reason: format!("failed to read /proc/{pid}/stat: {e}"),
+            reason: error.to_string(),
         },
-    })?;
-
-    parse_start_time(&contents).ok_or_else(|| HelperError::OperationFailed {
-        reason: format!("failed to parse start time from /proc/{pid}/stat"),
-    })
+    }
 }
 
-/// Parse start time from the contents of `/proc/<pid>/stat`.
-///
-/// Field 22 (0-indexed from the end of the comm field in parens) is `starttime`.
-/// The comm field (field 2) is enclosed in parentheses and may contain spaces or
-/// other special characters, so we find the last `)` to split reliably.
-fn parse_start_time(stat_contents: &str) -> Option<u64> {
-    let after_comm = stat_contents.rfind(')')? + 1;
-    let remainder = stat_contents.get(after_comm..)?;
-
-    // Fields after comm: state(3), ppid(4), pgrp(5), session(6), tty_nr(7),
-    let fields: Vec<&str> = remainder.split_whitespace().collect();
-    // Field index 19 after `)` = starttime (field 22 in 1-based /proc stat)
-    let start_time_str = fields.get(19)?;
-    start_time_str.parse::<u64>().ok()
-}
-
-/// Execute process termination with start-time revalidation.
-///
-/// # Safety contract
-///
-/// This function sends SIGTERM to a process. It re-reads the process start time
-/// immediately before the kill syscall to prevent PID reuse attacks.
-pub fn execute_terminate(
+/// Reject forged descriptors or mismatched metadata before prompting Polkit.
+pub fn validate_handle(
     request: &TerminateProcessRequest,
-) -> Result<OperationResponse, HelperError> {
-    let current_start_time = read_process_start_time(request.pid)?;
+    fd: BorrowedFd<'_>,
+) -> Result<(), HelperError> {
+    validate_reference(
+        fd,
+        &ProcessIdentity {
+            pid: request.pid,
+            start_time_ticks: request.start_time_ticks,
+        },
+    )
+    .map(|_| ())
+    .map_err(process_error)
+}
 
-    if current_start_time != request.start_time_ticks {
-        return Err(HelperError::PidReuse);
-    }
-
-    let result = unsafe { libc::kill(request.pid as libc::pid_t, libc::SIGTERM) };
-
-    if result == 0 {
-        Ok(OperationResponse {
-            success: true,
-            message: format!("SIGTERM sent to pid {}", request.pid),
-        })
-    } else {
-        let errno = io::Error::last_os_error();
-        Err(HelperError::OperationFailed {
-            reason: format!("kill({}, SIGTERM) failed: {errno}", request.pid),
-        })
-    }
+pub fn execute_terminate(fd: BorrowedFd<'_>) -> Result<OperationResponse, HelperError> {
+    send_sigterm(fd).map_err(process_error)?;
+    Ok(OperationResponse {
+        success: true,
+        message: "SIGTERM accepted by the kernel; process exit is not yet confirmed.".into(),
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::fd::AsFd;
 
     #[test]
-    fn parse_start_time_normal_comm() {
-        // Simulated /proc/1234/stat content
-        let stat = "1234 (bash) S 1233 1234 1234 0 -1 4194304 1000 0 0 0 10 5 0 0 20 0 1 0 98765 10000000 500 18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0";
-        let start_time = parse_start_time(stat);
-        assert_eq!(start_time, Some(98765));
-    }
-
-    #[test]
-    fn parse_start_time_comm_with_spaces() {
-        let stat = "5678 (Web Content) S 5600 5678 5600 0 -1 4194304 2000 0 0 0 50 10 0 0 20 0 4 0 54321 20000000 1000 18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0";
-        let start_time = parse_start_time(stat);
-        assert_eq!(start_time, Some(54321));
-    }
-
-    #[test]
-    fn parse_start_time_comm_with_parens() {
-        let stat = "9999 (foo (bar)) S 9998 9999 9998 0 -1 4194304 500 0 0 0 5 2 0 0 20 0 1 0 11111 5000000 250 18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0";
-        let start_time = parse_start_time(stat);
-        assert_eq!(start_time, Some(11111));
-    }
-
-    #[test]
-    fn parse_start_time_empty_string() {
-        assert_eq!(parse_start_time(""), None);
-    }
-
-    #[test]
-    fn parse_start_time_truncated() {
-        let stat = "1234 (bash) S 1233";
-        assert_eq!(parse_start_time(stat), None);
-    }
-
-    #[test]
-    fn execute_terminate_detects_nonexistent_process() {
+    fn arbitrary_descriptor_cannot_enter_authorization() {
+        let file = std::fs::File::open("/dev/null").unwrap();
         let request = TerminateProcessRequest {
-            pid: 999_999_999,
-            start_time_ticks: 12345,
+            pid: std::process::id(),
+            start_time_ticks: 1,
         };
-        let result = execute_terminate(&request);
-        assert!(result.is_err());
+        assert!(matches!(
+            validate_handle(&request, file.as_fd()),
+            Err(HelperError::ValidationFailed { .. })
+        ));
     }
 }
