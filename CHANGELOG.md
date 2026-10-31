@@ -9,6 +9,13 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Changed
 
+- Run Diagnostics hardware collection once in a bounded worker instead of GTK
+  constructors. Show loading, collection failures, and evidence-based hardware
+  values; report unprobed acceleration and missing USB/DMI fields honestly.
+- Allow hardware inspection tools through the command boundary and parse their
+  machine-readable output with fixtures. Extract shell feature wiring, simplify
+  kernel grouping, and replace theme/installer source checks with behavior tests.
+
 - Target 0.35% average idle CPU, with the user-approved fallback strictly below
   0.5%. Enforce full precision; exactly 0.5% is a failure.
 - Skip redundant network labels and storage style changes. Preallocate growing
@@ -41,8 +48,9 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   XDG data-home settings, and directory review responds to cancellation.
 - Make the same-machine release gate authoritative: three complete native/Python
   test passes, native builds and exact package/source/lock/runtime hashes. No
-  second system or hosted CI is required. CI remains optional; untested platforms
-  and installed upgrades remain unverified. No release has been published.
+  host package installation is performed. Hosted CI independently checks the
+  pushed source and disposable amd64/arm64 package lifecycle. Manual acceptance
+  remains separate. No release has been published.
 
 ### Build and verification
 
@@ -74,6 +82,10 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   and rejected rather than silently treated as current.
 
 ### Documentation
+
+- Assign setup/commands to README, contributor rules and acceptance to AGENTS,
+  and current evidence to release status. Reconcile installed lifecycle results,
+  verification entry points, prerequisites, and stale CSS design references.
 
 - Group validation evidence by date and keep a short index. Store raw local logs
   in an ignored `logs/` directory; publish only reviewed reports and measurements.

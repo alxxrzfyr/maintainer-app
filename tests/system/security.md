@@ -1,6 +1,6 @@
 # Security validation procedure
 
-Status: reusable procedure; no tests are marked passed. Revised 2026-10-30 for the [current threat model](../../docs/threat-model.md) and [release status](../../docs/release-status.md).
+Procedure only; completed results belong in dated validation reports. Use the [threat model](../../docs/threat-model.md) and [release status](../../docs/release-status.md) for current controls and acceptance.
 
 Run privileged/destructive cases only in a disposable VM with a recoverable snapshot, a nonroot desktop account and a real system bus/Polkit agent. Install the exact candidate .deb. Use owned test files/processes. Ordinary unit tests must use injected adapters and must not contact the developer host's live helper.
 
@@ -49,4 +49,4 @@ Create a dated result under `docs/validation/YYYY-MM-DD/report.md` only after te
 
 ## Release sign-off
 
-The reviewer records passed/failed/unverified case names, related T IDs, open defects, disabled capabilities and any explicit scope approval. Link evidence to D2/D5-D8/D11-D13 and the relevant A1-A3 decision. Blank procedures, mock tests and policy-string assertions cannot substitute for installed tests. No unresolved release blocker may be labelled passed.
+The reviewer records passed/failed/unverified case names, related T IDs, open defects, disabled capabilities and any explicit scope approval. Link evidence to the tested revision, current threat controls, and open release checks. Blank procedures, mock tests and policy-string assertions cannot substitute for installed tests. No unresolved release blocker may be labelled passed.

@@ -1,83 +1,69 @@
 # Release status
 
-Version 1.3.0 is an unpublished development candidate on
-`release/1.3.0-readiness`. It is not release-ready while performance acceptance
-and the remaining manual checks are unresolved. No release tag or APT
-publication is authorized by this branch preparation.
+Version 1.3.0 remains an unpublished development candidate. Release acceptance
+is incomplete: the last clean hardware sample fails CPU acceptance, and the
+manual checks below remain open. Builds and CI do not publish a release.
 
-## Candidate scope
+## Current scope
 
-The candidate includes bounded workers, commands and scans; incremental GTK
-updates; private persistence and report export; retained-pidfd process review;
-identity-checked regular-file cleanup with quarantine/recovery; and native APT
-transactions with exact plan approval, private receipts, cancellation boundaries,
-shutdown inhibition and reconnection. Duplicate files are never deleted
-automatically. Helper operations retain fixed types and arguments.
+Code implements bounded jobs/commands/scans, incremental GTK updates, private
+persistence and report export, retained-pidfd process review, protected regular-file
+cleanup/recovery, and retained native APT plans with exact approval and receipts.
+See the [threat model](threat-model.md) for security controls and limits.
 
-Cleanup is limited to caller-owned single-link regular files on the same supported
-filesystem. Raced replacements are restored or retained, never deleted. No content
-snapshot or physical-space guarantee is made. Two retained kernel images protect
-against removing every fallback; they are not proof of bootability.
+The review follow-up addresses hardware command validation, evidence-based
+hardware values, background Diagnostics collection, feature-specific shell wiring,
+and behavioral tests. The [review follow-up](validation/2026-11-01/review-followup.md)
+records local results. Commands and layout are described in [README](../README.md);
+contributor rules and numerical acceptance live in [AGENTS.md](../AGENTS.md).
 
-Release builds now use `python3 scripts/build-release.py` to preserve compiler
-settings while remapping local build paths. The build rejects a resulting GUI or
-helper containing the checkout or Cargo-home prefix. CI uses locked dependencies,
-three complete native/Python passes, native amd64/arm64 packaging and disposable
-installed-upgrade checks. Separate jobs audit public history/dependencies/workflows
-and bind a native candidate to source and exact package bytes.
+## Verification evidence
 
-## Evidence and acceptance
+The previous verified source `5d33175` passed all seven hosted checks:
 
-The [November audit](validation/2026-11-01/report.md) records concrete
-commands, observations, cleanup and review limitations. Earlier failed experiments
-are consolidated in the [October summary](validation/2026-10-31/report.md), with
-representative raw records retained. Historical counts and hashes do not prove
-that a later revision passes.
+- [CI](https://github.com/alxxrzfyr/maintainer-app/actions/runs/41228874145):
+  three complete test passes, release build, native amd64/arm64 packages, and
+  disposable installed upgrade/readiness/root-refusal/removal/purge.
+- [Native candidate gate](https://github.com/alxxrzfyr/maintainer-app/actions/runs/41228874159):
+  three full passes, debug/release builds, metadata, and exact source/package binding.
+- [Security audit](https://github.com/alxxrzfyr/maintainer-app/actions/runs/41228874307):
+  secret scanning, dependency advisories, and workflow/shell validation.
 
-The preferred average idle CPU target is at most 0.35%. The approved fallback is
-strictly below 0.5%; exactly 0.5% fails. Usable startup must be at most 2 seconds.
-The README's next memory milestone is below 100,000,000 bytes combined idle PSS;
-older GTK baseline and ceiling comparisons remain diagnostic context. No budget
-was relaxed to obtain green CI.
+Those runs do not certify subsequent edits. Read the exact current commit's
+results on [Actions](https://github.com/alxxrzfyr/maintainer-app/actions).
+The [dated audit](validation/2026-11-01/report.md) records the baseline's scope;
+[October evidence](validation/2026-10-31/report.md) preserves earlier experiments.
+Raw local logs are private and [ignored by Git](../logs/README.md).
 
-The source-bound local gate must run after all source/documentation edits:
+## Last clean hardware sample
 
-```bash
-python3 scripts/check-release-local.py build /tmp/maintainer-candidate-new
-python3 scripts/check-release-local.py verify /tmp/maintainer-candidate-new
-```
+The [recorded measurement](validation/2026-11-01/hardware.json) used runtime
+`a1517af496dd38b5db8f095208faad072642417572f36b256f711ed8b9c6b277`, hardware
+rendering, 30-second settling, and a 300-second Overview sample:
 
-Its external `LOCAL-CANDIDATE.json` binds source, lockfile, three full test passes
-and exact package/runtime bytes. It performs static archive inspection without
-installing on the personal host. CI/check results must be read for the exact
-pushed commit; [the Actions page](https://github.com/alxxrzfyr/maintainer-app/actions)
-contains those independent results. Green hosted tests do not certify hardware
-performance or interactive authorization.
+- Average CPU: 0.62968%, failing the accepted fallback.
+- Usable startup: 1,870 ms.
+- Peak PSS: 74,650,624 bytes. Peak private dirty: 33,456,128 bytes.
+- Swap/SwapPss: zero. Startup and memory passed their limits in this sample.
 
-## Latest local hardware result
+This is evidence for that runtime, not a fresh measurement of later code.
+Acceptance limits are defined once in [performance rules](../AGENTS.md#performance-rules).
 
-The [November hardware sample](validation/2026-11-01/hardware.json) recorded
-0.62968% CPU over 300 seconds, failing the 0.35% preferred target and the strictly
-below 0.5% fallback. Usable startup was 1,870 ms, peak PSS 74,650,624 bytes and
-private dirty 33,456,128 bytes. Those limits passed in this one hardware sample;
-cold boot, other pages and the wider protocol remain unverified.
+## Remaining acceptance
 
-## Remaining release work
-
-- Meet CPU/startup acceptance in valid measurements; repeat cold-boot, full-page,
-  hidden/scale, after-job and extended-soak checks. A single hardware page sample
-  cannot certify the complete performance protocol.
+- Meet CPU acceptance and repeat valid cold-boot, full-page, hidden/scale,
+  after-job, and extended-soak measurements for the final runtime.
 - Complete installed interactive Polkit allow/deny/dismiss, missing-agent,
-  effective sandbox, reboot/kernel and interruption/recovery checks on a
-  disposable system. Automated installed upgrade results cover their recorded
-  cases only.
-- Complete keyboard, screen-reader, theme/contrast, scaling and comprehensive
-  privacy validation. Fixture assertions are not manual certification.
-- Review migration away from the unmaintained D-Bus support crates identified by
-  RustSec. No speculative dependency/toolchain upgrade is included in this audit.
+  effective sandbox, kernel/reboot, and interruption/recovery checks on a
+  disposable system. Automated package lifecycle tests cover only their cases.
+- Complete keyboard, screen-reader, theme/contrast, scaling, and full privacy
+  validation. Fixture assertions are not manual certification.
+- Review migration from the unmaintained D-Bus support crates reported by RustSec.
 
-The earlier user waiver of additional machines and third-party verification does
-not turn unmeasured behavior into a pass. The [archive](archive/README.md) preserves
-historical plans and research. Current behavior comes from code, repository policy
-from [AGENTS.md](../AGENTS.md), and product/release contracts from
-[README.md](../README.md) and [CHANGELOG.md](../CHANGELOG.md).
+Use the [candidate commands](../README.md#build-a-candidate) after all release
+inputs are final. Their external manifest binds source, lockfile, three full test
+passes, and package/runtime bytes; it does not install on the personal host.
+
+[Archived plans](archive/README.md) are historical records. Their status labels
+neither complete nor waive unfinished work. Green CI does not waive performance
+or manual acceptance.

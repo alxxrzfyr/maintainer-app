@@ -1,7 +1,7 @@
 # Maintainer threat model
 
-Updated 2026-10-31 for the unpublished implementation candidate. This describes
-source controls and local fixtures, not installed-system certification.
+This document describes current security boundaries and residual risks.
+Validation and open acceptance are tracked in [release status](release-status.md).
 
 ## Trust and authorization
 
@@ -20,7 +20,6 @@ authorization. Host policy and desktop agents determine actual prompts.
 Shipped policy uses auth_admin without retained authorization for package changes,
 process termination, journal vacuum and file cleanup. Cache cleaning and SMART
 refresh allow an active local session; other sessions require administration.
-Helper/API and policy changes were authorized for this candidate.
 
 ## Operation boundaries
 
@@ -79,17 +78,18 @@ all possible host strings or administrator policy overrides are safe.
 
 ## Evidence and release scope
 
-Local coverage includes private-bus authorization/denial/connection tests, actual
-filesystem race and recovery syscalls in temporary directories, retained-cache
-APT transactions in disposable directory roots, parser/resource boundaries and
-package archive integration. Tests never install packages on the personal host.
-The local gate runs available native and Python suites three times and binds the
-source and exact package bytes in an external manifest. A source review found no
-critical security/data-loss defect in this final scope; that is not a formal audit.
+Coverage includes private-bus authorization/denial/connection tests, filesystem
+race/recovery syscalls in temporary directories, native APT transactions in
+private directory roots, parser/resource limits, and exact package integration.
+Tests never install packages on the personal host.
 
-The user waived additional machines and third-party release verification. No live
-installed Polkit, installed upgrade, Wayland/arm64 matrix, other-hardware or full
-privacy/security certification is claimed. Numerical performance budgets still
-require measurements. Original planning content is preserved in the historical archive; current
-release status records unfinished validation without treating archive checklists
-as current instructions.
+Recorded Ubuntu 22.04 CI runs passed package install, upgrade, GUI root refusal,
+unprivileged readiness, removal, and purge on amd64 and arm64. These are automated
+lifecycle checks, not proof of interactive Polkit prompts, effective sandbox rules,
+Wayland, reboot behavior, or complete privacy/accessibility acceptance.
+
+The source-bound candidate gate runs full native/Python suites three times and
+binds source, lockfile, and package/runtime bytes. Later edits invalidate that
+proof. Consult [release status](release-status.md) and its dated reports for exact
+artifacts, observations, and remaining checks. Source review is not formal audit
+certification; an archived plan is not current completion evidence.

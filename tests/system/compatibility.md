@@ -1,6 +1,6 @@
 # Compatibility validation procedure
 
-Status: reusable procedure, not a completed support matrix. Revised 2026-10-30. Use the [release status](../../docs/release-status.md) for release gates and [security procedure](security.md) for privileged cases.
+Procedure only; completed results belong in dated validation reports. Use [release status](../../docs/release-status.md) for open gates and the [security procedure](security.md) for privileged cases.
 
 ## Select and record environments
 
@@ -23,7 +23,7 @@ Start from a clean VM snapshot where privileged/destructive actions are needed. 
 | Case | Expected behavior / evidence |
 |---|---|
 | Fresh install and upgrade from previous supported version | Dependencies, schemas, desktop entry, icons, CSS, bus policy, service and Polkit files load; running old app is handled explicitly |
-| Launch | Normal-user usable shell/navigation appears within D10's clock; loading states remain explicit. Record window map/first live data separately; process survival is insufficient |
+| Launch | Normal-user usable shell/navigation appears within the startup limit in AGENTS.md; loading states remain explicit. Record window map/first live data separately; process survival is insufficient |
 | Navigation | Overview, System, Network, Processes, Storage subpages, Cleanup/history, Updates, Diagnostics, Reports and Settings render without crash |
 | Monitoring | Rates/units are credible; default visible/hidden sampling is 2 s/10 s; saved settings apply; resumed views show current status |
 | Dynamic devices/processes | Interface reorder, sensor removal, PID reuse and permission loss do not show another identity's history or stale values as live |
@@ -42,4 +42,4 @@ Do not call an intentionally unavailable capability a product failure when that 
 
 ## Retain results
 
-Save a dated report under `docs/validation/YYYY-MM-DD/report.md` after the run, with environment IDs, package checksum, actions/commands, expected/actual behavior, sanitized evidence, issue links, operator and reviewer. Record D10/M0-M6 results with whole-app PSS, renderer, scaling, all-pages-visited and after-job idle states; a short Xvfb survival test is insufficient. This file remains a reusable procedure and must not accumulate undated checkmarks.
+Save a dated report under `docs/validation/YYYY-MM-DD/report.md` after the run, with environment IDs, package checksum, actions/commands, expected/actual behavior, sanitized evidence, issue links, operator and reviewer. Record performance results with whole-app PSS, renderer, scaling, all-pages-visited and after-job idle states; a short Xvfb survival test is insufficient. This file remains a reusable procedure and must not accumulate undated checkmarks.
