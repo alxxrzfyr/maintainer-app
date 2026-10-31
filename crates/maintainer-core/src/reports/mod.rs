@@ -3,6 +3,7 @@
 //! Reports are assembled from already-collected snapshots and do NOT
 //! trigger expensive operations or privileged helper calls.
 
+pub mod export;
 pub mod model;
 pub mod redact;
 pub mod render_text;

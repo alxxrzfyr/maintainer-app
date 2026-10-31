@@ -6,6 +6,10 @@
 use super::model::{RedactedReport, RedactionPolicy};
 use super::redact::scrub_residuals;
 
+const MAX_RENDERED_REPORT_BYTES: usize = 4 * 1024 * 1024;
+const REPORT_TRUNCATION_NOTICE: &str =
+    "\n[Report truncated at 4 MiB; additional content omitted.]\n";
+
 /// Render a redacted report to plain text with stable section order.
 pub fn render_text(report: &RedactedReport) -> String {
     let mut out = String::with_capacity(4096);
@@ -20,7 +24,21 @@ pub fn render_text(report: &RedactedReport) -> String {
     write_capability_notes(&mut out, report);
     write_redaction_notice(&mut out, &report.policy);
 
-    scrub_residuals(&out, &report.policy)
+    cap_rendered_report(scrub_residuals(&out, &report.policy))
+}
+
+fn cap_rendered_report(mut text: String) -> String {
+    if text.len() <= MAX_RENDERED_REPORT_BYTES {
+        return text;
+    }
+
+    let mut end = MAX_RENDERED_REPORT_BYTES - REPORT_TRUNCATION_NOTICE.len();
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text.truncate(end);
+    text.push_str(REPORT_TRUNCATION_NOTICE);
+    text
 }
 
 fn write_header(out: &mut String, generated_at: &str) {
@@ -325,6 +343,22 @@ mod tests {
             }],
             policy: RedactionPolicy::default(),
         }
+    }
+
+    #[test]
+    fn rendered_report_is_capped_with_utf8_safe_notice() {
+        let long_report = format!("{}🦀tail", "x".repeat(MAX_RENDERED_REPORT_BYTES));
+        let capped = cap_rendered_report(long_report);
+
+        assert!(capped.len() <= MAX_RENDERED_REPORT_BYTES);
+        assert!(capped.is_char_boundary(capped.len()));
+        assert!(capped.ends_with(REPORT_TRUNCATION_NOTICE));
+    }
+
+    #[test]
+    fn rendered_report_below_cap_is_unchanged() {
+        let report = "short report".to_string();
+        assert_eq!(cap_rendered_report(report.clone()), report);
     }
 
     #[test]

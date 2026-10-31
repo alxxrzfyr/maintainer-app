@@ -1,7 +1,7 @@
 //! Structured redaction: sensitive fields are typed and removed/replaced
 //! before rendering. A final conservative regex scan catches residuals.
 
-use crate::capability::Capability;
+use crate::capability::{Capability, PermissionRequest, UnavailableReason};
 
 use super::model::{
     DiagnosticsSection, HardwareSection, HealthSection, OsSection, RedactedDiagnosticsSection,
@@ -22,28 +22,61 @@ const REDACTED_MAC: &str = "[mac-address]";
 const REDACTED_PATH: &str = "[path]";
 /// Placeholder for redacted email.
 const REDACTED_EMAIL: &str = "[email]";
-/// Placeholder for redacted arguments.
-const REDACTED_ARGS: &str = "[args]";
-
 /// Apply the redaction policy to a full system report, producing a
 /// `RedactedReport` where sensitive fields have been typed-removed.
 pub fn redact_report(report: SystemReport, policy: &RedactionPolicy) -> RedactedReport {
     let os = redact_os(&report.os, policy);
     let hardware = redact_hardware(&report.hardware, policy);
     let health = redact_health(&report.health, policy);
-    let diagnostics = redact_diagnostics(&report.diagnostics, policy);
+    let diagnostics = redact_diagnostics(&report.diagnostics);
 
     RedactedReport {
         generated_at: report.generated_at,
         os,
         hardware,
         health,
-        software_updates: report.software_updates,
+        software_updates: redact_software_updates(&report.software_updates),
         diagnostics,
         maintenance: report.maintenance,
-        capability_notes: report.capability_notes,
+        capability_notes: report
+            .capability_notes
+            .into_iter()
+            .map(|note| super::model::CapabilityNote {
+                name: note.name,
+                status: note.status,
+                reason: None,
+            })
+            .collect(),
         policy: policy.clone(),
     }
+}
+
+fn redact_software_updates(
+    section: &super::model::SoftwareUpdatesSection,
+) -> super::model::SoftwareUpdatesSection {
+    let pending_updates = match &section.pending_updates {
+        Capability::Available(updates) => Capability::Available(updates.clone()),
+        Capability::Unavailable(reason) => Capability::Unavailable(UnavailableReason {
+            code: reason.code,
+            message: "Update details unavailable".into(),
+            remediation: None,
+        }),
+        Capability::PermissionRequired(request) => {
+            Capability::PermissionRequired(PermissionRequest {
+                action_id: request.action_id.clone(),
+                explanation: "Administrator permission is required".into(),
+            })
+        }
+    };
+    super::model::SoftwareUpdatesSection { pending_updates }
+}
+
+fn unavailable_note(name: &str) -> String {
+    format!("{name}: unavailable")
+}
+
+fn permission_note(name: &str) -> String {
+    format!("{name}: permission required")
 }
 
 fn redact_os(os: &OsSection, policy: &RedactionPolicy) -> RedactedOsSection {
@@ -74,12 +107,12 @@ fn redact_hardware(hw: &HardwareSection, policy: &RedactionPolicy) -> RedactedHa
             cpu.total_percent,
             cpu.per_core_percent.len()
         )),
-        Capability::Unavailable(r) => {
-            unavailable_notes.push(format!("CPU: {}", r.message));
+        Capability::Unavailable(_) => {
+            unavailable_notes.push(unavailable_note("CPU"));
             None
         }
-        Capability::PermissionRequired(p) => {
-            unavailable_notes.push(format!("CPU: {}", p.explanation));
+        Capability::PermissionRequired(_) => {
+            unavailable_notes.push(permission_note("CPU"));
             None
         }
     };
@@ -90,12 +123,12 @@ fn redact_hardware(hw: &HardwareSection, policy: &RedactionPolicy) -> RedactedHa
             mem.used_bytes / 1_048_576,
             mem.total_bytes / 1_048_576
         )),
-        Capability::Unavailable(r) => {
-            unavailable_notes.push(format!("Memory: {}", r.message));
+        Capability::Unavailable(_) => {
+            unavailable_notes.push(unavailable_note("Memory"));
             None
         }
-        Capability::PermissionRequired(p) => {
-            unavailable_notes.push(format!("Memory: {}", p.explanation));
+        Capability::PermissionRequired(_) => {
+            unavailable_notes.push(permission_note("Memory"));
             None
         }
     };
@@ -117,12 +150,12 @@ fn redact_hardware(hw: &HardwareSection, policy: &RedactionPolicy) -> RedactedHa
                 )
             })
             .collect(),
-        Capability::Unavailable(r) => {
-            unavailable_notes.push(format!("Disks: {}", r.message));
+        Capability::Unavailable(_) => {
+            unavailable_notes.push(unavailable_note("Disks"));
             Vec::new()
         }
-        Capability::PermissionRequired(p) => {
-            unavailable_notes.push(format!("Disks: {}", p.explanation));
+        Capability::PermissionRequired(_) => {
+            unavailable_notes.push(permission_note("Disks"));
             Vec::new()
         }
     };
@@ -137,12 +170,12 @@ fn redact_hardware(hw: &HardwareSection, policy: &RedactionPolicy) -> RedactedHa
                 )
             })
             .collect(),
-        Capability::Unavailable(r) => {
-            unavailable_notes.push(format!("Network: {}", r.message));
+        Capability::Unavailable(_) => {
+            unavailable_notes.push(unavailable_note("Network"));
             Vec::new()
         }
-        Capability::PermissionRequired(p) => {
-            unavailable_notes.push(format!("Network: {}", p.explanation));
+        Capability::PermissionRequired(_) => {
+            unavailable_notes.push(permission_note("Network"));
             Vec::new()
         }
     };
@@ -150,20 +183,17 @@ fn redact_hardware(hw: &HardwareSection, policy: &RedactionPolicy) -> RedactedHa
     let temperature_summaries = match &hw.temperatures {
         Capability::Available(temps) => temps
             .iter()
-            .filter_map(|t| {
-                let label = t.label.as_deref().unwrap_or(&t.hwmon_name);
-                match &t.celsius {
-                    Capability::Available(c) => Some(format!("{}: {:.1}°C", label, c)),
-                    _ => None,
-                }
+            .filter_map(|t| match &t.celsius {
+                Capability::Available(c) => Some(format!("Temperature: {:.1}°C", c)),
+                _ => None,
             })
             .collect(),
-        Capability::Unavailable(r) => {
-            unavailable_notes.push(format!("Temperatures: {}", r.message));
+        Capability::Unavailable(_) => {
+            unavailable_notes.push(unavailable_note("Temperatures"));
             Vec::new()
         }
-        Capability::PermissionRequired(p) => {
-            unavailable_notes.push(format!("Temperatures: {}", p.explanation));
+        Capability::PermissionRequired(_) => {
+            unavailable_notes.push(permission_note("Temperatures"));
             Vec::new()
         }
     };
@@ -199,21 +229,18 @@ fn redact_health(health: &HealthSection, policy: &RedactionPolicy) -> RedactedHe
                 unavailable_note: None,
             }
         }
-        Capability::Unavailable(r) => RedactedHealthSection {
+        Capability::Unavailable(_) => RedactedHealthSection {
             drive_summaries: Vec::new(),
-            unavailable_note: Some(r.message.clone()),
+            unavailable_note: Some(unavailable_note("Storage health")),
         },
-        Capability::PermissionRequired(p) => RedactedHealthSection {
+        Capability::PermissionRequired(_) => RedactedHealthSection {
             drive_summaries: Vec::new(),
-            unavailable_note: Some(p.explanation.clone()),
+            unavailable_note: Some(permission_note("Storage health")),
         },
     }
 }
 
-fn redact_diagnostics(
-    diag: &DiagnosticsSection,
-    policy: &RedactionPolicy,
-) -> RedactedDiagnosticsSection {
+fn redact_diagnostics(diag: &DiagnosticsSection) -> RedactedDiagnosticsSection {
     let mut unavailable_notes = Vec::new();
 
     let failed_services = match &diag.failed_services {
@@ -221,16 +248,16 @@ fn redact_diagnostics(
             .iter()
             .map(|s| RedactedServiceSummary {
                 unit: s.unit.clone(),
-                description: s.description.clone(),
+                description: "Description omitted for privacy".into(),
                 state: format!("{}/{}", s.active_state, s.sub_state),
             })
             .collect(),
-        Capability::Unavailable(r) => {
-            unavailable_notes.push(format!("Failed services: {}", r.message));
+        Capability::Unavailable(_) => {
+            unavailable_notes.push(unavailable_note("Failed services"));
             Vec::new()
         }
-        Capability::PermissionRequired(p) => {
-            unavailable_notes.push(format!("Failed services: {}", p.explanation));
+        Capability::PermissionRequired(_) => {
+            unavailable_notes.push(permission_note("Failed services"));
             Vec::new()
         }
     };
@@ -238,26 +265,19 @@ fn redact_diagnostics(
     let event_groups = match &diag.event_groups {
         Capability::Available(groups) => groups
             .iter()
-            .map(|g| {
-                let template = if policy.should_redact(RedactionCategory::ProcessArgs) {
-                    scrub_process_args(&g.key.template)
-                } else {
-                    g.key.template.clone()
-                };
-                RedactedEventSummary {
-                    template,
-                    count: g.count,
-                    unit: g.key.unit.clone(),
-                    priority: g.key.priority,
-                }
+            .map(|g| RedactedEventSummary {
+                template: "Event details omitted for privacy".into(),
+                count: g.count,
+                unit: g.key.unit.clone(),
+                priority: g.key.priority,
             })
             .collect(),
-        Capability::Unavailable(r) => {
-            unavailable_notes.push(format!("Journal events: {}", r.message));
+        Capability::Unavailable(_) => {
+            unavailable_notes.push(unavailable_note("Journal events"));
             Vec::new()
         }
-        Capability::PermissionRequired(p) => {
-            unavailable_notes.push(format!("Journal events: {}", p.explanation));
+        Capability::PermissionRequired(_) => {
+            unavailable_notes.push(permission_note("Journal events"));
             Vec::new()
         }
     };
@@ -267,16 +287,6 @@ fn redact_diagnostics(
         event_groups,
         unavailable_notes,
     }
-}
-
-/// Remove likely process arguments from a log template.
-/// Replaces content after common command patterns with [args].
-fn scrub_process_args(template: &str) -> String {
-    // keep the path but redact arguments.
-    if let Some(idx) = template.find(" -- ") {
-        return format!("{} -- {REDACTED_ARGS}", &template[..idx]);
-    }
-    template.to_string()
 }
 
 /// Final residual scan: catches any sensitive patterns that might have
@@ -754,18 +764,53 @@ mod tests {
     }
 
     #[test]
-    fn scrub_process_args_redacts_after_double_dash() {
-        let input = "/usr/bin/app -- --secret-key=abc123";
-        let result = scrub_process_args(input);
-        assert!(!result.contains("abc123"));
-        assert!(result.contains(REDACTED_ARGS));
+    fn diagnostics_redaction_omits_unrestricted_text() {
+        use crate::diagnostics::{EventGroup, FailedService, GroupKey};
+
+        let secret = "alice@example.com /home/alice/private-token";
+        let diagnostics = DiagnosticsSection {
+            failed_services: Capability::Available(vec![FailedService {
+                unit: "sample.service".into(),
+                load_state: "loaded".into(),
+                active_state: "failed".into(),
+                sub_state: "failed".into(),
+                description: secret.into(),
+            }]),
+            event_groups: Capability::Available(vec![EventGroup {
+                key: GroupKey {
+                    template: secret.into(),
+                    unit: Some("sample.service".into()),
+                    syslog_identifier: None,
+                    priority: 3,
+                },
+                count: 2,
+                first_seen: None,
+                last_seen: None,
+                samples: vec![secret.into()],
+            }]),
+        };
+
+        let redacted = redact_diagnostics(&diagnostics);
+        let serialized = format!("{redacted:?}");
+        assert!(!serialized.contains("alice@example.com"));
+        assert!(!serialized.contains("private-token"));
+        assert!(serialized.contains("Event details omitted for privacy"));
     }
 
     #[test]
-    fn scrub_process_args_preserves_without_separator() {
-        let input = "systemd: started unit";
-        let result = scrub_process_args(input);
-        assert_eq!(result, input);
+    fn unavailable_software_update_reason_is_not_exported() {
+        let section = super::super::model::SoftwareUpdatesSection {
+            pending_updates: Capability::Unavailable(UnavailableReason {
+                code: "missing-tool",
+                message: "/home/alice/private-output".into(),
+                remediation: Some("email alice@example.com".into()),
+            }),
+        };
+
+        let redacted = redact_software_updates(&section);
+        let serialized = format!("{redacted:?}");
+        assert!(!serialized.contains("alice"));
+        assert!(!serialized.contains("private-output"));
     }
 
     #[test]
