@@ -38,6 +38,14 @@ pub fn apply_all(db: &Database) -> Result<(), MaintainerError> {
                 message: e.to_string(),
             })?;
 
+        let latest_supported = MIGRATIONS.last().map(|(version, _)| *version).unwrap_or(0);
+        if current_version > latest_supported {
+            return Err(MaintainerError::invalid_data(
+                "database schema",
+                "the database was created by a newer Maintainer version",
+            ));
+        }
+
         for &(version, sql) in MIGRATIONS {
             if version <= current_version {
                 continue;
@@ -110,6 +118,26 @@ mod tests {
         apply_all(&db).unwrap();
         let version = current_version(&db).unwrap();
         assert_eq!(version, 1);
+    }
+
+    #[test]
+    fn newer_schema_is_rejected_without_rewriting_version() {
+        let db = Database::open_in_memory().unwrap();
+        db.with_connection(|conn| {
+            conn.execute(
+                "INSERT INTO schema_migrations (version, applied_at) VALUES (2, 0)",
+                [],
+            )
+            .map_err(|error| MaintainerError::Internal {
+                context: "seeding newer schema version".into(),
+                message: error.to_string(),
+            })?;
+            Ok(())
+        })
+        .unwrap();
+
+        assert!(apply_all(&db).is_err());
+        assert_eq!(current_version(&db).unwrap(), 2);
     }
 
     #[test]
