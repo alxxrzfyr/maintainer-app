@@ -493,8 +493,29 @@ mod tests {
         }
     }
 
-    fn fixture_sys() -> std::path::PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/hardware/sys")
+    fn fixture_sys() -> tempfile::TempDir {
+        fn copy_tree(source: &Path, target: &Path) {
+            fs::create_dir_all(target).unwrap();
+            for entry in fs::read_dir(source).unwrap() {
+                let entry = entry.unwrap();
+                let destination = target.join(entry.file_name());
+                if entry.file_type().unwrap().is_dir() {
+                    copy_tree(&entry.path(), &destination);
+                } else {
+                    fs::copy(entry.path(), destination).unwrap();
+                }
+            }
+        }
+        let fixture = tempfile::tempdir().unwrap();
+        copy_tree(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/hardware/sys"),
+            fixture.path(),
+        );
+        // Real PCI slots contain colons. Create that Linux layout at runtime
+        // so the tracked fixture tree remains checkout-compatible on Windows.
+        let devices = fixture.path().join("bus/pci/devices");
+        fs::rename(devices.join("0000_00_02_0"), devices.join("0000:00:02.0")).unwrap();
+        fixture
     }
 
     #[test]
@@ -513,7 +534,7 @@ mod tests {
     #[test]
     fn hardware_commands_reach_runner_and_preserve_named_devices() {
         let runner = FixtureRunner::default();
-        let snapshot = read_snapshot_with(&runner, &fixture_sys());
+        let snapshot = read_snapshot_with(&runner, fixture_sys().path());
         let calls = runner.calls.lock().unwrap();
         assert_eq!(
             calls.as_slice(),
@@ -560,7 +581,11 @@ mod tests {
 
     #[test]
     fn usb_fixture_uses_measured_speed_descriptor_power_and_unknowns() {
-        let devices = read_usb_with(&FixtureRunner::default(), &fixture_sys(), &mut Vec::new());
+        let devices = read_usb_with(
+            &FixtureRunner::default(),
+            fixture_sys().path(),
+            &mut Vec::new(),
+        );
         assert_eq!(devices.len(), 3);
         assert_eq!(devices[0].name, "Example Camera");
         assert_eq!(devices[0].speed, "5000 Mbps");
@@ -605,7 +630,7 @@ mod tests {
 
     #[test]
     fn unavailable_commands_keep_reasons_and_sysfs_evidence() {
-        let snapshot = read_snapshot_with(&FailedRunner, &fixture_sys());
+        let snapshot = read_snapshot_with(&FailedRunner, fixture_sys().path());
         assert_eq!(snapshot.collection_issues.len(), 2);
         assert!(snapshot.collection_issues[0].contains("lspci unavailable"));
         assert!(snapshot.collection_issues[1].contains("lsusb unavailable"));
@@ -661,7 +686,7 @@ mod tests {
             stdout_truncated: false,
             stderr_truncated: false,
         });
-        let snapshot = read_snapshot_with(&runner, &fixture_sys());
+        let snapshot = read_snapshot_with(&runner, fixture_sys().path());
         assert!(
             snapshot
                 .collection_issues
@@ -679,7 +704,7 @@ mod tests {
 
     #[test]
     fn bios_fixture_preserves_reported_values() {
-        let bios = read_bios_with(&fixture_sys());
+        let bios = read_bios_with(fixture_sys().path());
         assert_eq!(bios.vendor, "Example Firmware");
         assert_eq!(bios.version, "2.7.4");
         assert_eq!(bios.release_date, "10/15/2026");

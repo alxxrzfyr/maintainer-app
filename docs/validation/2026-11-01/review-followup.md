@@ -8,6 +8,7 @@ subsequent CI manifests. It does not replace the earlier hardware measurements.
 
 - Allow `lspci`/`lsusb`, use the matching tagged PCI output, and expose failures
   alongside native sysfs fallback data. Test actual parser inputs with fixtures.
+  Tracked fixture names stay portable; Linux PCI slot names are created in temporary roots.
 - Report unprobed acceleration as unverified. Read USB speed/descriptor maximum
   current and DMI fields instead of inventing values when data is unavailable.
 - Keep Diagnostics defaults and construction pure. Mount once, collect in the
