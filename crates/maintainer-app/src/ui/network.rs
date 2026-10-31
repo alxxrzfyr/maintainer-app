@@ -81,15 +81,9 @@ pub struct NetworkPage {
     unavailable_label: Label,
 }
 
-impl Default for NetworkPage {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl NetworkPage {
     /// Create a new network detail page.
-    pub fn new() -> Self {
+    pub fn new(executor: Arc<maintainer_core::jobs::JobExecutor>) -> Self {
         let content = GtkBox::new(Orientation::Vertical, 12);
         content.add_css_class("maintainer_page_content");
         content.set_margin_top(24);
@@ -287,24 +281,27 @@ impl NetworkPage {
                         let cancel_btn_inner = cancel_btn.clone();
                         let cancel_flag_inner = cancel_flag.clone();
 
-                        // Channel for typed results from the worker thread.
-                        let (tx, rx) = std::sync::mpsc::channel::<
-                            Result<maintainer_core::metrics::SpeedTestResult, String>,
-                        >();
-
-                        // Channel for stage progress updates.
-                        let (stage_tx, stage_rx) =
-                            std::sync::mpsc::channel::<maintainer_core::metrics::SpeedTestStage>();
-
-                        std::thread::spawn(move || {
-                            let result = maintainer_core::metrics::run_speed_test(
-                                &cancel_flag_inner,
-                                |stage| {
-                                    let _ = stage_tx.send(stage);
-                                },
+                        let (stage_tx, stage_rx) = std::sync::mpsc::sync_channel(4);
+                        let cancellation =
+                            maintainer_core::jobs::CancellationToken::from_shared_flag(
+                                cancel_flag_inner.clone(),
                             );
-                            let _ = tx.send(result.map_err(|e| e.to_string()));
-                        });
+                        let rx = executor.execute_sized(
+                            vec![move || {
+                                Ok(maintainer_core::metrics::run_speed_test(
+                                    &cancel_flag_inner,
+                                    |stage| {
+                                        let _ = stage_tx.try_send(stage);
+                                    },
+                                )
+                                .map_err(|error| error.to_string()))
+                            }],
+                            cancellation,
+                            |result| {
+                                std::mem::size_of_val(result)
+                                    + result.as_ref().err().map_or(0, String::capacity)
+                            },
+                        );
 
                         // Poll for progress and result every 150ms from the main thread.
                         gtk4::glib::timeout_add_local(
@@ -315,7 +312,16 @@ impl NetworkPage {
                                     status_inner.set_text(&format!("{}…", stage.label()));
                                 }
 
-                                match rx.try_recv() {
+                                let result = rx.try_recv().map(|message| match message {
+                                    maintainer_core::jobs::JobMessage::Completed(result) => result,
+                                    maintainer_core::jobs::JobMessage::Failed(error) => {
+                                        Err(error.to_string())
+                                    }
+                                    maintainer_core::jobs::JobMessage::Panicked(message) => {
+                                        Err(message)
+                                    }
+                                });
+                                match result {
                                     Ok(result) => {
                                         status_inner.remove_css_class("maintainer_accent");
                                         cancel_btn_inner.set_visible(false);
@@ -519,6 +525,12 @@ impl NetworkPage {
             }
         }
 
+        if let Some(reason) = &vm.connection_unavailable_reason {
+            let label = Label::new(Some(reason));
+            label.set_wrap(true);
+            label.set_halign(Align::Start);
+            self.adapter_info_box.append(&label);
+        }
         let details = &vm.connection_details;
 
         let add_detail_row = |label: &str, value: &str, parent: &GtkBox| {

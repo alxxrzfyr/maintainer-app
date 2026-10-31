@@ -4,6 +4,9 @@
 //! System retains only a compact network summary row showing total rates, and
 //! uses grouped temperature readings (one chip per card) to avoid duplicates.
 
+use std::cell::RefCell;
+use std::collections::HashMap;
+
 use gtk4::prelude::*;
 use gtk4::{
     Align, Box as GtkBox, FlowBox, Grid, Label, Orientation, ScrolledWindow, SelectionMode,
@@ -30,6 +33,20 @@ fn temperature_severity(celsius: f64) -> TemperatureSeverity {
     }
 }
 
+struct DiskRow {
+    row: GtkBox,
+    detail: Label,
+    fill: GtkBox,
+}
+
+struct TemperatureChip {
+    wrapper: gtk4::FlowBoxChild,
+    chip: GtkBox,
+    name: Label,
+    value: Label,
+    summary: Label,
+}
+
 /// The system monitor page widget tree.
 pub struct SystemPage {
     root: ScrolledWindow,
@@ -40,6 +57,10 @@ pub struct SystemPage {
     disk_detail_box: GtkBox,
     network_summary_label: Label,
     temperature_flow: FlowBox,
+    disk_rows: RefCell<HashMap<(String, String), DiskRow>>,
+    disk_empty: Label,
+    temperature_chips: RefCell<HashMap<(String, String), TemperatureChip>>,
+    temperature_empty: Label,
 }
 
 impl Default for SystemPage {
@@ -122,6 +143,9 @@ impl SystemPage {
         disk_title.set_halign(Align::Start);
         disk_card.append(&disk_title);
         let disk_detail_box = GtkBox::new(Orientation::Vertical, 2);
+        let disk_empty = Label::new(Some("No disk information available"));
+        disk_empty.add_css_class("maintainer_text_muted");
+        disk_detail_box.append(&disk_empty);
         disk_card.append(&disk_detail_box);
         content.append(&disk_card);
 
@@ -158,6 +182,9 @@ impl SystemPage {
         temperature_flow.set_min_children_per_line(1);
         temperature_flow.set_max_children_per_line(8);
         temperature_flow.add_css_class("maintainer_temperature_flow");
+        let temperature_empty = Label::new(Some("No sensors detected"));
+        temperature_empty.add_css_class("maintainer_text_muted");
+        temperature_flow.insert(&temperature_empty, -1);
         temperature_panel.append(&temperature_flow);
         content.append(&temperature_panel);
 
@@ -175,6 +202,10 @@ impl SystemPage {
             disk_detail_box,
             network_summary_label,
             temperature_flow,
+            disk_rows: RefCell::new(HashMap::new()),
+            disk_empty,
+            temperature_chips: RefCell::new(HashMap::new()),
+            temperature_empty,
         }
     }
 
@@ -284,64 +315,88 @@ impl SystemPage {
 
     /// Render per-disk breakdown with usage bars.
     fn update_disk_detail(&self, disks: &[maintainer_core::metrics::DiskSnapshot]) {
-        while let Some(child) = self.disk_detail_box.first_child() {
-            self.disk_detail_box.remove(&child);
-        }
-
-        if disks.is_empty() {
-            let empty = Label::new(Some("No disk information available"));
-            empty.add_css_class("maintainer_text_muted");
-            self.disk_detail_box.append(&empty);
-            return;
-        }
+        let mut rows = self.disk_rows.borrow_mut();
+        rows.retain(|(device, mount), cached| {
+            let present = disks
+                .iter()
+                .any(|disk| &disk.device == device && &disk.mount_point == mount);
+            if !present {
+                self.disk_detail_box.remove(&cached.row);
+            }
+            present
+        });
+        self.disk_empty.set_visible(disks.is_empty());
+        let mut previous: Option<GtkBox> = None;
 
         for disk in disks {
-            let row = GtkBox::new(Orientation::Vertical, 2);
-            row.add_css_class("maintainer_disk_row");
+            let cached = rows
+                .entry((disk.device.clone(), disk.mount_point.clone()))
+                .or_insert_with(|| {
+                    let row = GtkBox::new(Orientation::Vertical, 2);
+                    row.add_css_class("maintainer_disk_row");
 
-            let header = GtkBox::new(Orientation::Horizontal, 8);
-            let name = Label::new(Some(&disk.mount_point));
-            name.add_css_class("maintainer_disk_name");
-            name.set_halign(Align::Start);
-            name.set_hexpand(true);
-            name.set_ellipsize(gtk4::pango::EllipsizeMode::Middle);
-            header.append(&name);
+                    let header = GtkBox::new(Orientation::Horizontal, 8);
+                    let name = Label::new(Some(&disk.mount_point));
+                    name.add_css_class("maintainer_disk_name");
+                    name.set_halign(Align::Start);
+                    name.set_hexpand(true);
+                    name.set_ellipsize(gtk4::pango::EllipsizeMode::Middle);
+                    header.append(&name);
 
+                    let detail = Label::new(None);
+                    detail.add_css_class("maintainer_disk_detail");
+                    detail.set_halign(Align::End);
+                    header.append(&detail);
+
+                    row.append(&header);
+
+                    let bar_trough = GtkBox::new(Orientation::Horizontal, 0);
+                    bar_trough.add_css_class("maintainer_core_bar_trough");
+                    bar_trough.set_hexpand(true);
+
+                    let bar_fill = GtkBox::new(Orientation::Horizontal, 0);
+                    bar_fill.add_css_class("maintainer_core_bar_fill");
+                    bar_trough.append(&bar_fill);
+                    row.append(&bar_trough);
+
+                    self.disk_detail_box.append(&row);
+                    DiskRow {
+                        row,
+                        detail,
+                        fill: bar_fill,
+                    }
+                });
             let pct = if disk.total_bytes > 0 {
-                (disk.used_bytes as f64 / disk.total_bytes as f64) * 100.0
+                disk.used_bytes as f64 / disk.total_bytes as f64 * 100.0
             } else {
                 0.0
             };
-            let detail_text = format!(
-                "{} / {} ({:.0}%)",
+            cached.detail.set_text(&format!(
+                "{} / {} ({pct:.0}%)",
                 format_gib(disk.used_bytes),
-                format_gib(disk.total_bytes),
-                pct
-            );
-            let detail = Label::new(Some(&detail_text));
-            detail.add_css_class("maintainer_disk_detail");
-            detail.set_halign(Align::End);
-            header.append(&detail);
-
-            row.append(&header);
-
-            let bar_trough = GtkBox::new(Orientation::Horizontal, 0);
-            bar_trough.add_css_class("maintainer_core_bar_trough");
-            bar_trough.set_hexpand(true);
-
-            let bar_fill = GtkBox::new(Orientation::Horizontal, 0);
-            bar_fill.add_css_class("maintainer_core_bar_fill");
-            let fill_w = ((pct / 100.0) * 200.0) as i32;
-            bar_fill.set_size_request(fill_w.max(1), -1);
+                format_gib(disk.total_bytes)
+            ));
+            cached
+                .fill
+                .set_size_request(((pct / 100.0 * 200.0) as i32).max(1), -1);
+            cached
+                .fill
+                .remove_css_class("maintainer_capacity_bar_fill_critical");
+            cached
+                .fill
+                .remove_css_class("maintainer_capacity_bar_fill_warning");
             if pct >= 90.0 {
-                bar_fill.add_css_class("maintainer_capacity_bar_fill_critical");
+                cached
+                    .fill
+                    .add_css_class("maintainer_capacity_bar_fill_critical");
             } else if pct >= 80.0 {
-                bar_fill.add_css_class("maintainer_capacity_bar_fill_warning");
+                cached
+                    .fill
+                    .add_css_class("maintainer_capacity_bar_fill_warning");
             }
-            bar_trough.append(&bar_fill);
-            row.append(&bar_trough);
-
-            self.disk_detail_box.append(&row);
+            self.disk_detail_box
+                .reorder_child_after(&cached.row, previous.as_ref());
+            previous = Some(cached.row.clone());
         }
     }
 
@@ -375,17 +430,17 @@ impl SystemPage {
     /// deduplicates identical label/source channels, humanizes labels, and limits
     /// sub-sensor expansion to avoid tall chips. Details are exposed via tooltip.
     fn update_temperatures(&self, vm: &SystemViewModel) {
-        while let Some(child) = self.temperature_flow.first_child() {
-            self.temperature_flow.remove(&child);
-        }
-
-        if vm.temperature_groups.is_empty() {
-            let empty = Label::new(Some("No sensors detected"));
-            empty.add_css_class("maintainer_text_muted");
-            self.temperature_flow.insert(&empty, -1);
-            return;
-        }
-
+        let mut chips = self.temperature_chips.borrow_mut();
+        chips.retain(|(chip_name, source), cached| {
+            let present = vm.temperature_groups.iter().any(|group| {
+                &group.chip_name == chip_name && &group.representative.hwmon_name == source
+                    && matches!(group.representative.celsius, maintainer_core::capability::Capability::Available(c) if c > 0.0)
+            });
+            if !present {
+                self.temperature_flow.remove(&cached.wrapper);
+            }
+            present
+        });
         let mut displayed = 0_usize;
         for group in &vm.temperature_groups {
             if let maintainer_core::capability::Capability::Available(celsius) =
@@ -407,26 +462,54 @@ impl SystemPage {
                         .unwrap_or(&group.chip_name),
                 );
 
-                let chip = GtkBox::new(Orientation::Vertical, 2);
-                chip.add_css_class("maintainer_temperature_chip");
+                let cached = chips
+                    .entry((
+                        group.chip_name.clone(),
+                        group.representative.hwmon_name.clone(),
+                    ))
+                    .or_insert_with(|| {
+                        let chip = GtkBox::new(Orientation::Vertical, 2);
+                        chip.add_css_class("maintainer_temperature_chip");
 
-                let header_row = GtkBox::new(Orientation::Horizontal, 6);
-                let temp_icon = icons::icon_with_fallback(icons::chains::TEMPERATURE, 12);
-                temp_icon.add_css_class("maintainer_text_muted");
-                header_row.append(&temp_icon);
+                        let header_row = GtkBox::new(Orientation::Horizontal, 6);
+                        let temp_icon = icons::icon_with_fallback(icons::chains::TEMPERATURE, 12);
+                        temp_icon.add_css_class("maintainer_text_muted");
+                        header_row.append(&temp_icon);
 
-                let name_label = Label::new(Some(&chip_label));
-                name_label.add_css_class("maintainer_temperature_label");
-                name_label.set_halign(Align::Start);
-                name_label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
-                name_label.set_max_width_chars(18);
-                header_row.append(&name_label);
-                chip.append(&header_row);
+                        let name_label = Label::new(Some(&chip_label));
+                        name_label.add_css_class("maintainer_temperature_label");
+                        name_label.set_halign(Align::Start);
+                        name_label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+                        name_label.set_max_width_chars(18);
+                        header_row.append(&name_label);
+                        chip.append(&header_row);
 
-                let value_label = Label::new(Some(&format!("{celsius:.0}°C")));
-                value_label.add_css_class("maintainer_temperature_value");
-                value_label.set_halign(Align::Start);
+                        let value_label = Label::new(Some(&format!("{celsius:.0}°C")));
+                        value_label.add_css_class("maintainer_temperature_value");
+                        value_label.set_halign(Align::Start);
 
+                        chip.append(&value_label);
+                        let summary = Label::new(None);
+                        summary.add_css_class("maintainer_text_muted");
+                        summary.set_halign(Align::Start);
+                        chip.append(&summary);
+                        let wrapper = gtk4::FlowBoxChild::new();
+                        wrapper.set_child(Some(&chip));
+                        self.temperature_flow.insert(&wrapper, -1);
+                        TemperatureChip {
+                            wrapper,
+                            chip,
+                            name: name_label,
+                            value: value_label,
+                            summary,
+                        }
+                    });
+                let chip = &cached.chip;
+                let value_label = &cached.value;
+                cached.name.set_text(&chip_label);
+                value_label.set_text(&format!("{celsius:.0}°C"));
+                value_label.remove_css_class("maintainer_temperature_critical");
+                value_label.remove_css_class("maintainer_temperature_warning");
                 match temperature_severity(*celsius) {
                     TemperatureSeverity::Critical => {
                         value_label.add_css_class("maintainer_temperature_critical");
@@ -442,8 +525,6 @@ impl SystemPage {
                 value_label.update_property(&[gtk4::accessible::Property::Description(&format!(
                     "{chip_label} temperature {celsius:.0} degrees Celsius"
                 ))]);
-
-                chip.append(&value_label);
 
                 // Build tooltip with sub-sensor details instead of expanding chip height.
                 let mut tooltip_parts = vec![format!("{chip_label}: {celsius:.0}°C")];
@@ -490,44 +571,46 @@ impl SystemPage {
 
                 chip.set_tooltip_text(Some(&tooltip_parts.join("\n")));
 
-                // Show at most 3 distinct sub-sensors as a compact secondary line.
-                if valid_details.len() <= 3 && !valid_details.is_empty() {
-                    let sub_text: Vec<String> = valid_details
+                let summary_text = if valid_details.len() <= 3 {
+                    valid_details
                         .iter()
                         .filter_map(|d| {
                             if let maintainer_core::capability::Capability::Available(c) =
                                 &d.celsius
                             {
-                                Some(format!("{:.0}°C", c))
+                                Some(format!("{c:.0}°C"))
                             } else {
                                 None
                             }
                         })
-                        .collect();
-                    if !sub_text.is_empty() {
-                        let summary = Label::new(Some(&sub_text.join(" · ")));
-                        summary.add_css_class("maintainer_text_muted");
-                        summary.set_halign(Align::Start);
-                        chip.append(&summary);
-                    }
-                } else if valid_details.len() > 3 {
-                    let summary = Label::new(Some(&format!("+{} sensors", valid_details.len())));
-                    summary.add_css_class("maintainer_text_muted");
-                    summary.set_halign(Align::Start);
-                    chip.append(&summary);
+                        .collect::<Vec<_>>()
+                        .join(" · ")
+                } else {
+                    format!("+{} sensors", valid_details.len())
+                };
+                cached.summary.set_text(&summary_text);
+                cached.summary.set_visible(!summary_text.is_empty());
+                let index = (displayed - 1) as i32;
+                if cached.wrapper.index() != index {
+                    self.temperature_flow.remove(&cached.wrapper);
+                    self.temperature_flow.insert(&cached.wrapper, index);
                 }
-
-                self.temperature_flow.insert(&chip, -1);
             }
         }
 
+        self.temperature_empty.set_visible(displayed == 0);
         if displayed == 0 {
-            let unavailable = Label::new(Some("Sensor readings unavailable"));
-            unavailable.add_css_class("maintainer_text_muted");
-            unavailable.set_tooltip_text(Some(
-                "Sensors were detected, but Linux could not read their current values.",
-            ));
-            self.temperature_flow.insert(&unavailable, -1);
+            let no_sensors = vm.temperature_groups.is_empty();
+            self.temperature_empty.set_text(if no_sensors {
+                "No sensors detected"
+            } else {
+                "Sensor readings unavailable"
+            });
+            self.temperature_empty.set_tooltip_text(if no_sensors {
+                None
+            } else {
+                Some("Sensors were detected, but Linux could not read their current values.")
+            });
         }
     }
 }
@@ -644,7 +727,88 @@ fn update_core_bars_inplace(container: &GtkBox, percentages: &[f64]) {
 
 #[cfg(test)]
 mod tests {
-    use super::{TemperatureSeverity, temperature_severity};
+    use super::*;
+
+    #[test]
+    fn disk_and_sensor_widgets_survive_reorder_and_remove_stale_entries() {
+        // Run this GTK fixture alone under xvfb so GTK stays on its owning thread.
+        assert!(
+            !gtk4::is_initialized() || gtk4::is_initialized_main_thread(),
+            "Run each GTK fixture in its own process using scripts/test-native.sh"
+        );
+        gtk4::init().expect("GTK display required; use scripts/test-native.sh");
+        use maintainer_core::capability::Capability;
+        use maintainer_core::metrics::{DiskSnapshot, TemperatureGroup, TemperatureReading};
+        let disk = |name: &str, used_bytes| DiskSnapshot {
+            device: name.into(),
+            mount_point: format!("/{name}"),
+            fs_type: "ext4".into(),
+            total_bytes: 100,
+            used_bytes,
+            available_bytes: 100 - used_bytes,
+            read_bytes_per_sec: None,
+            write_bytes_per_sec: None,
+        };
+        let group = |name: &str, celsius| TemperatureGroup {
+            chip_name: name.into(),
+            representative: TemperatureReading {
+                hwmon_name: name.into(),
+                label: None,
+                celsius: Capability::Available(celsius),
+            },
+            details: Vec::new(),
+        };
+        let page = SystemPage::new();
+        let first = disk("first", 95);
+        let second = disk("second", 30);
+        page.update_disk_detail(&[first.clone(), second.clone()]);
+        let disk_key = ("first".into(), "/first".into());
+        let disk_row = page.disk_rows.borrow()[&disk_key].row.clone();
+        let disk_fill = page.disk_rows.borrow()[&disk_key].fill.clone();
+        assert!(disk_fill.has_css_class("maintainer_capacity_bar_fill_critical"));
+        page.update_disk_detail(&[second, disk("first", 20)]);
+        assert_eq!(page.disk_rows.borrow()[&disk_key].row, disk_row);
+        assert_eq!(page.disk_rows.borrow()[&disk_key].fill, disk_fill);
+        assert!(!disk_fill.has_css_class("maintainer_capacity_bar_fill_critical"));
+        assert_eq!(disk_fill.width_request(), 40);
+        assert_eq!(
+            page.disk_detail_box.first_child().unwrap(),
+            page.disk_rows.borrow()[&("second".into(), "/second".into())]
+                .row
+                .clone()
+                .upcast::<gtk4::Widget>()
+        );
+        page.update_disk_detail(&[first]);
+        assert_eq!(page.disk_rows.borrow().len(), 1);
+        page.update_disk_detail(&[]);
+        assert!(disk_row.parent().is_none());
+        assert!(page.disk_empty.is_visible());
+
+        let mut vm = SystemViewModel {
+            temperature_groups: vec![group("first", 90.0), group("second", 40.0)],
+            ..Default::default()
+        };
+        page.update_temperatures(&vm);
+        let key = ("first".into(), "first".into());
+        let chip = page.temperature_chips.borrow()[&key].wrapper.clone();
+        let value = page.temperature_chips.borrow()[&key].value.clone();
+        vm.temperature_groups = vec![group("second", 40.0), group("first", 50.0)];
+        page.update_temperatures(&vm);
+        assert_eq!(page.temperature_chips.borrow()[&key].wrapper, chip);
+        assert_eq!(page.temperature_chips.borrow()[&key].value, value);
+        assert_eq!(chip.index(), 1);
+        assert_eq!(value.text(), "50°C");
+        assert!(!value.has_css_class("maintainer_temperature_critical"));
+        vm.temperature_groups.remove(0);
+        page.update_temperatures(&vm);
+        assert_eq!(page.temperature_chips.borrow().len(), 1);
+        assert_eq!(chip.index(), 0);
+        vm.temperature_groups.clear();
+        page.update_temperatures(&vm);
+        assert!(chip.parent().is_none());
+        assert!(page.temperature_empty.is_visible());
+        assert_eq!(page.temperature_empty.text(), "No sensors detected");
+    }
 
     #[test]
     fn temperature_thresholds_match_ui_policy() {
