@@ -1,9 +1,9 @@
 //! Application shell: main window layout with navigation and page stack.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use glib::ControlFlow;
 use gtk4::prelude::*;
@@ -11,8 +11,6 @@ use gtk4::{
     Align, ApplicationWindow, Box as GtkBox, Button, Label, MenuButton, Orientation, Popover,
     Stack, StackTransitionType,
 };
-
-use maintainer_core::settings::SettingsRepository;
 
 use crate::monitoring::MonitoringMessage;
 use crate::runtime::RuntimeHandle;
@@ -53,7 +51,7 @@ impl Shell {
 
         let overview_page = OverviewPage::new();
         let system_page = SystemPage::new();
-        let network_page = NetworkPage::new();
+        let network_page = NetworkPage::new(runtime.borrow().executor.clone());
         let processes_page = ProcessesPage::new();
         // GTK4 has no refuse-fullscreen flag. Reverse compositor or keyboard
         // fullscreen requests as soon as the asynchronous property changes.
@@ -62,47 +60,6 @@ impl Shell {
                 window.unfullscreen();
             }
         });
-        let storage_page = StoragePage::new();
-        let cleanup_page = CleanupPage::new();
-        let updates_page = UpdatesPage::new();
-        let diagnostics_page = DiagnosticsPage::new();
-        let reports_widget = build_reports_page(runtime.clone());
-
-        let settings_snapshot = runtime.borrow().settings.clone();
-        let runtime_for_settings = runtime.clone();
-        let window_for_settings = window.clone();
-        let settings_widget = build_settings_page(&settings_snapshot, move |intent| match intent {
-            crate::state::SettingsIntent::RequestDeleteAllHistory => {
-                Self::confirm_settings_deletion(&window_for_settings, &runtime_for_settings, false);
-            }
-            crate::state::SettingsIntent::RequestDeleteAllData => {
-                Self::confirm_settings_deletion(&window_for_settings, &runtime_for_settings, true);
-            }
-            intent => {
-                let requested_theme = match &intent {
-                    crate::state::SettingsIntent::SetTheme(theme) => Some(*theme),
-                    _ => None,
-                };
-                let mut rt = runtime_for_settings.borrow_mut();
-                let mut settings_state =
-                    crate::state::SettingsState::from_snapshot(rt.settings.clone());
-                if settings_state.reduce(intent) {
-                    rt.settings = settings_state.snapshot.clone();
-                    if let Some(db) = rt.database() {
-                        let repo = maintainer_core::settings::SqliteSettingsRepository::new(db);
-                        let core_settings = to_core_settings(&settings_state.snapshot);
-                        if let Err(error) = repo.save(&core_settings) {
-                            eprintln!("warning: failed to save settings: {error}");
-                        }
-                    }
-                    drop(rt);
-                    if let Some(theme) = requested_theme {
-                        crate::application::apply_theme(theme);
-                    }
-                }
-            }
-        });
-
         let page_stack = Stack::new();
         page_stack.set_transition_type(StackTransitionType::None);
         page_stack.set_hexpand(true);
@@ -112,12 +69,45 @@ impl Shell {
         page_stack.add_named(system_page.widget(), Some("System"));
         page_stack.add_named(network_page.widget(), Some("Network"));
         page_stack.add_named(processes_page.widget(), Some("Processes"));
-        page_stack.add_named(storage_page.widget(), Some("Storage"));
-        page_stack.add_named(cleanup_page.widget(), Some("Cleanup"));
-        page_stack.add_named(updates_page.widget(), Some("Updates"));
-        page_stack.add_named(diagnostics_page.widget(), Some("Diagnostics"));
-        page_stack.add_named(&reports_widget, Some("Reports"));
-        page_stack.add_named(&settings_widget, Some("Settings"));
+        for page in [
+            Page::Storage,
+            Page::Cleanup,
+            Page::Updates,
+            Page::Diagnostics,
+            Page::Reports,
+            Page::Settings,
+        ] {
+            let runtime = runtime.clone();
+            let window = window.downgrade();
+            Self::add_lazy_page(&page_stack, page.label(), move || match page {
+                Page::Storage => {
+                    let page = StoragePage::new();
+                    Self::wire_storage_dispatch(&page, &runtime);
+                    Some(page.widget().clone().upcast())
+                }
+                Page::Cleanup => {
+                    let window = window.upgrade()?;
+                    let page = CleanupPage::new();
+                    Self::wire_cleanup_dispatch(&page, &runtime, &window);
+                    Some(page.widget().clone().upcast())
+                }
+                Page::Updates => {
+                    let page = UpdatesPage::new();
+                    Self::wire_updates_dispatch(&page, &runtime);
+                    Some(page.widget().clone().upcast())
+                }
+                Page::Diagnostics => {
+                    let page = DiagnosticsPage::new();
+                    Self::wire_diagnostics_dispatch(&page, &runtime);
+                    Some(page.widget().clone().upcast())
+                }
+                Page::Reports => Some(build_reports_page(runtime).upcast()),
+                Page::Settings => {
+                    Some(Self::build_runtime_settings_page(&runtime, &window.upgrade()?).upcast())
+                }
+                _ => None,
+            });
+        }
 
         page_stack.set_visible_child_name("Overview");
 
@@ -236,27 +226,66 @@ impl Shell {
 
         let runtime_for_proc_terminate = runtime.clone();
         let proc_terminate_status = processes_ref.operation_status_handle().clone();
+        let parent_for_process = window.downgrade();
         processes_ref.connect_terminate(move |pid, start_time_ticks| {
             proc_terminate_status.remove_css_class("error");
-            proc_terminate_status.set_text("Requesting authorization…");
+            proc_terminate_status.set_text("Preparing process review…");
             proc_terminate_status.set_visible(true);
-
             let rt = runtime_for_proc_terminate.borrow();
             let helper = rt.helper.clone();
             let executor = rt.executor.clone();
             drop(rt);
+            let executor_for_review = executor.clone();
             let status = proc_terminate_status.clone();
-            crate::dispatch::dispatch_helper_call(
+            let parent = parent_for_process.clone();
+            crate::dispatch::dispatch_local_action(
                 &executor,
-                move || helper.terminate_process(pid, start_time_ticks),
-                move |result| Self::show_helper_result(&status, result),
+                move || maintainer_core::metrics::ProcessHandle::acquire(
+                    maintainer_core::metrics::ProcessIdentity { pid, start_time_ticks }
+                ).map_err(|error| error.to_string()),
+                move |result| {
+                    let handle = match result {
+                        Ok(handle) => handle,
+                        Err(error) => {
+                            status.add_css_class("error");
+                            status.set_text(&error);
+                            return;
+                        }
+                    };
+                    let Some(parent) = parent.upgrade() else { return; };
+                    let dialog = gtk4::MessageDialog::builder()
+                        .transient_for(&parent).modal(true)
+                        .message_type(gtk4::MessageType::Warning)
+                        .text("End this process?")
+                        .secondary_text(format!(
+                            "{} (PID {}, start tick {}). Unsaved work may be lost. This sends SIGTERM; exit is not guaranteed.",
+                            handle.name(), handle.identity().pid, handle.identity().start_time_ticks
+                        )).build();
+                    dialog.add_button("Cancel", gtk4::ResponseType::Cancel);
+                    dialog.add_button("Send SIGTERM", gtk4::ResponseType::Accept);
+                    dialog.set_default_response(gtk4::ResponseType::Cancel);
+                    let retained_handle = RefCell::new(Some(handle));
+                    status.set_text("Review the process before authorization.");
+                    dialog.connect_response(move |dialog, response| {
+                        dialog.close();
+                        let Some(handle) = retained_handle.borrow_mut().take() else { return; };
+                        if response != gtk4::ResponseType::Accept {
+                            status.set_text("Cancelled; no signal was sent.");
+                            return;
+                        }
+                        status.set_text("Requesting authorization…");
+                        let status = status.clone();
+                        let helper = helper.clone();
+                        crate::dispatch::dispatch_helper_call(
+                            &executor_for_review,
+                            move || helper.terminate_process(handle),
+                            move |result| Self::show_helper_result(&status, result),
+                        );
+                    });
+                    dialog.present();
+                },
             );
         });
-        Self::wire_storage_dispatch(&storage_page, &runtime);
-        Self::wire_cleanup_dispatch(&cleanup_page, &runtime, &window);
-        Self::wire_updates_dispatch(&updates_page, &runtime);
-        Self::wire_diagnostics_dispatch(&diagnostics_page, &runtime);
-
         let runtime_for_timer = runtime.clone();
         let overview_for_timer = overview_ref.clone();
         let system_for_timer = system_ref.clone();
@@ -264,11 +293,29 @@ impl Shell {
         let processes_for_timer = processes_ref.clone();
 
         let runtime_for_vis = runtime.clone();
-        window.connect_is_active_notify(move |win| {
-            let visible = win.is_active();
-            let mut rt = runtime_for_vis.borrow_mut();
-            rt.monitoring
-                .reduce(MonitoringMessage::VisibilityChanged(visible));
+        window.connect_visible_notify(move |win| {
+            runtime_for_vis
+                .borrow_mut()
+                .monitoring
+                .reduce(MonitoringMessage::VisibilityChanged(
+                    Self::monitoring_window_visible(win),
+                ));
+        });
+        let runtime_for_surface = runtime.clone();
+        window.connect_realize(move |win| {
+            if let Some(toplevel) = win.surface().and_downcast::<gtk4::gdk::Toplevel>() {
+                let window = win.downgrade();
+                let runtime = runtime_for_surface.clone();
+                toplevel.connect_state_notify(move |_| {
+                    if let Some(window) = window.upgrade() {
+                        runtime.borrow_mut().monitoring.reduce(
+                            MonitoringMessage::VisibilityChanged(Self::monitoring_window_visible(
+                                &window,
+                            )),
+                        );
+                    }
+                });
+            }
         });
 
         Self::start_monitoring_timer(
@@ -280,7 +327,194 @@ impl Shell {
             page_stack.clone(),
         );
 
+        Self::wire_settings_close_drain(&window, &runtime, &page_stack);
+        crate::probe::install_navigation_canary(&window, &page_stack, &sidebar_container);
+
         Shell { window }
+    }
+
+    fn monitoring_window_visible(window: &ApplicationWindow) -> bool {
+        window.is_visible()
+            && !window
+                .surface()
+                .and_downcast::<gtk4::gdk::Toplevel>()
+                .is_some_and(|toplevel| {
+                    toplevel
+                        .state()
+                        .contains(gtk4::gdk::ToplevelState::MINIMIZED)
+                })
+    }
+
+    fn add_lazy_page(
+        stack: &Stack,
+        name: &'static str,
+        factory: impl FnOnce() -> Option<gtk4::Widget> + 'static,
+    ) {
+        let host = GtkBox::new(Orientation::Vertical, 0);
+        host.set_hexpand(true);
+        host.set_vexpand(true);
+        stack.add_named(&host, Some(name));
+        let factory = RefCell::new(Some(factory));
+        stack.connect_visible_child_name_notify(move |stack| {
+            if stack.visible_child_name().as_deref() != Some(name) {
+                return;
+            }
+            // Consume before constructing widgets: notifications cannot build a
+            // second instance, and cached roots retain active jobs and UI state.
+            let build = factory.borrow_mut().take();
+            if let Some(widget) = build.and_then(|build| build()) {
+                host.append(&widget);
+            }
+        });
+    }
+
+    fn refresh_mounted_settings(
+        runtime: &RuntimeHandle,
+        window: &ApplicationWindow,
+        stack: &Stack,
+    ) {
+        let Some(host) = stack.child_by_name("Settings").and_downcast::<GtkBox>() else {
+            return;
+        };
+        if host.first_child().is_none() {
+            return;
+        }
+        while let Some(child) = host.first_child() {
+            host.remove(&child);
+        }
+        host.append(&Self::build_runtime_settings_page(runtime, window));
+    }
+
+    fn wire_settings_close_drain(
+        window: &ApplicationWindow,
+        runtime: &RuntimeHandle,
+        pages: &Stack,
+    ) {
+        use crate::runtime::SettingsCloseState;
+        let allow_close = Rc::new(Cell::new(false));
+        let draining = Rc::new(Cell::new(false));
+        let runtime = runtime.clone();
+        let pages = pages.clone();
+        window.connect_close_request(move |window| {
+            if allow_close.get() {
+                return glib::Propagation::Proceed;
+            }
+            if draining.get() {
+                return glib::Propagation::Stop;
+            }
+            if runtime.borrow().settings_close_state(false) == SettingsCloseState::Ready {
+                return glib::Propagation::Proceed;
+            }
+            draining.set(true);
+            window.set_sensitive(false);
+            let progress = gtk4::MessageDialog::builder().transient_for(window).modal(true)
+                .text("Saving local changes before closing…")
+                .secondary_text("Please wait for settings and confirmed data clearing to finish.")
+                .build();
+            let allow_close = allow_close.clone();
+            let draining = draining.clone();
+            let runtime = runtime.clone();
+            let pages = pages.clone();
+            let window = window.clone();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            progress.present();
+            glib::timeout_add_local(Duration::from_millis(50), move || {
+                let mut rt = runtime.borrow_mut();
+                let reset = rt.poll_settings_writes().is_some_and(|result| result.reset_defaults);
+                let state = rt.settings_close_state(Instant::now() >= deadline);
+                let theme = rt.settings.theme;
+                drop(rt);
+                if reset {
+                    crate::application::apply_theme(theme);
+                    Self::refresh_mounted_settings(&runtime, &window, &pages);
+                }
+                match state {
+                    SettingsCloseState::Pending => ControlFlow::Continue,
+                    SettingsCloseState::Ready => {
+                        progress.close();
+                        allow_close.set(true);
+                        window.close();
+                        ControlFlow::Break
+                    }
+                    SettingsCloseState::Failed(error) => {
+                        progress.close();
+                        let failure = gtk4::MessageDialog::builder().transient_for(&window).modal(true)
+                            .message_type(gtk4::MessageType::Warning)
+                            .text("Local changes could not be confirmed saved")
+                            .secondary_text(format!("{error}\n\nStay open to keep working, or exit with unsaved or incomplete changes."))
+                            .build();
+                        failure.add_button("Stay Open", gtk4::ResponseType::Cancel);
+                        failure.add_button("Exit Anyway", gtk4::ResponseType::Accept);
+                        failure.set_default_response(gtk4::ResponseType::Cancel);
+                        let window = window.clone();
+                        let allow_close = allow_close.clone();
+                        let draining = draining.clone();
+                        failure.connect_response(move |dialog, response| {
+                            dialog.close();
+                            window.set_sensitive(true);
+                            draining.set(false);
+                            if response == gtk4::ResponseType::Accept {
+                                allow_close.set(true);
+                                window.close();
+                            }
+                        });
+                        failure.present();
+                        ControlFlow::Break
+                    }
+                }
+            });
+            glib::Propagation::Stop
+        });
+    }
+
+    fn build_runtime_settings_page(
+        runtime: &RuntimeHandle,
+        window: &ApplicationWindow,
+    ) -> gtk4::ScrolledWindow {
+        let settings_snapshot = runtime.borrow().settings.clone();
+        let runtime_for_settings = runtime.clone();
+        let window_for_settings = window.clone();
+        let settings_widget = build_settings_page(&settings_snapshot, move |intent| match intent {
+            crate::state::SettingsIntent::RequestDeleteAllHistory => {
+                Self::confirm_settings_deletion(&window_for_settings, &runtime_for_settings, false);
+            }
+            crate::state::SettingsIntent::RequestDeleteAllData => {
+                Self::confirm_settings_deletion(&window_for_settings, &runtime_for_settings, true);
+            }
+            intent => {
+                let requested_theme = match &intent {
+                    crate::state::SettingsIntent::SetTheme(theme) => Some(*theme),
+                    _ => None,
+                };
+                let mut rt = runtime_for_settings.borrow_mut();
+                if rt.db_loading || rt.clearing_settings {
+                    return;
+                }
+                let mut settings_state =
+                    crate::state::SettingsState::from_snapshot(rt.settings.clone());
+                if settings_state.reduce(intent) {
+                    rt.settings = settings_state.snapshot.clone();
+                    rt.monitoring.set_sampling_intervals(
+                        settings_state.snapshot.refresh_interval_secs,
+                        settings_state.snapshot.hidden_interval_secs,
+                    );
+                    let saved = rt.save_settings(to_core_settings(&settings_state.snapshot));
+                    drop(rt);
+                    if let Err(message) = saved {
+                        Self::show_settings_result(&window_for_settings, false, &message);
+                    }
+                    if let Some(theme) = requested_theme {
+                        crate::application::apply_theme(theme);
+                    }
+                }
+            }
+        });
+
+        settings_widget.set_sensitive({
+            let rt = runtime.borrow();
+            !rt.db_loading && !rt.clearing_settings
+        });
+        settings_widget
     }
 
     fn confirm_settings_deletion(
@@ -320,6 +554,14 @@ impl Shell {
                 return;
             }
 
+            if delete_all_data {
+                let result = runtime_for_response.borrow_mut().clear_settings_data();
+                if let Err(message) = result {
+                    Self::show_settings_result(&parent_for_response, false, &message);
+                }
+                return;
+            }
+
             let rt = runtime_for_response.borrow();
             let Some(database) = rt.db.clone() else {
                 Self::show_settings_result(
@@ -332,36 +574,15 @@ impl Shell {
             let executor = rt.executor.clone();
             drop(rt);
 
-            let runtime_for_done = runtime_for_response.clone();
             let parent_for_done = parent_for_response.clone();
             crate::dispatch::dispatch_local_action(
                 &executor,
                 move || {
-                    let result = if delete_all_data {
-                        database.clear_user_data()
-                    } else {
-                        database.clear_history()
-                    };
+                    let result = database.clear_history();
                     result.map_err(|error| error.to_string())
                 },
                 move |result| match result {
                     Ok(deleted) => {
-                        if delete_all_data {
-                            let defaults = crate::state::SettingsSnapshot::default();
-                            runtime_for_done.borrow_mut().settings = defaults.clone();
-                            if let Some(database) = runtime_for_done.borrow().db.as_deref() {
-                                let repository =
-                                    maintainer_core::settings::SqliteSettingsRepository::new(database);
-                                if let Err(error) = repository.save(&to_core_settings(&defaults)) {
-                                    Self::show_settings_result(
-                                        &parent_for_done,
-                                        false,
-                                        &format!("Data was cleared, but defaults could not be saved: {error}"),
-                                    );
-                                    return;
-                                }
-                            }
-                        }
                         Self::show_settings_result(
                             &parent_for_done,
                             true,
@@ -443,181 +664,76 @@ impl Shell {
     ) {
         let tick_counter: Rc<RefCell<u32>> = Rc::new(RefCell::new(0));
 
-        let (snapshot_tx, snapshot_rx) =
-            std::sync::mpsc::channel::<Box<maintainer_core::metrics::SystemSnapshot>>();
+        let latest_snapshot = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let snapshot_for_worker = latest_snapshot.clone();
+        let (device_info_tx, device_info_rx) =
+            std::sync::mpsc::channel::<crate::monitoring::DeviceInfo>();
+        let mut connection_pending: Option<
+            maintainer_core::jobs::JobReceiver<maintainer_core::metrics::ConnectionDetails>,
+        > = None;
 
-        // Bounded request channel (capacity=1) provides tick coalescing.
-        // reuses the last collected process list instead of re-reading all of
-        // /proc/[pid], which is the single most expensive collector per tick.
+        // Coalesce worker requests. Only the Processes page requests a scan;
+        // its view model owns the retained rows between fresh process samples.
         let (request_tx, request_rx) = std::sync::mpsc::sync_channel::<bool>(1);
 
-        std::thread::Builder::new()
+        let device_info_worker_started = std::thread::Builder::new()
+            .name("device-info-worker".into())
+            .spawn(move || {
+                let info = crate::monitoring::collect_device_info();
+                let _ = device_info_tx.send(info);
+            })
+            .is_ok();
+        if !device_info_worker_started {
+            let info = crate::monitoring::DeviceInfo {
+                model: "Unavailable".into(),
+                os: "Unavailable".into(),
+                kernel: "Unavailable".into(),
+                cpu: "Unavailable".into(),
+                gpu: "Unavailable".into(),
+                memory: "Unavailable".into(),
+                storage: "Unavailable".into(),
+                desktop_env: "Unavailable".into(),
+                display_server: "Unavailable".into(),
+            };
+            runtime.borrow_mut().monitoring.overview.device_info = info;
+        }
+
+        let metric_worker_started = std::thread::Builder::new()
             .name("metric-worker".into())
             .spawn(move || {
-                use maintainer_core::capability::{Capability, UnavailableReason};
-                use maintainer_core::metrics::disk::read_mounts_with_capacity;
-                use maintainer_core::metrics::network::NetCounters;
-                use maintainer_core::metrics::{
-                    CpuSample, NetworkSnapshot, ProcessSnapshot, SystemSnapshot,
-                    compute_cpu_snapshot, read_cpu_sample, read_memory, read_net_dev,
-                    read_processes,
-                };
-                use std::collections::HashMap;
-                use std::path::Path;
-                use std::time::Instant;
-
-                let proc_path = Path::new("/proc");
-                let sys_path = Path::new("/sys");
-                let mut prev_cpu: Option<CpuSample> = None;
-                let mut prev_net: Option<(HashMap<String, NetCounters>, Instant)> = None;
-                let mut last_processes: Option<Capability<Vec<ProcessSnapshot>>> = None;
-                let mut temperature_collector =
-                    maintainer_core::metrics::TemperatureCollector::new();
-
+                let mut collector = maintainer_core::metrics::SystemCollector::new();
                 while let Ok(mut needs_processes) = request_rx.recv() {
                     // Drain coalesced ticks; keep the most recent request's flag.
                     while let Ok(latest) = request_rx.try_recv() {
                         needs_processes = latest;
                     }
 
-                    let now = Instant::now();
+                    let snapshot = collector.collect(needs_processes);
 
-                    let cpu = match read_cpu_sample(proc_path, now) {
-                        Ok(sample) => {
-                            let snapshot = match &prev_cpu {
-                                Some(prev) => compute_cpu_snapshot(prev, &sample),
-                                None => maintainer_core::metrics::CpuSnapshot {
-                                    total_percent: 0.0,
-                                    per_core_percent: vec![0.0; sample.cores.len()],
-                                },
-                            };
-                            prev_cpu = Some(sample);
-                            Capability::Available(snapshot)
-                        }
-                        Err(e) => Capability::Unavailable(UnavailableReason {
-                            code: "proc-stat-read",
-                            message: e.to_string(),
-                            remediation: None,
-                        }),
-                    };
-
-                    let memory = match read_memory(proc_path) {
-                        Ok(m) => Capability::Available(m),
-                        Err(e) => Capability::Unavailable(UnavailableReason {
-                            code: "meminfo-read",
-                            message: e.to_string(),
-                            remediation: None,
-                        }),
-                    };
-
-                    let disks = match read_mounts_with_capacity(proc_path) {
-                        Ok(d) => Capability::Available(d),
-                        Err(e) => Capability::Unavailable(UnavailableReason {
-                            code: "mounts-read",
-                            message: e.to_string(),
-                            remediation: None,
-                        }),
-                    };
-
-                    let network = match read_net_dev(proc_path) {
-                        Ok(counters) => {
-                            let prev = prev_net.take();
-                            let snapshots: Vec<NetworkSnapshot> = counters
-                                .iter()
-                                .map(|(iface, c)| {
-                                    let (rx_rate, tx_rate) = match &prev {
-                                        Some((prev_counters, prev_time)) => {
-                                            let elapsed =
-                                                now.duration_since(*prev_time).as_secs_f64();
-                                            if elapsed > 0.0 {
-                                                if let Some(pc) = prev_counters.get(iface) {
-                                                    let rx =
-                                                        (c.rx_bytes.saturating_sub(pc.rx_bytes))
-                                                            as f64
-                                                            / elapsed;
-                                                    let tx =
-                                                        (c.tx_bytes.saturating_sub(pc.tx_bytes))
-                                                            as f64
-                                                            / elapsed;
-                                                    (Some(rx), Some(tx))
-                                                } else {
-                                                    (None, None)
-                                                }
-                                            } else {
-                                                (None, None)
-                                            }
-                                        }
-                                        None => (None, None),
-                                    };
-                                    NetworkSnapshot {
-                                        interface: iface.clone(),
-                                        is_loopback: iface == "lo",
-                                        rx_bytes: c.rx_bytes,
-                                        tx_bytes: c.tx_bytes,
-                                        rx_packets: c.rx_packets,
-                                        tx_packets: c.tx_packets,
-                                        rx_errors: c.rx_errors,
-                                        tx_errors: c.tx_errors,
-                                        rx_bytes_per_sec: rx_rate,
-                                        tx_bytes_per_sec: tx_rate,
-                                    }
-                                })
-                                .collect();
-                            prev_net = Some((counters, now));
-                            Capability::Available(snapshots)
-                        }
-                        Err(e) => Capability::Unavailable(UnavailableReason {
-                            code: "net-dev-read",
-                            message: e.to_string(),
-                            remediation: None,
-                        }),
-                    };
-
-                    let temperatures = match temperature_collector.read(sys_path) {
-                        Ok(t) => Capability::Available(t),
-                        Err(e) => Capability::Unavailable(UnavailableReason {
-                            code: "hwmon-read",
-                            message: e.to_string(),
-                            remediation: None,
-                        }),
-                    };
-
-                    let processes = if needs_processes {
-                        let result = match read_processes(proc_path) {
-                            Ok(p) => Capability::Available(p),
-                            Err(e) => Capability::Unavailable(UnavailableReason {
-                                code: "proc-read",
-                                message: e.to_string(),
-                                remediation: None,
-                            }),
-                        };
-                        last_processes = Some(result.clone());
-                        result
-                    } else {
-                        last_processes.clone().unwrap_or(Capability::Unavailable(
-                            UnavailableReason {
-                                code: "proc-not-requested",
-                                message: "Process list not requested for this sample".into(),
-                                remediation: None,
-                            },
-                        ))
-                    };
-
-                    let snapshot = SystemSnapshot {
-                        cpu,
-                        memory,
-                        disks,
-                        network,
-                        temperatures,
-                        processes,
-                    };
-
-                    if snapshot_tx.send(Box::new(snapshot)).is_err() {
-                        break;
+                    match snapshot_for_worker.lock() {
+                        Ok(mut latest) => *latest = Some(Box::new(snapshot)),
+                        Err(_) => break,
                     }
                 }
             })
-            .expect("failed to spawn metric-worker thread");
+            .is_ok();
+        if !metric_worker_started {
+            let mut runtime = runtime.borrow_mut();
+            runtime.monitoring.overview.cpu_text = "Unavailable".into();
+            runtime.monitoring.overview.memory_text = "Unavailable".into();
+            runtime.monitoring.overview.disk_text = "Unavailable".into();
+            runtime.monitoring.overview.network_text = "Unavailable".into();
+            runtime.monitoring.overview.cpu_unavailable_reason =
+                Some("Monitoring worker could not start".into());
+            runtime.monitoring.overview.memory_unavailable_reason =
+                Some("Monitoring worker could not start".into());
+            runtime.monitoring.network_vm.unavailable_reason =
+                Some("Monitoring worker could not start".into());
+            runtime.monitoring.processes_vm.unavailable_reason =
+                Some("Monitoring worker could not start".into());
+        }
+
+        let last_connection_request = Rc::new(Cell::new(None::<Instant>));
 
         // Refresh a page as soon as it becomes visible. The timer only updates
         // the page on screen, so without this a page switched to would show
@@ -628,12 +744,16 @@ impl Shell {
             let system_for_switch = system.clone();
             let network_for_switch = network.clone();
             let processes_for_switch = processes.clone();
+            let last_connection_request = last_connection_request.clone();
             page_stack.connect_visible_child_name_notify(move |stack| {
                 let rt = runtime_for_switch.borrow();
                 match stack.visible_child_name().as_deref() {
                     Some("Overview") => overview_for_switch.update(&rt.monitoring.overview),
                     Some("System") => system_for_switch.update(&rt.monitoring.system),
-                    Some("Network") => network_for_switch.update(&rt.monitoring.network_vm),
+                    Some("Network") => {
+                        last_connection_request.set(None);
+                        network_for_switch.update(&rt.monitoring.network_vm);
+                    }
                     Some("Processes") => processes_for_switch.update(&rt.monitoring.processes_vm),
                     _ => {}
                 }
@@ -642,7 +762,50 @@ impl Shell {
 
         // Timer tick: request samples and drain results.
         glib::timeout_add_local(Duration::from_secs(1), move || {
+            if page_stack.root().is_none() {
+                return ControlFlow::Break;
+            }
             let mut rt = runtime.borrow_mut();
+            let was_loading = rt.db_loading;
+            let loaded_theme = rt.poll_database_initialization();
+            let write_result = rt.poll_settings_writes();
+            let reset_settings = write_result
+                .as_ref()
+                .is_some_and(|result| result.reset_defaults);
+            let settings_theme = reset_settings.then_some(rt.settings.theme).or(loaded_theme);
+            let database_finished = was_loading && !rt.db_loading;
+            if let Some(widget) = page_stack.child_by_name("Settings") {
+                widget.set_sensitive(!rt.db_loading && !rt.clearing_settings);
+            }
+            if let Some(result) = write_result.filter(|_| {
+                page_stack
+                    .root()
+                    .is_some_and(|window| window.is_sensitive())
+            }) {
+                if let Some(window) = page_stack.root().and_downcast::<ApplicationWindow>() {
+                    match result.result {
+                        Ok(deleted) if result.cleared => Self::show_settings_result(
+                            &window,
+                            true,
+                            &format!(
+                                "Deleted {deleted} local record(s). Settings restored to defaults."
+                            ),
+                        ),
+                        Err(message) => Self::show_settings_result(&window, false, &message),
+                        Ok(_) => {}
+                    }
+                }
+            }
+            if database_finished || reset_settings {
+                drop(rt);
+                if let Some(window) = page_stack.root().and_downcast::<ApplicationWindow>() {
+                    Self::refresh_mounted_settings(&runtime, &window, &page_stack);
+                }
+                if let Some(theme) = settings_theme {
+                    crate::application::apply_theme(theme);
+                }
+                rt = runtime.borrow_mut();
+            }
             let immediate = rt.monitoring.immediate_sample_pending;
             let interval_secs = rt.monitoring.interval.as_secs() as u32;
 
@@ -658,7 +821,41 @@ impl Shell {
             // page-switch handler repaints the incoming page immediately.
             let visible_page = page_stack.visible_child_name();
             let visible_page = visible_page.as_deref();
-            while let Ok(snapshot) = snapshot_rx.try_recv() {
+            while let Ok(info) = device_info_rx.try_recv() {
+                rt.monitoring.overview.device_info = info;
+                if visible_page == Some("Overview") {
+                    overview.update(&rt.monitoring.overview);
+                }
+            }
+            let connection_result = connection_pending
+                .as_ref()
+                .map(|receiver| receiver.try_recv());
+            if let Some(result) = connection_result {
+                match result {
+                    Ok(maintainer_core::jobs::JobMessage::Completed(details)) => {
+                        rt.monitoring.network_vm.connection_details = details;
+                        rt.monitoring.network_vm.connection_unavailable_reason = None;
+                        connection_pending = None;
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                    _ => {
+                        rt.monitoring.network_vm.connection_details = Default::default();
+                        rt.monitoring.network_vm.connection_unavailable_reason = Some(
+                            "Connection details are unavailable; another operation may be busy."
+                                .into(),
+                        );
+                        connection_pending = None;
+                    }
+                }
+                if visible_page == Some("Network") {
+                    network.update(&rt.monitoring.network_vm);
+                }
+            }
+            let snapshot = latest_snapshot
+                .lock()
+                .ok()
+                .and_then(|mut latest| latest.take());
+            if let Some(snapshot) = snapshot {
                 rt.monitoring
                     .reduce(MonitoringMessage::SnapshotReady(snapshot));
                 match visible_page {
@@ -667,6 +864,28 @@ impl Shell {
                     Some("Network") => network.update(&rt.monitoring.network_vm),
                     Some("Processes") => processes.update(&rt.monitoring.processes_vm),
                     _ => {}
+                }
+                crate::probe::mark_once("first-data");
+            }
+
+            if visible_page == Some("Network") {
+                let due = last_connection_request
+                    .get()
+                    .is_none_or(|last| last.elapsed() >= Duration::from_secs(10));
+                if due && connection_pending.is_none() {
+                    let token = maintainer_core::jobs::CancellationToken::new();
+                    let worker_token = token.clone();
+                    connection_pending = Some(rt.executor.execute_sized(vec![move || {
+                        Ok(maintainer_core::metrics::connection::read_connection_details_cancellable(&worker_token))
+                    }], token, |details| {
+                        std::mem::size_of_val(details)
+                            + details.ip_address.as_ref().map_or(0, String::capacity)
+                            + details.gateway.as_ref().map_or(0, String::capacity)
+                            + details.dns_servers.capacity() * std::mem::size_of::<String>()
+                            + details.dns_servers.iter().map(String::capacity).sum::<usize>()
+                            + details.wifi.as_ref().map_or(0, |wifi| std::mem::size_of_val(wifi) + wifi.ssid.capacity() + wifi.signal.capacity() + wifi.link_speed.capacity() + wifi.frequency.capacity())
+                    }));
+                    last_connection_request.set(Some(Instant::now()));
                 }
             }
 
@@ -678,11 +897,10 @@ impl Shell {
             rt.monitoring.immediate_sample_pending = false;
 
             // Non-blocking: if worker is busy, this tick coalesces.
-            let needs_processes = matches!(
-                page_stack.visible_child_name().as_deref(),
-                Some("System") | Some("Processes")
-            );
-            let _ = request_tx.try_send(needs_processes);
+            let needs_processes = page_stack.visible_child_name().as_deref() == Some("Processes");
+            if metric_worker_started {
+                let _ = request_tx.try_send(needs_processes);
+            }
 
             ControlFlow::Continue
         });
@@ -1127,6 +1345,14 @@ impl Shell {
         let active_token: Rc<RefCell<Option<maintainer_core::jobs::CancellationToken>>> =
             Rc::new(RefCell::new(None));
 
+        let cancel_token = active_token.clone();
+        let cancel_status = cleanup_page.status_label_handle();
+        cleanup_page.cancel_button().connect_clicked(move |_| {
+            if let Some(token) = cancel_token.borrow().as_ref() { token.cancel(); }
+            cancel_status.set_text("Cancellation requested. An authorized file operation already in progress may finish.");
+            cancel_status.set_visible(true);
+        });
+
         let runtime_for_scan = runtime.clone();
         let page_for_scan = page.clone();
         let plan_for_scan = current_plan.clone();
@@ -1194,6 +1420,90 @@ impl Shell {
                     },
                 );
             });
+        let recovery_runtime = runtime.clone();
+        let recovery_parent = parent.clone();
+        let recovery_status = cleanup_page.status_label_handle();
+        cleanup_page.recovery_button().connect_clicked(move |button| {
+            button.set_sensitive(false);
+            recovery_status.set_text("Requesting authorization to inspect retained cleanup entries…");
+            recovery_status.set_visible(true);
+            let executor = recovery_runtime.borrow().executor.clone();
+            let button = button.clone();
+            let parent = recovery_parent.clone();
+            let status = recovery_status.clone();
+            let restore_executor = executor.clone();
+            dispatch::dispatch_cleanup_recovery(&executor, None, move |outcome| {
+                button.set_sensitive(true);
+                match outcome {
+                    dispatch::CleanupRecoveryOutcome::Listed(items) => {
+                        status.set_text(&format!("{} retained cleanup entries", items.len()));
+                        let dialog = gtk4::Window::builder().title("Cleanup Recovery").transient_for(&parent).modal(true).default_width(600).default_height(360).build();
+                        let content = gtk4::Box::new(gtk4::Orientation::Vertical, 12);
+                        content.set_margin_top(18); content.set_margin_bottom(18);
+                        content.set_margin_start(18); content.set_margin_end(18);
+                        let explanation = gtk4::Label::new(Some("Restore returns an entry to its original folder. If that folder is gone, choose Restore elsewhere. The original name is retained and nothing is overwritten. Select a folder on the same filesystem."));
+                        explanation.set_wrap(true); content.append(&explanation);
+                        if items.is_empty() { content.append(&gtk4::Label::new(Some("No cleanup recovery is needed."))); }
+                        for item in items {
+                            let row = gtk4::Box::new(gtk4::Orientation::Horizontal, 12);
+                            let label = gtk4::Label::new(Some(&format!("{}  [{}]", item.basename, item.id)));
+                            label.set_hexpand(true); label.set_ellipsize(gtk4::pango::EllipsizeMode::Middle);
+                            let restore = gtk4::Button::with_label("Restore");
+                            let elsewhere = gtk4::Button::with_label("Restore elsewhere…");
+                            let elsewhere_item = item.clone();
+                            let executor = restore_executor.clone();
+                            let alternate = elsewhere.clone();
+                            restore.connect_clicked(move |button| {
+                                button.set_sensitive(false); alternate.set_sensitive(false);
+                                let button = button.clone(); let alternate = alternate.clone();
+                                dispatch::dispatch_cleanup_recovery(&executor, Some((item.clone(), None)), move |outcome| {
+                                    match outcome {
+                                        dispatch::CleanupRecoveryOutcome::Restored { notice } => {
+                                            button.set_label(if notice.is_some() { "Restored; durability unconfirmed" } else { "Restored" });
+                                            button.set_tooltip_text(notice.as_deref());
+                                        },
+                                        dispatch::CleanupRecoveryOutcome::Failed(message) => {
+                                            button.set_label("Retry Restore"); button.set_sensitive(true); alternate.set_sensitive(true);
+                                            button.set_tooltip_text(Some(&message));
+                                        }
+                                        _ => {}
+                                    }
+                                });
+                            });
+                            let executor = restore_executor.clone();
+                            let original = restore.clone();
+                            let recovery_dialog = dialog.clone();
+                            elsewhere.connect_clicked(move |button| {
+                                button.set_sensitive(false); original.set_sensitive(false);
+                                let chooser = gtk4::FileChooserDialog::new(Some("Restore Retained Entry Elsewhere"), Some(&recovery_dialog), gtk4::FileChooserAction::SelectFolder, &[("Cancel", gtk4::ResponseType::Cancel), ("Restore Here", gtk4::ResponseType::Accept)]);
+                                let button = button.clone(); let original = original.clone(); let item = elsewhere_item.clone(); let executor = executor.clone();
+                                chooser.connect_response(move |chooser, response| {
+                                    let destination = if response == gtk4::ResponseType::Accept { chooser.file().and_then(|file| file.path()) } else { None };
+                                    chooser.close();
+                                    let Some(destination) = destination else { button.set_sensitive(true); original.set_sensitive(true); return; };
+                                    let button = button.clone(); let original = original.clone();
+                                    dispatch::dispatch_cleanup_recovery(&executor, Some((item.clone(), Some(destination))), move |outcome| {
+                                        match outcome {
+                                            dispatch::CleanupRecoveryOutcome::Restored { notice } => {
+                                                button.set_label(if notice.is_some() { "Restored; durability unconfirmed" } else { "Restored elsewhere" }); button.set_tooltip_text(notice.as_deref());
+                                            }
+                                            dispatch::CleanupRecoveryOutcome::Failed(message) => { button.set_sensitive(true); original.set_sensitive(true); button.set_tooltip_text(Some(&message)); }
+                                            _ => {}
+                                        }
+                                    });
+                                });
+                                chooser.present();
+                            });
+                            row.append(&label); row.append(&restore); row.append(&elsewhere); content.append(&row);
+                        }
+                        let scrolled = gtk4::ScrolledWindow::new(); scrolled.set_child(Some(&content));
+                        dialog.set_child(Some(&scrolled)); dialog.present();
+                    }
+                    dispatch::CleanupRecoveryOutcome::Failed(message) => status.set_text(&message),
+                    _ => {}
+                }
+            });
+        });
         let token_for_scan = active_token.clone();
         cleanup_page.scan_button().connect_clicked(move |_| {
             page_for_scan.show_executing("Scanning reclaimable files…");
@@ -1214,17 +1524,12 @@ impl Shell {
                 },
                 move |outcome| {
                     match outcome {
-                        CleanupScanOutcome::Completed { targets } => {
-                            let home = std::env::var("HOME")
-                                .map(PathBuf::from)
-                                .unwrap_or_else(|_| PathBuf::from("/tmp"));
-                            match CleanupPlan::from_targets(targets, &home) {
-                                Ok(plan) => {
-                                    done_page.show_plan(&plan);
-                                    *done_plan.borrow_mut() = Some(plan);
-                                }
-                                Err(error) => done_page.show_error(&error.to_string()),
-                            }
+                        CleanupScanOutcome::Completed { plan } => {
+                            done_page.show_plan(&plan);
+                            *done_plan.borrow_mut() = Some(plan);
+                        }
+                        CleanupScanOutcome::Cancelled => {
+                            done_page.show_result("Scan cancelled. No files were changed.", false)
                         }
                         CleanupScanOutcome::Failed { message } => done_page.show_error(&message),
                     }
@@ -1284,9 +1589,11 @@ impl Shell {
             let confirm_runtime = runtime_for_execute.clone();
             let confirm_token = token_for_execute.clone();
             let confirm_plan = plan.clone();
+            let release_plan = plan_for_execute.clone();
             let confirm_indices = selected_indices.clone();
             confirmation.confirm_button().connect_clicked(move |_| {
                 confirm_dialog.close();
+                release_plan.borrow_mut().take();
                 let rt = confirm_runtime.borrow();
                 let Some(database) = rt.db.clone() else {
                     confirm_page.show_error("Cleanup history database is unavailable.");
@@ -1311,10 +1618,31 @@ impl Shell {
                         match outcome {
                             CleanupExecutionOutcome::Completed(result) => {
                                 let summary = format!(
-                                    "Removed {} item(s), recovered {}.",
+                                    "Removed {} item(s); physical reclaimed space measured: {}.",
                                     result.outcome.succeeded,
                                     Self::format_size(result.actual_recovered_bytes)
                                 );
+                                let failures = result
+                                    .item_results
+                                    .iter()
+                                    .filter_map(|item| match item {
+                                        maintainer_core::jobs::ItemResult::Failed {
+                                            message,
+                                            ..
+                                        } => Some(message.as_str()),
+                                        maintainer_core::jobs::ItemResult::Ok(item) => {
+                                            item.notice.as_deref()
+                                        }
+                                        _ => None,
+                                    })
+                                    .take(4)
+                                    .collect::<Vec<_>>()
+                                    .join("\n");
+                                let summary = if failures.is_empty() {
+                                    summary
+                                } else {
+                                    format!("{summary}\n{failures}")
+                                };
                                 done_page.show_result(&summary, result.outcome.failed == 0);
                             }
                             CleanupExecutionOutcome::Failed { message } => {
@@ -1332,7 +1660,7 @@ impl Shell {
 
     /// Wire update discovery, review, and helper-authorized APT execution.
     fn wire_updates_dispatch(updates_page: &UpdatesPage, runtime: &RuntimeHandle) {
-        use crate::dispatch::{self, UpdateExecutionOutcome, UpdatesCheckOutcome};
+        use crate::dispatch::{self, UpdatesCheckOutcome};
         use crate::ui::updates::{
             SelectionMode, filter_candidates_for_mode, format_filtered_summary,
         };
@@ -1343,6 +1671,11 @@ impl Shell {
         let active_token: Rc<RefCell<Option<maintainer_core::jobs::CancellationToken>>> =
             Rc::new(RefCell::new(None));
 
+        let workflow = crate::package_workflow::PackageWorkflow::new(
+            updates_page,
+            runtime.borrow().executor.clone(),
+        );
+
         // --- Wire selection mode toggles ---
         let plan_for_everything = current_plan.clone();
         let page_for_everything = page.clone();
@@ -1352,6 +1685,17 @@ impl Shell {
                 if btn.is_active() {
                     let mut p = page_for_everything.clone();
                     p.set_selection_mode(SelectionMode::Everything);
+                    let needs_full_review =
+                        plan_for_everything.borrow().as_ref().is_some_and(|plan| {
+                            matches!(
+                                plan.intent,
+                                maintainer_core::updates::UpdateIntent::Selected(_)
+                            )
+                        });
+                    if needs_full_review {
+                        p.check_button().emit_clicked();
+                        return;
+                    }
                     if let Some(plan) = plan_for_everything.borrow().as_ref() {
                         let filtered =
                             filter_candidates_for_mode(&plan.candidates, SelectionMode::Everything);
@@ -1382,6 +1726,10 @@ impl Shell {
                     p.populate_package_list(&owned);
                     p.update_summary_text(&summary);
                 }
+                // Resolve the security request before enabling installation; the
+                // displayed subset is not itself an executable reviewed plan.
+                p.confirm_button().set_sensitive(false);
+                p.review_button().emit_clicked();
             }
         });
 
@@ -1402,7 +1750,7 @@ impl Shell {
             let selected_candidates: Vec<_> = full_plan
                 .candidates
                 .iter()
-                .filter(|c| selected_names.contains(&c.name))
+                .filter(|c| selected_names.contains(&c.selection_key()))
                 .cloned()
                 .collect();
 
@@ -1411,6 +1759,10 @@ impl Shell {
                 return;
             }
 
+            // Invalidate the old plan while the resolver reviews the request.
+            plan_for_replan.borrow_mut().take();
+            let mut starting_page = page_for_replan.clone();
+            starting_page.set_checking();
             // Dispatch re-planning through apt's resolver on a background thread.
             let executor = runtime_for_replan.borrow().executor.clone();
             let mut done_page = page_for_replan.clone();
@@ -1492,6 +1844,7 @@ impl Shell {
                             ) {
                                 summary.push_str(&format!(". {security}."));
                             }
+                            done_page.set_selection_mode(SelectionMode::Everything);
                             done_page.set_reviewing_plan(&summary, &plan);
                             *done_plan.borrow_mut() = Some(plan);
                         }
@@ -1506,89 +1859,37 @@ impl Shell {
             *token_for_check.borrow_mut() = Some(token);
         });
 
-        // --- Wire confirm (Install) button ---
-        let runtime_for_execute = runtime.clone();
+        // Authentication obtains a retained native plan; only its separate
+        // complete-plan dialog can send Approve with the bound fingerprint.
         let page_for_execute = page.clone();
-        let plan_for_execute = current_plan.clone();
-        let token_for_execute = active_token.clone();
+        let plan_for_execute = current_plan;
         updates_page.confirm_button().connect_clicked(move |_| {
-            let Some(full_plan) = plan_for_execute.borrow().clone() else {
-                let mut ui = page_for_execute.clone();
-                ui.set_check_failed("Update plan expired. Check for updates again.");
+            let Some(plan) = plan_for_execute.borrow().clone() else {
                 return;
             };
-            // Apply selection mode filter to the plan before execution.
-            let mode = page_for_execute.selection_mode();
-            let plan = match mode {
-                SelectionMode::Everything => full_plan,
-                SelectionMode::SecurityOnly => {
-                    let filtered = filter_candidates_for_mode(
-                        &full_plan.candidates,
-                        SelectionMode::SecurityOnly,
-                    );
-                    let filtered_candidates: Vec<_> = filtered.into_iter().cloned().collect();
-                    UpdatePlan {
-                        candidates: filtered_candidates,
-                        ..full_plan
-                    }
+            if !crate::dispatch::update_selection_reviewed(
+                page_for_execute.selection_mode(),
+                page_for_execute.is_selection_replanned(),
+                &page_for_execute.selected_packages(),
+                &plan,
+            ) {
+                let mut page = page_for_execute.clone();
+                page.set_check_failed(
+                    "Selection requires re-planning. Use Review Selection first.",
+                );
+                return;
+            }
+            match plan.intent {
+                maintainer_core::updates::UpdateIntent::FullUpgrade => {
+                    workflow.begin("full", vec![])
                 }
-                SelectionMode::Custom => {
-                    // Safety: in Custom mode, execution is only allowed after
-                    // the user's selection has been re-planned through apt's
-                    // resolver (plan_for_selection). The re-planned result
-                    // replaces `current_plan`, so we use it directly.
-                    if !page_for_execute.is_selection_replanned() {
-                        // This should not happen because the Install button is
-                        // disabled until re-planning completes, but guard anyway.
-                        let mut ui = page_for_execute.clone();
-                        ui.set_check_failed(
-                            "Custom selection requires re-planning. \
-                             Use 'Review Selection' first.",
-                        );
-                        return;
-                    }
-                    full_plan
-                }
-            };
-            let executor = runtime_for_execute.borrow().executor.clone();
-            let mut executing_page = page_for_execute.clone();
-            executing_page.set_executing();
-            let progress_page = page_for_execute.clone();
-            let mut done_page = page_for_execute.clone();
-            let done_token = token_for_execute.clone();
-            let (token, _) = dispatch::dispatch_update_execution(
-                &executor,
-                plan,
-                move |progress| {
-                    let allow_cancel =
-                        crate::ui::updates::cancellation_allowed_for_progress(&progress.message);
-                    progress_page.set_progress(
-                        progress.completed,
-                        progress.total,
-                        &progress.message,
-                        allow_cancel,
-                    );
-                },
-                move |outcome| {
-                    match outcome {
-                        UpdateExecutionOutcome::Completed {
-                            message,
-                            restart_required,
-                        } => done_page.set_result(true, &message, restart_required),
-                        UpdateExecutionOutcome::Failed { message } => {
-                            done_page.set_result(false, &message, false)
-                        }
-                    }
-                    done_token.borrow_mut().take();
-                },
-            );
-            *token_for_execute.borrow_mut() = Some(token);
-        });
-
-        let token_for_cancel = active_token;
-        updates_page.cancel_button().connect_clicked(move |_| {
-            if let Some(token) = token_for_cancel.borrow().as_ref() {
-                token.cancel();
+                maintainer_core::updates::UpdateIntent::Selected(requests) => workflow.begin(
+                    "selected",
+                    requests
+                        .iter()
+                        .map(|request| request.package_spec())
+                        .collect(),
+                ),
             }
         });
     }
@@ -1727,5 +2028,70 @@ fn to_core_settings(snap: &crate::state::SettingsSnapshot) -> maintainer_core::s
         hidden_interval_secs: snap.hidden_interval_secs,
         scan_exclusions: snap.scan_exclusions.clone(),
         large_file_threshold_bytes: snap.large_file_threshold_bytes,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires a GTK display; run this exact test under Xvfb"]
+    fn secondary_page_factories_mount_once_and_preserve_navigation_and_widgets() {
+        gtk4::init().unwrap();
+        let stack = Stack::new();
+        let primary = GtkBox::new(Orientation::Vertical, 0);
+        stack.add_named(&primary, Some("Overview"));
+        stack.set_visible_child_name("Overview");
+        let storage_count = Rc::new(Cell::new(0));
+        let settings_count = Rc::new(Cell::new(0));
+        let storage_widget = Rc::new(RefCell::new(None::<Label>));
+        let storage_calls = storage_count.clone();
+        let storage = storage_widget.clone();
+        Shell::add_lazy_page(&stack, "Storage", move || {
+            storage_calls.set(storage_calls.get() + 1);
+            let widget = Label::new(Some("Initial state"));
+            *storage.borrow_mut() = Some(widget.clone());
+            Some(widget.upcast())
+        });
+        let settings_calls = settings_count.clone();
+        Shell::add_lazy_page(&stack, "Settings", move || {
+            settings_calls.set(settings_calls.get() + 1);
+            Some(Label::new(Some("Settings content")).upcast())
+        });
+        let storage_host = stack.child_by_name("Storage").unwrap();
+        let settings_host = stack.child_by_name("Settings").unwrap();
+        assert!(storage_widget.borrow().is_none());
+        assert_eq!(storage_count.get(), 0);
+        assert_eq!(settings_count.get(), 0);
+        assert!(storage_host.first_child().is_none());
+        assert!(settings_host.first_child().is_none());
+
+        stack.set_visible_child_name("Storage");
+        assert_eq!(storage_count.get(), 1);
+        assert_eq!(settings_count.get(), 0);
+        let storage_widget = storage_widget.borrow().clone().unwrap();
+        assert_eq!(
+            storage_host.first_child(),
+            Some(storage_widget.clone().upcast())
+        );
+        storage_widget.set_text("State from an active operation");
+        stack.set_visible_child_name("Settings");
+        let settings_content = settings_host.first_child().unwrap();
+        stack.set_visible_child_name("Overview");
+        stack.set_visible_child_name("Storage");
+        stack.set_visible_child_name("Settings");
+        assert_eq!(storage_count.get(), 1);
+        assert_eq!(settings_count.get(), 1);
+        assert_eq!(stack.child_by_name("Storage"), Some(storage_host.clone()));
+        assert_eq!(stack.child_by_name("Settings"), Some(settings_host.clone()));
+        assert_eq!(
+            storage_host.first_child(),
+            Some(storage_widget.clone().upcast())
+        );
+        assert_eq!(storage_widget.text(), "State from an active operation");
+        assert_eq!(settings_host.first_child(), Some(settings_content));
+        assert_eq!(stack.visible_child(), Some(settings_host));
+        assert_eq!(stack.visible_child_name().as_deref(), Some("Settings"));
     }
 }

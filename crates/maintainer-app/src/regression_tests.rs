@@ -12,16 +12,14 @@ use crate::ui::navigation::{NavigationMode, build_sidebar};
 
 static GTK_TEST_LOCK: Mutex<()> = Mutex::new(());
 
-fn initialize_gtk_test() -> Option<MutexGuard<'static, ()>> {
-    let guard = GTK_TEST_LOCK.lock().ok()?;
-    if gtk4::is_initialized() {
-        if !gtk4::is_initialized_main_thread() {
-            return None;
-        }
-    } else if gtk4::init().is_err() {
-        return None;
-    }
-    Some(guard)
+fn initialize_gtk_test() -> MutexGuard<'static, ()> {
+    let guard = GTK_TEST_LOCK.lock().expect("GTK test lock poisoned");
+    assert!(
+        !gtk4::is_initialized() || gtk4::is_initialized_main_thread(),
+        "Run each GTK test in its own process using scripts/test-native.sh"
+    );
+    gtk4::init().expect("GTK display required; use scripts/test-native.sh");
+    guard
 }
 
 fn descendants_of_type<T: IsA<Widget> + Clone + 'static>(root: &impl IsA<Widget>) -> Vec<T> {
@@ -51,9 +49,7 @@ fn storage_apply_state_does_not_reenter_borrowed_state() {
     // `page.apply_state(&state.borrow())`), which panicked with
     // BorrowMutError inside a GTK C signal callback — a context that cannot
     // unwind, so the process aborted instead of merely failing a test.
-    let Some(_gtk_guard) = initialize_gtk_test() else {
-        return;
-    };
+    let _gtk_guard = initialize_gtk_test();
 
     use crate::state::{StorageState, StorageSubPage};
     use crate::ui::storage::StoragePage;
@@ -96,10 +92,97 @@ fn storage_apply_state_does_not_reenter_borrowed_state() {
 }
 
 #[test]
+fn rebuilt_sidebars_release_their_widgets() {
+    let _gtk_guard = initialize_gtk_test();
+    for _ in 0..3 {
+        for mode in [
+            NavigationMode::Persistent,
+            NavigationMode::Compact,
+            NavigationMode::Drawer,
+        ] {
+            let sidebar = build_sidebar(Page::Overview, mode, |_| {});
+            let weak_sidebar = sidebar.downgrade();
+            let weak_button = descendants_of_type::<Button>(&sidebar)[0].downgrade();
+            drop(sidebar);
+            assert!(
+                weak_sidebar.upgrade().is_none(),
+                "old sidebar retained after rebuild"
+            );
+            assert!(
+                weak_button.upgrade().is_none(),
+                "old navigation button retained after rebuild"
+            );
+        }
+    }
+}
+
+#[test]
+fn sidebar_fits_default_window_and_keeps_footer_reachable() {
+    let _gtk_guard = initialize_gtk_test();
+    crate::application::apply_theme(crate::state::Theme::Light);
+    let sidebar = build_sidebar(Page::Overview, NavigationMode::Persistent, |_| {});
+    sidebar.set_width_request(220);
+    let layout = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+    layout.append(&sidebar);
+    let content = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+    content.set_hexpand(true);
+    layout.append(&content);
+    let window = gtk4::Window::builder()
+        .default_width(1100)
+        .default_height(700)
+        .build();
+    window.add_css_class("maintainer_window");
+    window.set_child(Some(&layout));
+    let minimum_height = sidebar.measure(gtk4::Orientation::Vertical, 220).0;
+    window.present();
+    let context = glib::MainContext::default();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while window.height() == 0 && std::time::Instant::now() < deadline {
+        context.iteration(false);
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    eprintln!(
+        "sidebar minimum height: {minimum_height}; window allocated: {}x{}",
+        window.width(),
+        window.height()
+    );
+    assert_eq!(window.width(), 1100);
+    assert_eq!(
+        window.height(),
+        700,
+        "navigation must not enlarge the default viewport"
+    );
+    let footer = sidebar.last_child().unwrap();
+    let footer_bounds = footer.compute_bounds(&window).unwrap();
+    assert!(footer_bounds.y() >= 0.0);
+    assert!(footer_bounds.y() + footer_bounds.height() <= 700.0);
+    let buttons = descendants_of_type::<Button>(&sidebar);
+    assert!(buttons[0].grab_focus());
+    let mut reached = std::collections::HashSet::new();
+    for _ in 0..Page::ALL.len() * 3 {
+        if let Some(button) = gtk4::prelude::GtkWindowExt::focus(&window).and_downcast::<Button>() {
+            if let Some(label) = button.tooltip_text() {
+                reached.insert(label.to_string());
+            }
+        }
+        window.child_focus(gtk4::DirectionType::TabForward);
+        while context.pending() {
+            context.iteration(false);
+        }
+    }
+    for page in Page::ALL {
+        assert!(
+            reached.contains(page.label()),
+            "keyboard focus did not reach {}",
+            page.label()
+        );
+    }
+    window.close();
+}
+
+#[test]
 fn sidebar_is_fixed_pinned_and_updates_active_destination() {
-    let Some(_gtk_guard) = initialize_gtk_test() else {
-        return;
-    };
+    let _gtk_guard = initialize_gtk_test();
 
     let selected = Rc::new(Cell::new(Page::Overview));
     let selected_for_callback = selected.clone();
@@ -107,15 +190,28 @@ fn sidebar_is_fixed_pinned_and_updates_active_destination() {
         selected_for_callback.set(page);
     });
 
+    let scroll_regions = descendants_of_type::<gtk4::ScrolledWindow>(&sidebar);
+    assert_eq!(scroll_regions.len(), 1, "only the navigation items scroll");
+    let navigation_scroll = &scroll_regions[0];
+    assert_eq!(
+        navigation_scroll.hscrollbar_policy(),
+        gtk4::PolicyType::Never
+    );
+    assert_eq!(
+        navigation_scroll.vscrollbar_policy(),
+        gtk4::PolicyType::Automatic
+    );
     assert!(
-        descendants_of_type::<gtk4::ScrolledWindow>(&sidebar).is_empty(),
-        "sidebar navigation must remain fixed"
+        descendants_of_type::<gtk4::Box>(navigation_scroll)
+            .iter()
+            .any(|widget| widget.has_css_class("maintainer_sidebar_groups"))
     );
 
     let footer = sidebar
         .last_child()
         .expect("sidebar must have a dedicated footer region");
     assert!(footer.has_css_class("maintainer_sidebar_footer"));
+    assert!(descendants_of_type::<gtk4::ScrolledWindow>(&footer).is_empty());
     let footer_buttons = descendants_of_type::<Button>(&footer);
     assert_eq!(footer_buttons.len(), 1);
     assert_eq!(
@@ -217,6 +313,81 @@ fn system_details_use_compact_two_column_rows() {
 }
 
 #[test]
+fn incomplete_duplicate_scan_shows_coverage_warning() {
+    let _guard = initialize_gtk_test();
+    let view = crate::ui::storage::duplicates::DuplicatesView::new();
+    let mut state = crate::state::StorageState::default();
+    state
+        .duplicate_issues
+        .push(maintainer_core::storage::DuplicateIssue {
+            path: std::path::PathBuf::new(),
+            message: "candidate limit reached".into(),
+        });
+    view.apply_state(&state);
+    let labels = descendants_of_type::<gtk4::Label>(view.widget());
+    assert!(
+        labels
+            .iter()
+            .any(|label| label.is_visible() && label.text().contains("coverage is incomplete"))
+    );
+    assert!(!labels.iter().any(|label| label.is_visible()
+        && label.text() == "No duplicates found. Run a duplicate scan first."));
+}
+
+#[test]
+fn process_rows_reuse_identity_keyed_widgets() {
+    let _guard = initialize_gtk_test();
+    use crate::monitoring::ProcessesViewModel;
+    use maintainer_core::metrics::{ProcessIdentity, ProcessSnapshot};
+    let process = |pid, start| ProcessSnapshot {
+        identity: ProcessIdentity {
+            pid,
+            start_time_ticks: start,
+        },
+        name: format!("process-{pid}"),
+        state: 'S',
+        ppid: 1,
+        uid: 1000,
+        rss_bytes: 1024,
+        utime_ticks: 0,
+        stime_ticks: 0,
+        num_threads: 1,
+    };
+    let page = crate::ui::processes::ProcessesPage::new();
+    let ended = Rc::new(std::cell::RefCell::new(Vec::new()));
+    let ended_for_callback = ended.clone();
+    page.connect_terminate(move |pid, start| ended_for_callback.borrow_mut().push((pid, start)));
+    let mut model = ProcessesViewModel {
+        available: true,
+        total_count: 2,
+        processes: vec![process(10, 100), process(20, 200)],
+        ..Default::default()
+    };
+    let buttons = || {
+        descendants_of_type::<Button>(page.widget())
+            .into_iter()
+            .filter(|button| button.label().as_deref() == Some("End"))
+            .collect::<Vec<_>>()
+    };
+    page.update(&model);
+    let original = buttons();
+    assert_eq!(original.len(), 2);
+    model.processes.reverse();
+    model.processes[0].rss_bytes = 2048;
+    page.update(&model);
+    let reordered = buttons();
+    assert_eq!(reordered, vec![original[1].clone(), original[0].clone()]);
+    reordered[0].emit_clicked();
+    assert_eq!(*ended.borrow(), vec![(20, 200)]);
+    model.processes[0] = process(20, 201);
+    page.update(&model);
+    let reused_pid = buttons();
+    assert_ne!(reused_pid[0], original[1]);
+    reused_pid[0].emit_clicked();
+    assert_eq!(*ended.borrow(), vec![(20, 200), (20, 201)]);
+}
+
+#[test]
 fn update_progress_uses_continuous_indeterminate_animation() {
     let updates = include_str!("ui/updates.rs");
     assert!(
@@ -227,9 +398,7 @@ fn update_progress_uses_continuous_indeterminate_animation() {
 
 #[test]
 fn update_execution_buttons_follow_transaction_safety() {
-    let Some(_gtk_guard) = initialize_gtk_test() else {
-        return;
-    };
+    let _gtk_guard = initialize_gtk_test();
 
     let mut page = crate::ui::updates::UpdatesPage::new();
     assert!(page.check_button().is_sensitive());

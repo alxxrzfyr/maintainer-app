@@ -92,6 +92,7 @@ pub struct DuplicatesView {
     list_view: ListView,
     model: gio::ListStore,
     empty_label: Label,
+    coverage_label: Label,
     review_button: Button,
     selection_count_label: Label,
     review_status: Label,
@@ -132,6 +133,12 @@ impl DuplicatesView {
         review_status.set_visible(false);
         review_status.add_css_class("maintainer_text_muted");
         container.append(&review_status);
+
+        let coverage_label = Label::new(None);
+        coverage_label.set_wrap(true);
+        coverage_label.set_halign(Align::Start);
+        coverage_label.set_visible(false);
+        container.append(&coverage_label);
 
         let model = gio::ListStore::new::<DuplicateRowObject>();
         let selection = SingleSelection::new(Some(model.clone()));
@@ -243,6 +250,7 @@ impl DuplicatesView {
             list_view,
             model,
             empty_label,
+            coverage_label,
             review_button,
             selection_count_label,
             review_status,
@@ -258,6 +266,19 @@ impl DuplicatesView {
     /// Update from current state. Rebuilds the flat list model from groups.
     pub fn apply_state(&self, state: &StorageState) {
         let groups = &state.duplicate_groups;
+        let incomplete = !state.duplicate_issues.is_empty();
+        self.coverage_label.set_visible(incomplete);
+        if incomplete {
+            self.coverage_label.set_text(&format!(
+                "Scan coverage is incomplete ({} issues). Results cover successfully inspected files only.",
+                state.duplicate_issues.len()
+            ));
+        }
+        self.empty_label.set_text(if incomplete {
+            "No duplicates confirmed in inspected files. Scan coverage is incomplete."
+        } else {
+            "No duplicates found. Run a duplicate scan first."
+        });
 
         if groups.is_empty() {
             self.empty_label.set_visible(true);

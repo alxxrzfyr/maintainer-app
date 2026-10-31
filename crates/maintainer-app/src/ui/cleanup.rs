@@ -1,8 +1,6 @@
 //! Cleanup page UI.
 //!
-//! Implements the flow: scan → review → confirm → execute → result.
-//! No "Clean Everything" action exists. Users must review and confirm
-//! individual items.
+//! Explicit review of descriptor-pinned regular files.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -13,6 +11,7 @@ use gtk4::{
     Separator,
 };
 use maintainer_core::cleanup::CleanupPlan;
+use maintainer_core::cleanup::execute::CLEANUP_UNAVAILABLE_REASON;
 
 use crate::state::CleanupState;
 
@@ -23,6 +22,8 @@ pub struct CleanupPage {
     scan_button: Button,
     package_cache_button: Button,
     journal_vacuum_button: Button,
+    recovery_button: Button,
+    cancel_button: Button,
     status_label: Label,
     select_toolbar: GtkBox,
     items_list: ListBox,
@@ -47,10 +48,7 @@ impl CleanupPage {
         header.set_halign(gtk4::Align::Start);
         container.append(&header);
 
-        let description = Label::new(Some(
-            "Scan for reclaimable space in caches, thumbnails, Trash, and logs. \
-             Review all items before confirming removal.",
-        ));
+        let description = Label::new(Some(CLEANUP_UNAVAILABLE_REASON));
         description.set_wrap(true);
         description.set_halign(gtk4::Align::Start);
         description.add_css_class("dim-label");
@@ -65,6 +63,11 @@ impl CleanupPage {
         action_row.append(&scan_button);
         action_row.append(&package_cache_button);
         action_row.append(&journal_vacuum_button);
+        let recovery_button = Button::with_label("Cleanup Recovery");
+        action_row.append(&recovery_button);
+        let cancel_button = Button::with_label("Cancel");
+        cancel_button.set_visible(false);
+        action_row.append(&cancel_button);
         action_row.set_halign(gtk4::Align::Start);
         container.append(&action_row);
 
@@ -96,7 +99,9 @@ impl CleanupPage {
         scrolled.set_child(Some(&items_list));
         container.append(&scrolled);
 
-        let execute_button = Button::with_label("Remove Selected Items");
+        let execute_button = Button::with_label("Review Selected Files");
+        execute_button.set_sensitive(false);
+        execute_button.set_tooltip_text(Some(CLEANUP_UNAVAILABLE_REASON));
         execute_button.add_css_class("maintainer_destructive");
         execute_button.set_halign(gtk4::Align::Start);
         execute_button.set_visible(false);
@@ -130,6 +135,8 @@ impl CleanupPage {
             scan_button,
             package_cache_button,
             journal_vacuum_button,
+            recovery_button,
+            cancel_button,
             status_label,
             select_toolbar,
             items_list,
@@ -160,6 +167,14 @@ impl CleanupPage {
         &self.journal_vacuum_button
     }
 
+    pub fn cancel_button(&self) -> &Button {
+        &self.cancel_button
+    }
+
+    pub fn recovery_button(&self) -> &Button {
+        &self.recovery_button
+    }
+
     /// Get the execute button for signal connection.
     pub fn execute_button(&self) -> &Button {
         &self.execute_button
@@ -183,6 +198,7 @@ impl CleanupPage {
 
     /// Render discovered cleanup items for explicit review.
     pub fn show_plan(&self, plan: &CleanupPlan) {
+        self.cancel_button.set_visible(false);
         while let Some(child) = self.items_list.first_child() {
             self.items_list.remove(&child);
         }
@@ -207,13 +223,24 @@ impl CleanupPage {
             size_badge.set_halign(gtk4::Align::End);
             size_badge.add_css_class("maintainer_process_memory");
 
+            let supported = item.reviewed.is_some();
+            check.set_sensitive(supported);
+            check.set_tooltip_text(Some(item.unavailable_reason.as_deref().unwrap_or(
+                if supported {
+                    "Administrator authorization is required after review"
+                } else {
+                    "This item cannot be removed safely"
+                },
+            )));
             let selections = self.selections.clone();
             let execute = self.execute_button.clone();
             check.connect_toggled(move |button| {
-                if let Some(selected) = selections.borrow_mut().get_mut(index) {
-                    *selected = button.is_active();
+                if !button.is_sensitive() {
+                    return;
                 }
-                execute.set_sensitive(selections.borrow().iter().any(|selected| *selected));
+                let mut selections = selections.borrow_mut();
+                selections[index] = button.is_active();
+                execute.set_sensitive(selections.iter().any(|selected| *selected));
             });
 
             row.append(&check);
@@ -227,9 +254,12 @@ impl CleanupPage {
         self.scan_button.set_sensitive(true);
         self.select_toolbar.set_visible(!plan.items.is_empty());
         self.status_label.set_text(&format!(
-            "Found {} items ({} reclaimable). Select items to remove.",
+            "Found {} files ({} logical size). {}",
             plan.items.len(),
-            format_bytes(plan.estimated_reclaimable_bytes)
+            format_bytes(plan.estimated_reclaimable_bytes),
+            plan.coverage_notice
+                .as_deref()
+                .unwrap_or("Folders are retained. Select files to review.")
         ));
         self.status_label.set_visible(true);
         self.execute_button.set_visible(!plan.items.is_empty());
@@ -254,6 +284,7 @@ impl CleanupPage {
 
     /// Show a cleanup scan or plan error.
     pub fn show_error(&self, message: &str) {
+        self.cancel_button.set_visible(false);
         self.scan_button.set_label("Scan for Reclaimable Space");
         self.scan_button.set_sensitive(true);
         self.status_label.set_text(message);
@@ -264,6 +295,7 @@ impl CleanupPage {
 
     /// Show cleanup execution state.
     pub fn show_executing(&self, message: &str) {
+        self.cancel_button.set_visible(true);
         self.scan_button.set_label("Scanning…");
         self.scan_button.set_sensitive(false);
         self.execute_button.set_sensitive(false);
@@ -274,6 +306,7 @@ impl CleanupPage {
 
     /// Show cleanup execution result.
     pub fn show_result(&self, message: &str, success: bool) {
+        self.cancel_button.set_visible(false);
         self.scan_button.set_label("Scan for Reclaimable Space");
         self.scan_button.set_sensitive(true);
         self.execute_button.set_visible(false);
@@ -314,13 +347,18 @@ impl CleanupPage {
                 self.scan_button.set_label("Scan Again");
                 self.scan_button.set_sensitive(true);
                 self.status_label.set_text(&format!(
-                    "Found {} items ({} reclaimable)",
+                    "Found {} files ({} logical size). Select supported files to review.",
                     item_count,
                     format_bytes(*total_bytes),
                 ));
                 self.status_label.set_visible(true);
                 self.execute_button.set_visible(*item_count > 0);
-                self.execute_button.set_sensitive(state.selected_count > 0);
+                self.execute_button.set_sensitive(
+                    self.check_buttons
+                        .borrow()
+                        .iter()
+                        .any(|button| button.is_sensitive() && button.is_active()),
+                );
                 self.result_label.set_visible(false);
             }
             CleanupPhase::Executing { message } => {
@@ -390,6 +428,101 @@ fn format_bytes(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unsupported_items_stay_disabled_after_plan_and_state_updates() {
+        assert!(
+            !gtk4::is_initialized() || gtk4::is_initialized_main_thread(),
+            "Run each GTK fixture separately using scripts/test-native.sh"
+        );
+        gtk4::init().expect("GTK display required; use scripts/test-native.sh");
+        let page = CleanupPage::new();
+        let mut plan = CleanupPlan::from_targets(vec![], std::path::Path::new("/tmp")).unwrap();
+        plan.items.push(maintainer_core::cleanup::CleanupItem {
+            reviewed: None,
+            unavailable_reason: Some("unsupported".into()),
+            id: plan.id,
+            path: "/tmp/reviewed".into(),
+            category: maintainer_core::cleanup::CleanupCategory::ThumbnailCache,
+            display_path: "reviewed".into(),
+            size_bytes: 12,
+            privilege: maintainer_core::cleanup::PrivilegeRequirement::None,
+            reversibility: maintainer_core::cleanup::Reversibility::TrashRecoverable,
+            inode: 1,
+            device: 1,
+        });
+        page.show_plan(&plan);
+        assert!(!page.execute_button.is_sensitive());
+        assert!(page.select_toolbar.is_visible());
+        assert!(page.status_label.text().contains("Select files"));
+        for check in page.check_buttons.borrow().iter() {
+            assert!(!check.is_sensitive());
+            check.set_active(true);
+        }
+        assert!(!page.execute_button.is_sensitive());
+        assert!(page.selected_indices().is_empty());
+        page.apply_state(&CleanupState {
+            phase: CleanupPhase::Reviewing {
+                item_count: 1,
+                total_bytes: 12,
+            },
+            selected_count: 1,
+            ..CleanupState::default()
+        });
+        assert!(!page.execute_button.is_sensitive());
+        assert!(page.status_label.text().contains("Select supported"));
+    }
+
+    #[test]
+    fn pinned_regular_files_can_be_selected_for_review_and_cancelled() {
+        use std::os::unix::fs::MetadataExt;
+        gtk4::init().expect("GTK display required; use scripts/test-native.sh");
+        let home = std::env::temp_dir().join(format!(
+            "maintainer-cleanup-ui-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&home).unwrap();
+        let path = home.join("reviewed");
+        std::fs::write(&path, b"reviewed").unwrap();
+        let metadata = std::fs::metadata(&path).unwrap();
+        let plan = CleanupPlan::from_targets(
+            vec![maintainer_core::cleanup::CleanupTarget {
+                path: path.clone(),
+                display_path: "~/reviewed".into(),
+                category: maintainer_core::cleanup::CleanupCategory::ThumbnailCache,
+                size_bytes: metadata.len(),
+                privilege: maintainer_core::cleanup::PrivilegeRequirement::None,
+                reversibility: maintainer_core::cleanup::Reversibility::PermanentOnly,
+                inode: metadata.ino(),
+                device: metadata.dev(),
+                evidence_timestamp: std::time::SystemTime::now(),
+            }],
+            &home,
+        )
+        .unwrap();
+        let page = CleanupPage::new();
+        page.show_plan(&plan);
+        assert!(!page.execute_button.is_sensitive());
+        let check = page.check_buttons.borrow()[0].clone();
+        assert!(check.is_sensitive());
+        check.set_active(true);
+        assert_eq!(page.selected_indices(), vec![0]);
+        assert!(page.execute_button.is_sensitive());
+        check.set_active(false);
+        assert!(page.selected_indices().is_empty());
+        assert!(!page.execute_button.is_sensitive());
+        page.show_executing("Removing selected files");
+        assert!(page.cancel_button.is_visible());
+        page.show_result("Cancelled", false);
+        assert!(!page.cancel_button.is_visible());
+        drop(plan);
+        std::fs::remove_file(path).unwrap();
+        std::fs::remove_dir(home).unwrap();
+    }
 
     #[test]
     fn format_bytes_small() {
