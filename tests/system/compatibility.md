@@ -28,9 +28,10 @@ Start from a clean VM snapshot where privileged/destructive actions are needed. 
 | Monitoring | Rates/units are credible; default visible/hidden sampling is 2 s/10 s; saved settings apply; resumed views show current status |
 | Dynamic devices/processes | Interface reorder, sensor removal, PID reuse and permission loss do not show another identity's history or stale values as live |
 | Storage/duplicates | Known duplicates appear through the app, including beyond the largest 200 files; limits/inaccessible paths remain visibly partial. Progress/cancel/empty/failure are distinct; no automatic deletion |
-| Cleanup | Explicit preview/confirmation, Trash and permanent fallback rules; accurate result/history including partial failures |
+| Cleanup | Explicit preview/confirmation; Trash never falls back to permanent deletion, which needs its own stronger confirmation; accurate result/history including partial failures |
 | Updates/kernel | Discovery matches recorded APT fixtures/state; chosen intent is preserved; installed allow/deny/cancel/recovery tests follow security procedure |
-| Optional integrations | Missing SMART/sensors/udisks2/Flatpak/fwupd/curl/iw yield an explained unavailable or permission state; missing is not zero or success |
+| Optional integrations | Missing SMART/sensors/udisks2/Flatpak/fwupd/iw yield explained capability states. Resolve curl only after speed-test confirmation in the worker; show its failure reason if unavailable. Missing is not zero or success |
+| Hardware diagnostics | Opening Diagnostics mounts once and collects in a bounded worker with loading/failure states. Missing USB/DMI values stay unavailable; unprobed graphics APIs stay unverified |
 | Reports | Generate/preview/copy/save shares one revision; seeded free-text/private data is redacted, capped reports disclose omissions, saved files remain private |
 | Settings/DB | Theme and intervals persist in order under saturation; invalid XDG and unavailable/corrupt/locked/newer DB do not prevent monitoring or silently reset data; tested backup/restore works |
 | Accessibility | Complete the separate keyboard, scaling, contrast and assistive-technology procedure |

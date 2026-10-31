@@ -31,7 +31,7 @@ Create a dated result under `docs/validation/YYYY-MM-DD/report.md` only after te
 | Partial results | Inject failed package configuration, child failure, disk full and history-write failure. Preserve successful item outcomes; identify recovery-required/unknown states and prevent blind replay. |
 | Cleanup substitution | Swap file/ancestor/symlink between review and action; add/remove directory children. No out-of-scope target changes. Reject duplicate/overlapping selections. |
 | Trash | Test hostile symlink/owner/permissions, custom XDG path, both mount layouts, simultaneous same-name moves, EXDEV and ENOSPC. Never overwrite an existing entry or permanently delete without stronger confirmation. |
-| Report saving | Precreate the temporary name as a symlink and as a permissive file; test simultaneous saves and failed rename. Unrelated files remain unchanged and new reports remain private. |
+| Report saving | Precreate the destination as a regular file, symlink, and directory; race simultaneous saves and replace a parent path. Existing targets stay unchanged. The anonymous output has no named temporary file; unsupported filesystems fail explicitly. A directory-sync failure after publication reports durability uncertainty without retrying publication. |
 | Flood/stuck operations | Saturate helper and app queues, generate verbose output and hold pipes open. Observe bounded resources, denial/busy states and capacity recovery; test actual installed sandbox behavior. |
 | Retained results/scans | Hold completed receivers without consuming them, then submit more work. Include speed tests; verify the global limits. Deep/wide trees, long names and many errors must stop with visible incomplete coverage within the approved scan budget. |
 | Duplicate evidence | Known equal files are found through app dispatch, including below the top-200 large-file ranking; hard links are not counted as extra recoverable copies. Changed files and partial scans cannot authorize a stale removal plan. |
@@ -49,4 +49,4 @@ Create a dated result under `docs/validation/YYYY-MM-DD/report.md` only after te
 
 ## Release sign-off
 
-The reviewer records passed/failed/unverified case names, related T IDs, open defects, disabled capabilities and any explicit scope approval. Link evidence to the tested revision, current threat controls, and open release checks. Blank procedures, mock tests and policy-string assertions cannot substitute for installed tests. No unresolved release blocker may be labelled passed.
+The reviewer records passed/failed/unverified case names, related threat-model controls, open defects, disabled capabilities and any explicit scope approval. Link evidence to the tested revision, current threat controls, and open release checks. Blank procedures, mock tests and policy-string assertions cannot substitute for installed tests. No unresolved release blocker may be labelled passed.

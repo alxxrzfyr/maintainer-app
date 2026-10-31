@@ -58,7 +58,7 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   test passes, native builds and exact package/source/lock/runtime hashes. No
   host package installation is performed. Hosted CI independently checks the
   pushed source and disposable amd64/arm64 package lifecycle. Manual acceptance
-  remains separate. No release has been published.
+  remains separate. Version 1.3.0 has not been published.
 
 ### Build and verification
 
@@ -115,7 +115,8 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - Retain fast, lightweight, native GTK4 GUI as explicit product values; set the
   next memory milestone below 100 MB combined idle PSS, with profiling experiments
   and lower exploratory targets. Attainment remains unverified.
-  Runtime privacy and persistence hardening has started; D13 remains incomplete.
+  Runtime privacy and persistence controls are implemented; full privacy and
+  installed acceptance remain unverified.
 
 ## [1.2.0] - 2026-08-23
 
