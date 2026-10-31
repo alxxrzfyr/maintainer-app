@@ -30,11 +30,17 @@ fn main() {
                 std::process::exit(2);
             });
         let error = maintainer_helper::operations::updates::exec_install_updates(&request);
-        eprintln!("maintainer-helper: failed to execute apt-get: {error}");
+        eprintln!("maintainer-helper: package installation unavailable: {error}");
         std::process::exit(1);
     }
 
-    if !args.is_empty() {
+    let package_owner = args.as_slice() == ["--package-owner"];
+    // Safety: geteuid has no preconditions and reads the kernel credential.
+    if package_owner && unsafe { libc::geteuid() } != 0 {
+        eprintln!("maintainer-helper: package owner requires root service activation");
+        std::process::exit(2);
+    }
+    if !args.is_empty() && !package_owner {
         eprintln!("maintainer-helper: unsupported arguments");
         std::process::exit(2);
     }
@@ -58,10 +64,19 @@ fn main() {
 
     eprintln!(
         "maintainer-helper: starting on system bus as {}",
-        config.bus_name
+        if package_owner {
+            maintainer_helper::package_owner::BUS_NAME
+        } else {
+            config.bus_name
+        }
     );
 
-    if let Err(e) = rt.block_on(run_server(config, policy)) {
+    let result = if package_owner {
+        rt.block_on(maintainer_helper::package_owner::run(policy))
+    } else {
+        rt.block_on(run_server(config, policy))
+    };
+    if let Err(e) = result {
         eprintln!("maintainer-helper: {e}");
         std::process::exit(1);
     }
@@ -78,6 +93,7 @@ fn print_usage() {
          \n\
          Options:\n\
          \x20 --help, -h  Show this message\n\
+         \x20 --package-owner  Run the dedicated root package service\n\
          \n\
          Idle timeout: {}s\n\
          Bus name: io.github.maintainerapp.Helper\n\

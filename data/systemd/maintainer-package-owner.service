@@ -1,0 +1,16 @@
+[Unit]
+Description=Maintainer on-demand native APT transaction owner
+
+[Service]
+Type=dbus
+BusName=io.github.maintainerapp.PackageOwner
+ExecStart=/usr/libexec/maintainer-helper --package-owner
+User=root
+# APT and maintainer scripts require the normal root filesystem/network scope.
+# This dedicated boundary does not widen the maintenance helper's sandbox.
+# Stopping the owner must never terminate an approved package transaction.
+KillMode=process
+TimeoutStopSec=10
+StateDirectory=maintainer/transactions
+StateDirectoryMode=0700
+UMask=0077
