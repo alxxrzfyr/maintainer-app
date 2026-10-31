@@ -127,3 +127,16 @@ the native candidate gate. Artifact manifests and checksums bind tested bytes.
 No release tag, published release, signing key or APT deployment is part of this
 branch preparation. Passing source/build/hosted tests alone is insufficient for
 release approval while performance and manual acceptance remain unresolved.
+
+## Hosted compatibility follow-up
+
+The first pushed candidate failed to link on Ubuntu 22.04 because rusqlite's
+`serialize` feature enabled `sqlite3_error_offset`, introduced after Jammy's
+SQLite 3.37. Removing that feature and isolating the stable snapshot C ABI
+preserves system SQLite, padded read-only recovery and exclusive private export.
+The resolved-feature regression failed before the fix; 36 focused persistence
+tests passed afterward. Independent review found no concrete ABI, ownership or
+buffer-safety defect. Cargo.lock was not regenerated. Hosted results for the
+follow-up commit determine whether the compatibility failure is resolved.
+The interrupted performance matrix belongs to the preceding binary and is not
+a complete measurement or an application crash.

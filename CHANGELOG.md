@@ -46,6 +46,9 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Build and verification
 
+- Preserve Ubuntu 22.04 system-SQLite compatibility for private backup/recovery.
+  Use the stable snapshot ABI without enabling newer SQL error-offset symbols.
+
 - Build release artifacts through a locked Cargo wrapper that remaps local source,
   Cargo and home paths while preserving existing compiler flags.
 - Run CI on release branches, use the system Python APT binding, and pin Actions

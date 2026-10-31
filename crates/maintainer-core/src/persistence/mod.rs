@@ -7,3 +7,4 @@
 pub mod database;
 pub mod history;
 pub mod migrations;
+mod sqlite_snapshot;

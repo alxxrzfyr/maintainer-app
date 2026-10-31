@@ -13,6 +13,7 @@ use rusqlite::Connection;
 
 use crate::error::MaintainerError;
 use crate::persistence::migrations;
+use crate::persistence::sqlite_snapshot::{self, MAX_BACKUP_BYTES};
 
 fn backup_error(error: rusqlite::Error) -> MaintainerError {
     MaintainerError::Internal {
@@ -82,8 +83,6 @@ fn reject_backup_sidecars(pinned: &Path) -> Result<(), MaintainerError> {
     Ok(())
 }
 
-const MAX_BACKUP_BYTES: usize = 64 * 1024 * 1024;
-
 fn open_new_backup_file(path: &Path) -> Result<(File, File, PathBuf), MaintainerError> {
     let (directory, pinned) = private_database_location(path)?;
     reject_backup_sidecars(&pinned)?;
@@ -141,29 +140,7 @@ fn deserialize_backup(bytes: &[u8]) -> Result<Connection, MaintainerError> {
             "a standalone SQLite backup of at most 64 MiB is required",
         ));
     }
-    let mut connection = Connection::open_in_memory().map_err(backup_error)?;
-    // SQLite recommends padding untrusted serializations against malformed
-    // headers. Allocate through SQLite's allocator so FREEONCLOSE owns cleanup.
-    // https://www.sqlite.org/c3ref/deserialize.html
-    let allocation_bytes = bytes.len() + 64;
-    // SAFETY: the bounded nonzero allocation is owned exclusively here until
-    // OwnedData takes ownership. Null is handled before any pointer access.
-    let pointer = unsafe { rusqlite::ffi::sqlite3_malloc64(allocation_bytes as u64) }.cast::<u8>();
-    let pointer = std::ptr::NonNull::new(pointer).ok_or_else(|| {
-        MaintainerError::invalid_data("database backup", "could not allocate backup buffer")
-    })?;
-    // SAFETY: SQLite allocated allocation_bytes writable bytes. The source
-    // slice is disjoint, bytes.len() is bounded, and padding stays initialized.
-    let data = unsafe {
-        std::ptr::write_bytes(pointer.as_ptr(), 0, allocation_bytes);
-        std::ptr::copy_nonoverlapping(bytes.as_ptr(), pointer.as_ptr(), bytes.len());
-        rusqlite::serialize::OwnedData::from_raw_nonnull(pointer, bytes.len())
-    };
-    // Main is a static valid schema name. SQLite frees the allocation on either
-    // deserialize failure or connection close under FREEONCLOSE.
-    connection
-        .deserialize(rusqlite::DatabaseName::Main, data, true)
-        .map_err(backup_error)?;
+    let connection = sqlite_snapshot::deserialize_read_only(bytes)?;
     validate_backup(&connection)?;
     Ok(connection)
 }
@@ -202,9 +179,8 @@ fn export_backup(source: &Connection, destination: &Path) -> Result<(), Maintain
     let mut snapshot = Connection::open_in_memory().map_err(backup_error)?;
     copy_database(source, &mut snapshot)?;
     validate_backup(&snapshot)?;
-    let bytes = snapshot
-        .serialize(rusqlite::DatabaseName::Main)
-        .map_err(backup_error)?;
+    let serialized = sqlite_snapshot::serialize(&snapshot)?;
+    let bytes = serialized.as_ref();
     if bytes.len() > MAX_BACKUP_BYTES {
         return Err(MaintainerError::invalid_data(
             "database backup",
@@ -212,7 +188,7 @@ fn export_backup(source: &Connection, destination: &Path) -> Result<(), Maintain
         ));
     }
     let (mut file, directory, pinned) = open_new_backup_file(destination)?;
-    publish_backup(&mut file, &directory, &pinned, &bytes)?;
+    publish_backup(&mut file, &directory, &pinned, bytes)?;
     let (published_directory, published_path) = private_database_location(destination)?;
     let held = directory
         .metadata()
@@ -1232,10 +1208,7 @@ mod tests {
         seed_backup_data(&source);
         let bytes = source
             .with_connection(|connection| {
-                connection
-                    .serialize(rusqlite::DatabaseName::Main)
-                    .map(|bytes| bytes.to_vec())
-                    .map_err(backup_error)
+                sqlite_snapshot::serialize(connection).map(|bytes| bytes.as_ref().to_vec())
             })
             .unwrap();
         let restored = deserialize_backup(&bytes).unwrap();

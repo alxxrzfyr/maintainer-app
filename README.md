@@ -139,6 +139,8 @@ sudo apt update
 sudo apt install -y libgtk-4-dev libsqlite3-dev libpolkit-gobject-1-dev pkg-config python3-apt xvfb dbus-x11 fakeroot dpkg-dev
 ```
 
+Backup and recovery use the distribution SQLite library, including Ubuntu 22.04's SQLite 3.37. No bundled SQLite is required.
+
 Maintainer requires Rust 1.85.0 or newer. When using `rustup`, the pinned toolchain from `rust-toolchain.toml` is used automatically.
 
 ### Compilation
