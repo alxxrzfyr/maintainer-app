@@ -13,20 +13,21 @@ See the [threat model](threat-model.md) for security controls and limits.
 
 The review follow-up addresses hardware command validation, evidence-based
 hardware values, background Diagnostics collection, feature-specific shell wiring,
-and behavioral tests. The [review follow-up](validation/2026-11-01/review-followup.md)
-records local results. Commands and layout are described in [README](../README.md);
+and behavioral tests. Subsequent cleanup checks duplicate-row lifecycles, defers
+speed-test capability probes, and groups state/dispatch by feature. The
+[review follow-up](validation/2026-11-01/review-followup.md) records local results. Commands and layout are described in [README](../README.md);
 contributor rules and numerical acceptance live in [AGENTS.md](../AGENTS.md).
 
 ## Verification evidence
 
-The previous verified source `5d33175` passed all seven hosted checks:
+The previous verified source `b2e62d8` passed all seven hosted checks:
 
-- [CI](https://github.com/alxxrzfyr/maintainer-app/actions/runs/41228874145):
+- [CI](https://github.com/alxxrzfyr/maintainer-app/actions/runs/41233258365):
   three complete test passes, release build, native amd64/arm64 packages, and
   disposable installed upgrade/readiness/root-refusal/removal/purge.
-- [Native candidate gate](https://github.com/alxxrzfyr/maintainer-app/actions/runs/41228874159):
+- [Native candidate gate](https://github.com/alxxrzfyr/maintainer-app/actions/runs/41233258340):
   three full passes, debug/release builds, metadata, and exact source/package binding.
-- [Security audit](https://github.com/alxxrzfyr/maintainer-app/actions/runs/41228874307):
+- [Security audit](https://github.com/alxxrzfyr/maintainer-app/actions/runs/41233258396):
   secret scanning, dependency advisories, and workflow/shell validation.
 
 Those runs do not certify subsequent edits. Read the exact current commit's

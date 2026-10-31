@@ -39,3 +39,31 @@ policy changed. No privileged installer ran on the personal host; verifier tests
 execute controlled policy responses only. Raw output remains in ignored
 `logs/2026-11-01/review-followup/`. Numerical release acceptance remains open in
 [release status](../../release-status.md).
+
+## Subsequent cleanup after `b2e62d8`
+
+- Validate duplicate-row widget structure and current bindings. Disable and clear
+  unbound rows, ignore detached checkboxes, and release callback borrows before
+  invocation so a callback can replace itself safely. Default selection stays empty.
+- Replace Rust-source assertions with GTK widget, allocation, animation, and
+  staged-worker tests. Keep CSS asset contract checks. Resolve speed-test `curl`
+  availability only in the confirmed worker, with visible failure/cancellation.
+- Split state into navigation, storage, cleanup, settings, and history modules.
+  Split dispatch into storage, cleanup, diagnostics, updates, actions, and reports.
+  Preserve public import paths and shared bounded transport/result accounting.
+
+Five duplicate lifecycle regressions pass; malformed-row and callback-replacement
+cases reproduced aborts before the fix. Seven focused presentation/network tests
+pass. The shell allocation test checks that a requested size does not change
+navigation before the surface is allocated, then verifies compact/wide transitions.
+Raw logs remain ignored under `logs/2026-11-01/final-cleanup/` and the focused
+`duplicates-hardening/` and `behavioral-regressions/` directories. These checks do
+not close idle CPU acceptance or the remaining manual release checks.
+
+The final cleanup pass passed 897 native Rust tests and all 85 Python tests,
+plus formatting, strict workspace Clippy, debug/release builds, workflow lint,
+and secret/dependency scans. Dependency audit reports the same three known
+unmaintained D-Bus support crates. An initial animation test failed because its
+observation window included first-frame setup under build load; the corrected
+test waits for allocation before observing later movement. The full suite then
+passed. No dependency, helper API, migration, or CI/lint policy changed.

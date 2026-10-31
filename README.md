@@ -70,6 +70,8 @@ See the [threat model](docs/threat-model.md) for controls and limitations.
   device evidence. Acceleration stays unverified until its API is actually probed.
 
 Missing optional integrations produce an explained unavailable/permission state.
+The speed test resolves `curl` in its worker after confirmation and displays a
+failure reason if it is unavailable. Opening Network does not probe for `curl`.
 
 ## Development
 

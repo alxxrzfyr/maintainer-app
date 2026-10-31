@@ -9,6 +9,14 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Changed
 
+- Check duplicate-row bindings and clear recycled rows safely; allow selection
+  callbacks to replace themselves without borrowing panics. Keep removal opt-in.
+- Replace UI source-spelling assertions with widget, allocation, animation, and
+  worker-stage tests. Resolve speed-test availability inside the confirmed worker,
+  keeping network page construction free of capability filesystem checks.
+- Group application state and background dispatch by feature while preserving
+  their existing imports and cancellation/result handling.
+
 - Run Diagnostics hardware collection once in a bounded worker instead of GTK
   constructors. Show loading, collection failures, and evidence-based hardware
   values; report unprobed acceleration and missing USB/DMI fields honestly.
