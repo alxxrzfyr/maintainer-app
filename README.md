@@ -1,10 +1,19 @@
 <div align="center">
 
+<br>
+
 <img src="data/icons/hicolor/scalable/apps/io.github.maintainerapp.Maintainer.svg" alt="Maintainer logo" width="96" height="96">
 
 # Maintainer
 
-Native GTK4 monitoring and reviewed maintenance for Ubuntu-based Linux.
+**Monitor your system. Review maintenance before it runs.**
+
+A native GTK4 app for Ubuntu-based Linux.<br>
+Inspect storage, manage updates, and understand system health in one place.
+
+[Features](#features) · [Install](#install) · [Development](#development) · [Documentation](docs/README.md) · [Release status](docs/release-status.md)
+
+<br>
 
 [![CI](https://github.com/alxxrzfyr/maintainer-app/actions/workflows/ci.yml/badge.svg)](https://github.com/alxxrzfyr/maintainer-app/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/alxxrzfyr/maintainer-app)](https://github.com/alxxrzfyr/maintainer-app/releases)
@@ -12,51 +21,72 @@ Native GTK4 monitoring and reviewed maintenance for Ubuntu-based Linux.
 [![Rust](https://img.shields.io/badge/Rust-1.85%2B-000000?logo=rust&logoColor=white)](https://www.rust-lang.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
+<br>
+
 </div>
 
-Maintainer brings monitoring, storage inspection, maintenance, and diagnostics
-into a native interface designed to stay fast and lightweight. It has no telemetry, cloud account, or
-permanent background daemon. Maintenance requires explicit user action.
+Maintainer brings everyday system checks and maintenance into a single desktop
+interface built with Rust. Use it to see what is using your resources, inspect
+files taking up space, review package changes, and collect diagnostic information.
+
+System data stays on your computer. There is no telemetry, cloud account, or
+permanent background daemon, and maintenance requires explicit user action.
+Live metric history stays in memory; SQLite stores settings and application history.
+
+**Current status:** 1.3.0 is an unpublished development candidate. CPU acceptance
+and manual system validation remain open. See [release status](docs/release-status.md)
+for the latest evidence and remaining work.
+
+## Features
+
+- **Live monitoring.** View CPU, memory, disks, sensors, network traffic, and
+  processes with in-memory history. Monitoring refreshes every two seconds by
+  default, slows while hidden, and updates affected widgets incrementally.
+- **Storage inspection.** Start large-file and duplicate scans when you need
+  them. Scans report progress, support cancellation, and identify incomplete
+  coverage so you can distinguish inspected files from skipped or unreadable paths.
+  Duplicate files are never deleted automatically.
+- **Reviewed cleanup.** Inspect selected regular files before choosing Trash or
+  explicitly confirming permanent deletion. Protected quarantine and recovery
+  preserve raced replacements and existing destination files. Folder removal
+  and unsupported filesystem operations remain unavailable.
+- **Package updates.** Review the exact native APT plan before applying changes.
+  Transactions have durable receipts, cancellation boundaries, Resume, and
+  shutdown/sleep inhibition during mutation and verification. Held, essential,
+  active-kernel, and kernel-tracking packages are protected; self-updates use
+  the normal system package manager.
+- **Diagnostics and hardware.** Inspect failed services, journal findings,
+  hardware inventory, and optional SMART health. Missing information is explained;
+  unprobed graphics acceleration is shown as unverified.
+- **Reports you can review.** Preview redacted diagnostic reports, copy them,
+  or save a new private file without overwriting an existing name. Review the
+  preview before sharing; automated redaction is not a substitute for checking it.
+
+<br>
 
 ## Install
 
-Download the package matching your architecture from
+Download the `amd64` or `arm64` Debian package from
 [Releases](https://github.com/alxxrzfyr/maintainer-app/releases). Replace `VERSION`
-and `ARCH` below with the downloaded filename's version and architecture:
+and `ARCH` below with the downloaded filename's values. APT installs the required
+package dependencies:
 
 ```bash
 sudo apt install ./maintainer_VERSION-1_ARCH.deb
 maintainer
 ```
 
-Run the GUI as your normal user. The installed D-Bus/Polkit services handle
-privileged work. To remove the package:
+Launch Maintainer from your application menu or the command above. Run the GUI
+as your normal user; installed D-Bus/Polkit services handle privileged work and
+request authorization when required.
+
+To remove the application:
 
 ```bash
 sudo apt remove maintainer
 # Purge system configuration; user-home data remains.
 sudo apt purge maintainer
 ```
-
-Candidate version and validation are tracked in [release status](docs/release-status.md).
-A successful development build does not publish a release.
-
-## Features
-
-- Live CPU, memory, storage, sensors, network, and process monitoring with in-memory
-  history and incremental updates.
-- On-demand large-file and duplicate inspection with bounded scans, progress,
-  cancellation, and explicit partial coverage. Duplicates are never auto-deleted.
-- Reviewed regular-file cleanup, Trash, stronger permanent-delete confirmation,
-  protected quarantine, and recovery without overwriting existing entries.
-- Native APT review and transactions with exact approval, durable receipts,
-  cancellation boundaries, and resume. Held, essential, and active kernel packages
-  are protected. Self-updates use the normal system package manager.
-- Service/journal diagnostics, optional SMART health, hardware inspection, and
-  redacted report preview, clipboard, and private file export.
-
-The GUI, core services, maintenance helper, and package owner have separate roles.
-See the [threat model](docs/threat-model.md) for controls and limitations.
 
 ## Requirements
 
@@ -73,9 +103,29 @@ Missing optional integrations produce an explained unavailable/permission state.
 The speed test resolves `curl` in its worker after confirmation and displays a
 failure reason if it is unavailable. Opening Network does not probe for `curl`.
 
+<br>
+
+## Architecture and safety
+
+Maintainer separates presentation, system services, and privileged operations:
+
+- `maintainer-app` owns GTK widgets, presentation state, and background job dispatch.
+- `maintainer-core` provides collectors, typed services, cancellable jobs, and persistence.
+- `maintainer-helper` provides fixed privileged maintenance operations and the
+  separately scoped package owner through D-Bus/Polkit.
+
+Blocking system work runs outside the GTK main thread. Privileged operations
+validate callers and parameters; they do not accept arbitrary shell commands.
+File and process reviews retain identities through execution rather than trusting
+paths or process IDs alone. The [threat model](docs/threat-model.md) documents
+these controls, supported cases, and remaining risks.
+
+<br>
+
 ## Development
 
-Install build and verification prerequisites:
+Install [rustup](https://rustup.rs/) and the build/verification prerequisites.
+Rustup selects the toolchain pinned in `rust-toolchain.toml`:
 
 ```bash
 sudo apt update
@@ -84,9 +134,7 @@ sudo apt install -y build-essential libgtk-4-dev libsqlite3-dev \
   desktop-file-utils appstream fakeroot dpkg-dev
 ```
 
-Use rustup with the toolchain pinned in `rust-toolchain.toml`. Cargo owns Rust
-packages and the lockfile. Backup/recovery uses system SQLite, including Jammy's
-SQLite 3.37; no bundled SQLite is required.
+Run the app, build the workspace, or prepare release binaries:
 
 ```bash
 cargo run --locked -p maintainer-app
@@ -95,6 +143,8 @@ python3 scripts/build-release.py
 ```
 
 The release wrapper remaps local build paths and checks the resulting binaries.
+Cargo owns Rust dependencies and the lockfile. Backup/recovery uses system SQLite,
+including Ubuntu 22.04's SQLite 3.37; no bundled SQLite is required.
 Privileged workflows require the installed services; do not launch the GUI or a
 bare development helper with sudo.
 
@@ -151,6 +201,8 @@ The [performance rules](AGENTS.md#performance-rules) define acceptance; current
 results and remaining work belong in [release status](docs/release-status.md).
 A short diagnostic or one passing page does not certify the full protocol.
 
+<br>
+
 ## Troubleshooting
 
 - **Authorization:** Check the installed helper/package-owner services, a running
@@ -162,5 +214,20 @@ A short diagnostic or one passing page does not certify the full protocol.
   require Linux hwmon support. Missing information must not be presented as zero
   or verified acceleration.
 
-See [documentation](docs/README.md) for validation, security guidance, and history.
-Maintainer is licensed under the [MIT License](LICENSE).
+<br>
+
+## Documentation
+
+- [Documentation index](docs/README.md): guides, validation records, and manual checks.
+- [Contributor instructions](AGENTS.md): coding rules, architecture boundaries, and performance budgets.
+- [Release status](docs/release-status.md): current scope, verification evidence, and remaining acceptance work.
+- [Threat model](docs/threat-model.md): security controls and their limitations.
+- [Changelog](CHANGELOG.md): changes across releases.
+
+Report problems through [GitHub Issues](https://github.com/alxxrzfyr/maintainer-app/issues),
+including your distribution, reproduction steps, and any relevant redacted output.
+
+## License
+
+Maintainer is developed for Linux users who want to understand, monitor, and
+maintain their systems. The project is available under the [MIT License](LICENSE).
