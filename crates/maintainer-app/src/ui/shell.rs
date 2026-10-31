@@ -864,4 +864,64 @@ mod tests {
         assert_eq!(stack.visible_child(), Some(settings_host));
         assert_eq!(stack.visible_child_name().as_deref(), Some("Settings"));
     }
+
+    #[test]
+    #[ignore = "requires a GTK display; run this exact test under Xvfb"]
+    fn shell_geometry_and_navigation_follow_allocated_surface_width() {
+        gtk4::init().unwrap();
+        let runtime = crate::runtime::Runtime::isolated_for_test();
+        let app = gtk4::Application::new(None::<&str>, gio::ApplicationFlags::NON_UNIQUE);
+        app.register(None::<&gio::Cancellable>).unwrap();
+        let shell = Shell::new(&app, runtime);
+        let window = shell.window();
+        assert_eq!(window.default_size(), (1100, 700));
+        assert_eq!(window.size_request(), (640, 420));
+        assert!(window.titlebar().is_none());
+        let outer = window.child().unwrap();
+        let root = outer.last_child().unwrap();
+        let sidebar = root.first_child().unwrap();
+        let mut pending = vec![outer.clone()];
+        while let Some(widget) = pending.pop() {
+            assert!(!widget.is::<gtk4::HeaderBar>());
+            let mut child = widget.first_child();
+            while let Some(current) = child {
+                child = current.next_sibling();
+                pending.push(current);
+            }
+        }
+        let wait_for = |condition: &dyn Fn() -> bool| {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while !condition() && Instant::now() < deadline {
+                while glib::MainContext::default().pending() {
+                    glib::MainContext::default().iteration(false);
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            assert!(
+                condition(),
+                "surface allocation did not reach expected navigation mode"
+            );
+        };
+        window.present();
+        wait_for(&|| root.has_css_class("maintainer_layout_wide"));
+        wait_for(&|| {
+            window
+                .surface()
+                .is_some_and(|surface| surface.width() >= 900)
+        });
+        window.set_default_size(700, 700);
+        // A requested default size does not change the allocated surface yet.
+        // Navigation must wait for the actual allocation rather than this setter.
+        assert!(window.surface().unwrap().width() >= 900);
+        assert!(root.has_css_class("maintainer_layout_wide"));
+        wait_for(&|| root.has_css_class("maintainer_layout_compact"));
+        assert_eq!(sidebar.width_request(), 60);
+        // A child minimum can also resize the surface, without a size request.
+        root.set_size_request(1000, -1);
+        wait_for(&|| root.has_css_class("maintainer_layout_wide"));
+        assert!(window.surface().unwrap().width() >= 1000);
+        assert_eq!(sidebar.width_request(), 220);
+        assert!(sidebar.is_visible());
+        window.close();
+    }
 }

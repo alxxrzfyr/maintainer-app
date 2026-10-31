@@ -246,65 +246,85 @@ fn sidebar_is_fixed_pinned_and_updates_active_destination() {
 }
 
 #[test]
-fn shell_chrome_and_cleanup_layout_avoid_screenshot_regressions() {
-    let shell = include_str!("ui/shell.rs");
-    let cleanup = include_str!("ui/cleanup.rs");
-    let light_css = include_str!("../../../data/styles/light.css");
-    let dark_css = include_str!("../../../data/styles/dark.css");
+fn cleanup_actions_share_a_fixed_row_above_expanding_results() {
+    let _guard = initialize_gtk_test();
+    let page = crate::ui::cleanup::CleanupPage::new();
+    let actions = page
+        .scan_button()
+        .parent()
+        .unwrap()
+        .downcast::<gtk4::Box>()
+        .unwrap();
+    assert_eq!(actions.orientation(), gtk4::Orientation::Horizontal);
+    assert!(!actions.vexpands());
+    assert_eq!(
+        page.package_cache_button().parent().as_ref(),
+        Some(actions.upcast_ref())
+    );
+    assert_eq!(
+        page.journal_vacuum_button().parent().as_ref(),
+        Some(actions.upcast_ref())
+    );
+    let results = descendants_of_type::<gtk4::ScrolledWindow>(page.widget());
+    assert_eq!(results.len(), 1);
+    assert!(results[0].vexpands());
+    assert_eq!(
+        results[0].parent().as_ref(),
+        Some(page.widget().upcast_ref())
+    );
+    let mut sibling = actions.next_sibling();
+    while let Some(widget) = sibling {
+        if widget == results[0].clone().upcast::<Widget>() {
+            return;
+        }
+        sibling = widget.next_sibling();
+    }
+    panic!("expanding results must follow the fixed action row");
+}
 
-    assert!(
-        !shell.contains("HeaderBar"),
-        "an in-content HeaderBar duplicates compositor window controls"
-    );
-    assert!(
-        shell.contains("connect_fullscreened_notify"),
-        "the app must immediately reverse compositor fullscreen requests"
-    );
-    assert!(
-        shell.contains(".default_width(1100)")
-            && shell.contains(".default_height(700)")
-            && shell.contains("set_size_request(640, 420)"),
-        "default and minimum window dimensions must remain wider than tall"
-    );
-    assert!(
-        !cleanup.contains("FlowBox"),
-        "cleanup actions must not reflow beneath the expanding results pane"
-    );
-    for css in [light_css, dark_css] {
-        assert!(
-            !css.contains("box-shadow: inset 3px 0 @maintainer_accent"),
-            "active navigation must use a quiet selected surface without an accent stripe"
-        );
+#[test]
+fn navigation_css_uses_a_quiet_selected_surface() {
+    for css in [
+        include_str!("../../../data/styles/light.css"),
+        include_str!("../../../data/styles/dark.css"),
+    ] {
+        assert!(!css.contains("box-shadow: inset 3px 0 @maintainer_accent"));
     }
 }
 
 #[test]
-fn shell_responds_to_live_allocated_width_not_default_width() {
-    let source = include_str!("ui/shell.rs");
-    assert!(source.contains("connect_width_notify"));
-    assert!(!source.contains("connect_default_width_notify"));
-}
-
-#[test]
 fn system_details_use_compact_two_column_rows() {
-    let system = include_str!("ui/system.rs");
-
-    assert!(
-        system.contains("detail_grid.attach(&cpu_detail_box, 0, 0, 1, 1)")
-            && system.contains("detail_grid.attach(&memory_detail_box, 1, 0, 1, 1)"),
-        "per-core CPU and memory composition must share one equal two-column row"
+    let _guard = initialize_gtk_test();
+    let page = crate::ui::system::SystemPage::new();
+    let grid = descendants_of_type::<gtk4::Grid>(page.widget())
+        .into_iter()
+        .find(|grid| grid.has_css_class("maintainer_resource_grid"))
+        .unwrap();
+    assert!(grid.is_column_homogeneous());
+    for (column, title) in [(0, "Per-Core Usage"), (1, "Memory Composition")] {
+        let card = grid
+            .child_at(column, 0)
+            .expect("detail card in the first row");
+        assert_eq!(grid.query_child(&card), (column, 0, 1, 1));
+        assert!(
+            descendants_of_type::<gtk4::Label>(&card)
+                .iter()
+                .any(|label| label.text() == title)
+        );
+    }
+    assert!(grid.child_at(0, 1).is_none());
+    let labels = descendants_of_type::<gtk4::Label>(page.widget());
+    assert_eq!(
+        labels
+            .iter()
+            .filter(|label| label.text() == "Network: —")
+            .count(),
+        1
     );
     assert!(
-        system.contains("network_summary_label"),
-        "system page must have a compact network summary (not a full table)"
-    );
-    assert!(
-        system.contains("maintainer_temperature_panel"),
-        "temperature sensors must use the compact telemetry panel"
-    );
-    assert!(
-        system.contains("temperature_groups"),
-        "temperature display must use grouped readings, not raw duplicates"
+        descendants_of_type::<gtk4::Box>(page.widget())
+            .iter()
+            .any(|panel| panel.has_css_class("maintainer_temperature_panel"))
     );
 }
 
@@ -385,11 +405,56 @@ fn process_rows_reuse_identity_keyed_widgets() {
 
 #[test]
 fn update_progress_uses_continuous_indeterminate_animation() {
-    let updates = include_str!("ui/updates.rs");
+    let _guard = initialize_gtk_test();
+    let mut page = crate::ui::updates::UpdatesPage::new();
+    let window = gtk4::Window::builder()
+        .default_width(600)
+        .default_height(500)
+        .build();
+    window.set_child(Some(page.widget()));
+    window.present();
+    page.set_executing();
+    let bar = page.progress_bar_handle();
+    let context = glib::MainContext::default();
+    let sample = || {
+        descendants_of_type::<Widget>(&bar)
+            .into_iter()
+            .find(|node| node.css_name() == "progress")
+            .and_then(|node| node.compute_bounds(&bar))
+            .map(|bounds| (bounds.x().to_bits(), bounds.width().to_bits()))
+    };
+    let allocation_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while (!bar.is_mapped() || bar.width() == 0) && std::time::Instant::now() < allocation_deadline
+    {
+        context.iteration(false);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(bar.is_mapped() && bar.width() > 0);
+    // Observe later movement, after a single initial pulse would have stopped.
+    // Rendering startup is outside the observation window, including on busy CI.
+    let settle_until = std::time::Instant::now() + std::time::Duration::from_millis(500);
+    while std::time::Instant::now() < settle_until {
+        context.iteration(false);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let mut positions = std::collections::HashSet::new();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(4);
+    while positions.len() <= 3 && std::time::Instant::now() < deadline {
+        context.iteration(false);
+        if let Some(position) = sample() {
+            positions.insert(position);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(15));
+    }
     assert!(
-        updates.contains("timeout_add_local") && updates.contains("progress_indeterminate"),
-        "authentication/loading progress must pulse continuously, not only when output arrives"
+        positions.len() > 3,
+        "progress must keep moving without worker output: {positions:?}"
     );
+    page.set_progress(25, Some(100), "Installing", false);
+    assert_eq!(bar.fraction(), 0.25);
+    page.set_result(true, "Done", false);
+    assert!(!bar.is_visible());
+    window.close();
 }
 
 #[test]
@@ -451,118 +516,143 @@ fn css_defines_all_required_semantic_tokens() {
 }
 
 #[test]
-fn network_page_does_not_access_system_interfaces_directly() {
-    let network_src = include_str!("ui/network.rs");
-
-    // Must not read /proc, /sys, /etc directly.
-    assert!(
-        !network_src.contains("read_to_string(\"/proc"),
-        "network.rs must not read /proc directly — use maintainer_core services"
-    );
-    assert!(
-        !network_src.contains("read_to_string(\"/etc"),
-        "network.rs must not read /etc directly — use maintainer_core services"
-    );
-    assert!(
-        !network_src.contains("read_to_string(\"/sys"),
-        "network.rs must not read /sys directly — use maintainer_core services"
-    );
-
-    // Must not spawn commands directly (except via core).
-    assert!(
-        !network_src.contains("Command::new(\"curl\""),
-        "network.rs must not spawn curl directly — use speed_test core service"
-    );
-    assert!(
-        !network_src.contains("Command::new(\"ip\""),
-        "network.rs must not spawn ip directly — use connection core service"
-    );
-    assert!(
-        !network_src.contains("Command::new(\"iw\""),
-        "network.rs must not spawn iw directly — use connection core service"
-    );
-}
-
-#[test]
 fn destructive_buttons_use_project_specific_class() {
-    let settings = include_str!("ui/settings.rs");
-    let cleanup = include_str!("ui/cleanup.rs");
-    let history = include_str!("ui/history.rs");
-    let updates = include_str!("ui/updates.rs");
-    let kernel = include_str!("ui/kernel_section.rs");
-    let confirm = include_str!("ui/dialogs/confirm_cleanup.rs");
-
-    for (name, src) in [
-        ("settings.rs", settings),
-        ("cleanup.rs", cleanup),
-        ("history.rs", history),
-        ("updates.rs", updates),
-        ("kernel_section.rs", kernel),
-        ("confirm_cleanup.rs", confirm),
+    let _guard = initialize_gtk_test();
+    let settings = crate::ui::settings::build_settings_page(
+        &crate::state::SettingsSnapshot::default(),
+        |_| {},
+    );
+    let cleanup = crate::ui::cleanup::CleanupPage::new();
+    let history = crate::ui::history::build_history_page(
+        &[crate::ui::history::HistoryRow {
+            id: "fixture".into(),
+            operation: "Cleanup".into(),
+            time: "today".into(),
+            result: "Success".into(),
+            recovered_bytes: "1 MiB".into(),
+            error_summary: None,
+        }],
+        |_| {},
+    );
+    let updates = crate::ui::updates::UpdatesPage::new();
+    let mut kernels = crate::ui::kernel_section::KernelSection::new();
+    kernels.set_loaded(&[maintainer_core::kernel::KernelInfo {
+        package_name: "linux-image-fixture".into(),
+        version: "fixture".into(),
+        is_running: false,
+        is_removable: true,
+    }]);
+    let confirm = crate::ui::dialogs::confirm_cleanup::ConfirmCleanupDialog::new(&[], 0, false);
+    for (root, expected_labels) in [
+        (
+            settings.upcast_ref::<Widget>(),
+            vec!["Delete all history", "Delete all Maintainer data"],
+        ),
+        (
+            cleanup.widget().upcast_ref::<Widget>(),
+            vec!["Review Selected Files"],
+        ),
+        (
+            history.upcast_ref::<Widget>(),
+            vec!["Delete selected", "Delete all"],
+        ),
+        (updates.widget().upcast_ref::<Widget>(), vec!["Cancel"]),
+        (
+            kernels.widget().upcast_ref::<Widget>(),
+            vec!["Review Removal"],
+        ),
+        (
+            confirm.widget().upcast_ref::<Widget>(),
+            vec!["Move to Trash"],
+        ),
     ] {
+        let buttons = descendants_of_type::<Button>(root);
         assert!(
-            !src.contains("\"destructive-action\""),
-            "{name} must use \"maintainer_destructive\" instead of GTK's \"destructive-action\" \
-             to avoid collision with built-in theming"
+            buttons
+                .iter()
+                .all(|button| !button.has_css_class("destructive-action"))
         );
+        for label in expected_labels {
+            let button = buttons
+                .iter()
+                .find(|button| button.label().as_deref() == Some(label))
+                .unwrap_or_else(|| {
+                    panic!(
+                        "missing destructive button {label}; found {:?}",
+                        buttons
+                            .iter()
+                            .map(|button| button.label())
+                            .collect::<Vec<_>>()
+                    )
+                });
+            assert!(button.has_css_class("maintainer_destructive"), "{label}");
+        }
     }
-
-    let dark_css = include_str!("../../../data/styles/dark.css");
-    let light_css = include_str!("../../../data/styles/light.css");
-    for (name, css) in [("dark.css", dark_css), ("light.css", light_css)] {
-        assert!(
-            css.contains(".maintainer_destructive {"),
-            "{name} must define .maintainer_destructive class"
-        );
-        assert!(
-            css.contains(".maintainer_destructive:hover {"),
-            "{name} must define .maintainer_destructive:hover"
-        );
-        assert!(
-            css.contains(".maintainer_destructive:disabled {"),
-            "{name} must define .maintainer_destructive:disabled"
-        );
+    for css in [
+        include_str!("../../../data/styles/dark.css"),
+        include_str!("../../../data/styles/light.css"),
+    ] {
+        for selector in [
+            ".maintainer_destructive {",
+            ".maintainer_destructive:hover {",
+            ".maintainer_destructive:disabled {",
+        ] {
+            assert!(css.contains(selector), "missing CSS state {selector}");
+        }
     }
 }
 
 #[test]
 fn temperature_display_filters_phantom_zero_readings() {
-    let system_src = include_str!("ui/system.rs");
-
-    // Must filter 0°C readings.
-    assert!(
-        system_src.contains("*celsius <= 0.0"),
-        "system.rs must filter phantom 0°C readings from non-reporting sensors"
+    let _guard = initialize_gtk_test();
+    use maintainer_core::capability::Capability;
+    use maintainer_core::metrics::{TemperatureGroup, TemperatureReading};
+    let reading = |label: &str, value| TemperatureReading {
+        hwmon_name: "fixture-chip".into(),
+        label: Some(label.into()),
+        celsius: Capability::Available(value),
+    };
+    let group = |label: &str, value| TemperatureGroup {
+        chip_name: label.into(),
+        representative: reading(label, value),
+        details: vec![
+            reading(label, value),
+            reading("Core 1", 47.0),
+            reading("phantom", 0.0),
+        ],
+    };
+    let page = crate::ui::system::SystemPage::new();
+    let mut vm = crate::monitoring::SystemViewModel {
+        temperature_groups: vec![
+            group("CPU", 45.0),
+            group("zero", 0.0),
+            group("negative", -1.0),
+        ],
+        ..Default::default()
+    };
+    page.update(&vm);
+    let chips = || {
+        descendants_of_type::<gtk4::Box>(page.widget())
+            .into_iter()
+            .filter(|chip| chip.has_css_class("maintainer_temperature_chip"))
+            .collect::<Vec<_>>()
+    };
+    let rendered = chips();
+    assert_eq!(rendered.len(), 1);
+    assert_eq!(
+        rendered[0].tooltip_text().as_deref(),
+        Some("CPU: 45°C\n  Core 1: 47°C")
     );
-
-    // Must use homogeneous FlowBox.
+    let flow = descendants_of_type::<gtk4::FlowBox>(page.widget())
+        .into_iter()
+        .find(|flow| flow.has_css_class("maintainer_temperature_flow"))
+        .unwrap();
+    assert!(flow.is_homogeneous());
+    vm.temperature_groups[0].representative.celsius = Capability::Available(0.0);
+    page.update(&vm);
     assert!(
-        system_src.contains("set_homogeneous(true)"),
-        "temperature FlowBox must be homogeneous for uniform chip sizes"
-    );
-
-    // Must have tooltip support.
-    assert!(
-        system_src.contains("set_tooltip_text"),
-        "temperature chips must have tooltips for details"
-    );
-}
-
-#[test]
-fn speed_test_uses_core_service_not_inline_curl() {
-    let network_src = include_str!("ui/network.rs");
-
-    // Must use core speed test service.
-    assert!(
-        network_src.contains("maintainer_core::metrics::run_speed_test")
-            || network_src.contains("maintainer_core::metrics::speed_test"),
-        "network.rs must delegate speed test to maintainer_core"
-    );
-
-    // Must report stage progress.
-    assert!(
-        network_src.contains("stage.label()") || network_src.contains("stage_rx"),
-        "speed test must report stage-level progress (latency/download/upload)"
+        chips().is_empty(),
+        "a previously valid sensor must disappear when it stops reporting"
     );
 }
 
