@@ -1,12 +1,13 @@
-//! Previewed cleanup with category analyzers, immutable plans, Trash support,
-//! confirmed execution, and durable operation history.
+//! On-demand cleanup inspection, reviewed plans and private attempt history.
 //!
-//! Flow: analyze → plan → confirm → execute → record.
-//! Nothing is deleted without explicit user confirmation through a reviewed plan.
+//! Review retains file and parent descriptors. A root-private quarantine binds
+//! the reviewed identity to unlink, with no-overwrite recovery after races.
 
 pub mod analyze;
 pub mod execute;
 pub mod plan;
+pub mod quarantine;
+pub mod recovery;
 pub mod trash;
 
 pub use analyze::{

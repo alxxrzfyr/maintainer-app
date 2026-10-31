@@ -1,21 +1,17 @@
-//! Cleanup execution engine.
-//!
-//! Receives an immutable plan ID and selected item IDs, revalidates each target
-//! (checking inode hasn't changed), executes removals independently, checks
-//! cancellation between items, collects outcomes, and records to history.
+//! Reviewed descriptor-bound cleanup with cancellation and private history.
 
-use std::fs;
-use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::time::SystemTime;
 
 use uuid::Uuid;
 
-use crate::cleanup::plan::{CleanupItem, CleanupPlan};
-use crate::cleanup::trash::{self, TrashOutcome};
+use crate::cleanup::plan::CleanupPlan;
 use crate::error::MaintainerError;
 use crate::jobs::{Cancellation, ItemResult, JobProgress, OperationOutcome, ProgressSink};
 use crate::persistence::history::{HistoryEntry, HistoryRepository, OperationStatus};
+
+/// Shared capability reason for every unproved filesystem mutation route.
+pub const CLEANUP_UNAVAILABLE_REASON: &str = "Removal requires the installed administrator-authorized helper and a supported regular file on its quarantine filesystem. Trash has no permanent-deletion fallback.";
 
 /// Request to execute specific items from a plan.
 #[derive(Debug, Clone)]
@@ -24,8 +20,7 @@ pub struct ExecutionRequest {
     pub plan_id: Uuid,
     /// Selected item IDs to execute.
     pub selected_item_ids: Vec<Uuid>,
-    /// If true, permanently delete items that cannot be trashed.
-    /// Must be explicitly confirmed by the user for permanent deletions.
+    /// Explicit stronger confirmation for permanent deletion.
     pub confirm_permanent: bool,
 }
 
@@ -38,13 +33,15 @@ pub struct CleanupResult {
     pub item_results: Vec<ItemResult<CleanupItemOutcome>>,
     /// Summary.
     pub outcome: OperationOutcome,
-    /// Actual bytes recovered (measured from successful deletions).
+    /// Conservative physical reclamation count; retained descriptors can delay freeing.
     pub actual_recovered_bytes: u64,
 }
 
 /// Outcome for a single cleaned item.
 #[derive(Debug, Clone)]
 pub struct CleanupItemOutcome {
+    /// A committed operation can retain a durability warning without inviting a retry.
+    pub notice: Option<String>,
     /// Item ID.
     pub item_id: Uuid,
     /// Bytes actually recovered.
@@ -62,21 +59,21 @@ pub enum RemovalMethod {
     PermanentlyDeleted,
 }
 
-/// The cleanup executor validates and removes targets from an approved plan.
+/// Executes reviewed files through the protected privileged helper.
 pub struct CleanupExecutor<'a> {
-    home_dir: &'a Path,
+    _home_dir: &'a Path,
 }
 
 impl<'a> CleanupExecutor<'a> {
     /// Create an executor for the given home directory.
     pub fn new(home_dir: &'a Path) -> Self {
-        Self { home_dir }
+        Self {
+            _home_dir: home_dir,
+        }
     }
 
-    /// Execute the requested cleanup items from the given plan.
-    ///
-    /// Revalidates each target, checks cancellation between items,
-    /// collects all outcomes, and records history.
+    /// Validate plan membership, report each selected item unavailable, and
+    /// preserve cancellation and history without accessing filesystem targets.
     pub fn execute(
         &self,
         plan: &CleanupPlan,
@@ -92,15 +89,21 @@ impl<'a> CleanupExecutor<'a> {
             });
         }
 
+        if request.selected_item_ids.is_empty() {
+            return Err(MaintainerError::io(
+                "cleanup unavailable",
+                std::io::Error::new(std::io::ErrorKind::Unsupported, CLEANUP_UNAVAILABLE_REASON),
+            ));
+        }
+
         let started_at = unix_timestamp_secs();
         let total = request.selected_item_ids.len() as u64;
         let mut item_results: Vec<ItemResult<CleanupItemOutcome>> = Vec::new();
-        let mut actual_recovered_bytes = 0u64;
-        let mut succeeded = 0u64;
         let mut failed = 0u64;
-        let mut skipped = 0u64;
+        let mut succeeded = 0u64;
         let mut cancelled = false;
-        let mut errors: Vec<String> = Vec::new();
+        let manifest = reviewed_manifest(plan, request);
+        let mut batch: Option<Result<CleanupBatch, String>> = None;
 
         for (idx, item_id) in request.selected_item_ids.iter().enumerate() {
             if cancel.is_cancelled() {
@@ -111,51 +114,102 @@ impl<'a> CleanupExecutor<'a> {
             progress.report(&JobProgress {
                 completed: idx as u64,
                 total: Some(total),
-                message: format!("Removing item {}/{total}", idx + 1),
+                message: format!("Checking item {}/{total}", idx + 1),
             });
 
             let item = match plan.item_by_id(item_id) {
                 Some(i) => i,
                 None => {
-                    skipped += 1;
-                    item_results.push(ItemResult::Skipped {
+                    failed += 1;
+                    item_results.push(ItemResult::Failed {
                         item: item_id.to_string(),
-                        reason: "item not found in plan".into(),
+                        message: "item not found in plan".into(),
                     });
                     continue;
                 }
             };
 
-            match self.execute_item(item, request.confirm_permanent) {
-                Ok(outcome) => {
-                    actual_recovered_bytes =
-                        actual_recovered_bytes.saturating_add(outcome.recovered_bytes);
-                    succeeded += 1;
-                    item_results.push(ItemResult::Ok(outcome));
+            let result = (|| -> Result<String, String> {
+                if item.reversibility == crate::cleanup::Reversibility::PermanentOnly
+                    && !request.confirm_permanent
+                {
+                    return Err("Permanent removal was not explicitly confirmed".into());
                 }
-                Err(e) => {
-                    let msg = e.to_string();
-                    errors.push(msg.clone());
+                let pinned = item.reviewed.as_ref().ok_or_else(|| {
+                    item.unavailable_reason.clone().unwrap_or_else(|| {
+                        "File removal unavailable: no retained review descriptor".into()
+                    })
+                })?;
+                use std::os::unix::fs::MetadataExt;
+                let metadata = pinned.file.metadata().map_err(|error| error.to_string())?;
+                if item.inode != metadata.ino() || item.device != metadata.dev() {
+                    return Err("File removal unavailable: review metadata changed".into());
+                }
+                let manifest = manifest.as_ref().map_err(Clone::clone)?;
+                let index = manifest
+                    .iter()
+                    .position(|(id, _)| id == item_id)
+                    .ok_or_else(|| "Reviewed file is outside the authorized manifest".to_string())?
+                    as u32;
+                let batch = batch
+                    .get_or_insert_with(|| CleanupBatch::begin(manifest))
+                    .as_ref()
+                    .map_err(Clone::clone)?;
+                remove_via_helper(
+                    batch,
+                    index,
+                    pinned,
+                    item.reversibility == crate::cleanup::Reversibility::TrashRecoverable,
+                    self._home_dir,
+                )
+            })();
+            match result {
+                Ok(message) => {
+                    succeeded += 1;
+                    item_results.push(ItemResult::Ok(CleanupItemOutcome {
+                        notice: (!message.is_empty()).then_some(message),
+                        item_id: item.id,
+                        recovered_bytes: 0,
+                        method: if item.reversibility
+                            == crate::cleanup::Reversibility::TrashRecoverable
+                        {
+                            RemovalMethod::Trashed
+                        } else {
+                            RemovalMethod::PermanentlyDeleted
+                        },
+                    }));
+                }
+                Err(message) => {
                     failed += 1;
                     item_results.push(ItemResult::Failed {
                         item: item.display_path.clone(),
-                        message: msg,
+                        message,
                     });
                 }
             }
         }
 
+        if let Some(Ok(batch)) = batch {
+            if let Err(message) = batch.end() {
+                failed += 1;
+                item_results.push(ItemResult::Failed {
+                    item: "cleanup authorization".into(),
+                    message,
+                });
+            }
+        }
+
         progress.report(&JobProgress {
-            completed: total,
+            completed: item_results.len() as u64,
             total: Some(total),
-            message: "Cleanup complete".into(),
+            message: "Reviewed cleanup finished".into(),
         });
 
         let completed_at = unix_timestamp_secs();
         let outcome = OperationOutcome {
             succeeded,
             failed,
-            skipped,
+            skipped: 0,
             cancelled,
         };
 
@@ -168,26 +222,16 @@ impl<'a> CleanupExecutor<'a> {
         } else {
             OperationStatus::Failure
         };
-
-        let errors_json = if errors.is_empty() {
-            None
-        } else {
-            Some(format!(
-                "[{}]",
-                errors
-                    .iter()
-                    .map(|e| format!("\"{}\"", e.replace('"', "\\\"")))
-                    .collect::<Vec<_>>()
-                    .join(",")
-            ))
-        };
+        // One fixed category is sufficient regardless of item count. Paths and
+        // arbitrary failure text never enter the private history record.
+        let errors_json = (failed > 0).then(|| r#"["file-cleanup-failed"]"#.to_string());
 
         let entry = HistoryEntry::new(
             "cleanup",
             started_at,
             Some(completed_at),
             status,
-            actual_recovered_bytes,
+            0,
             errors_json,
         );
         history.record(&entry)?;
@@ -196,124 +240,130 @@ impl<'a> CleanupExecutor<'a> {
             plan_id: plan.id,
             item_results,
             outcome,
-            actual_recovered_bytes,
-        })
-    }
-
-    /// Execute a single item: revalidate then remove.
-    fn execute_item(
-        &self,
-        item: &CleanupItem,
-        confirm_permanent: bool,
-    ) -> Result<CleanupItemOutcome, MaintainerError> {
-        let metadata = fs::symlink_metadata(&item.path)
-            .map_err(|e| MaintainerError::io(format!("revalidating {}", item.display_path), e))?;
-
-        if metadata.ino() != item.inode || metadata.dev() != item.device {
-            return Err(MaintainerError::Internal {
-                context: "revalidation".into(),
-                message: format!(
-                    "inode/device changed for {}: expected ({}, {}), got ({}, {})",
-                    item.display_path,
-                    item.inode,
-                    item.device,
-                    metadata.ino(),
-                    metadata.dev()
-                ),
-            });
-        }
-
-        if metadata.is_symlink() {
-            return Err(MaintainerError::Internal {
-                context: "revalidation".into(),
-                message: format!("{} became a symlink", item.display_path),
-            });
-        }
-
-        let actual_size = if metadata.is_dir() {
-            dir_size_recursive(&item.path).unwrap_or(item.size_bytes)
-        } else {
-            metadata.len()
-        };
-
-        match item.reversibility {
-            crate::cleanup::analyze::Reversibility::TrashRecoverable => {
-                match trash::trash_file(&item.path, self.home_dir)? {
-                    TrashOutcome::Trashed { .. } => Ok(CleanupItemOutcome {
-                        item_id: item.id,
-                        recovered_bytes: actual_size,
-                        method: RemovalMethod::Trashed,
-                    }),
-                    TrashOutcome::TrashUnavailable { reason } => {
-                        if confirm_permanent {
-                            self.permanent_delete(&item.path, actual_size, item.id)
-                        } else {
-                            Err(MaintainerError::Internal {
-                                context: "trash".into(),
-                                message: format!(
-                                    "Trash unavailable for {}: {reason}. Permanent deletion not confirmed.",
-                                    item.display_path
-                                ),
-                            })
-                        }
-                    }
-                }
-            }
-            crate::cleanup::analyze::Reversibility::PermanentOnly => {
-                if !confirm_permanent {
-                    return Err(MaintainerError::Internal {
-                        context: "cleanup".into(),
-                        message: format!(
-                            "permanent deletion not confirmed for {}",
-                            item.display_path
-                        ),
-                    });
-                }
-                self.permanent_delete(&item.path, actual_size, item.id)
-            }
-        }
-    }
-
-    /// Permanently delete a file or directory.
-    fn permanent_delete(
-        &self,
-        path: &Path,
-        size: u64,
-        item_id: Uuid,
-    ) -> Result<CleanupItemOutcome, MaintainerError> {
-        let metadata = fs::symlink_metadata(path)
-            .map_err(|e| MaintainerError::io(format!("stat {}", path.display()), e))?;
-
-        if metadata.is_dir() {
-            fs::remove_dir_all(path).map_err(|e| {
-                MaintainerError::io(format!("removing directory {}", path.display()), e)
-            })?;
-        } else {
-            fs::remove_file(path)
-                .map_err(|e| MaintainerError::io(format!("removing file {}", path.display()), e))?;
-        }
-
-        Ok(CleanupItemOutcome {
-            item_id,
-            recovered_bytes: size,
-            method: RemovalMethod::PermanentlyDeleted,
+            actual_recovered_bytes: 0,
         })
     }
 }
 
-/// Recursively compute directory size.
-fn dir_size_recursive(path: &Path) -> Result<u64, std::io::Error> {
-    let mut total = 0u64;
-    for entry in fs::read_dir(path)? {
-        let entry = entry?;
-        let meta = fs::symlink_metadata(entry.path())?;
-        if meta.is_dir() {
-            total += dir_size_recursive(&entry.path()).unwrap_or(0);
-        } else if !meta.is_symlink() {
-            total += meta.len();
+type ManifestEntry = (String, u64, u64, u64, u64, bool);
+fn reviewed_manifest(
+    plan: &CleanupPlan,
+    request: &ExecutionRequest,
+) -> Result<Vec<(Uuid, ManifestEntry)>, String> {
+    use std::os::unix::fs::MetadataExt;
+    let mut manifest = Vec::new();
+    for id in &request.selected_item_ids {
+        let Some(item) = plan.item_by_id(id) else {
+            continue;
+        };
+        let Some(pinned) = item.reviewed.as_ref() else {
+            continue;
+        };
+        if item.reversibility == crate::cleanup::Reversibility::PermanentOnly
+            && !request.confirm_permanent
+        {
+            continue;
         }
+        let parent = pinned
+            .parent
+            .metadata()
+            .map_err(|error| error.to_string())?;
+        manifest.push((
+            *id,
+            (
+                pinned.basename.clone(),
+                parent.dev(),
+                parent.ino(),
+                item.device,
+                item.inode,
+                item.reversibility == crate::cleanup::Reversibility::TrashRecoverable,
+            ),
+        ));
     }
-    Ok(total)
+    Ok(manifest)
+}
+
+struct CleanupBatch {
+    connection: zbus::blocking::Connection,
+    grant: String,
+}
+impl CleanupBatch {
+    fn begin(manifest: &[(Uuid, ManifestEntry)]) -> Result<Self, String> {
+        let connection = zbus::blocking::Connection::system()
+            .map_err(|error| format!("File removal unavailable: {error}"))?;
+        let entries = manifest
+            .iter()
+            .map(|(_, entry)| entry.clone())
+            .collect::<Vec<_>>();
+        let reply = connection
+            .call_method(
+                Some("io.github.maintainerapp.Helper"),
+                "/io/github/maintainerapp/Helper",
+                Some("io.github.maintainerapp.Helper"),
+                "BeginCleanupBatch",
+                &(entries,),
+            )
+            .map_err(|error| format!("File removal unavailable: {error}"))?;
+        let grant = reply
+            .body()
+            .deserialize()
+            .map_err(|error| error.to_string())?;
+        Ok(Self { connection, grant })
+    }
+    fn end(self) -> Result<(), String> {
+        self.connection.call_method(Some("io.github.maintainerapp.Helper"), "/io/github/maintainerapp/Helper", Some("io.github.maintainerapp.Helper"), "EndCleanupBatch", &(self.grant.as_str(),)).map_err(|error| format!("Cleanup authorization could not be released; it will expire without replay. Review again before another attempt: {error}"))?;
+        Ok(())
+    }
+}
+
+fn remove_via_helper(
+    batch: &CleanupBatch,
+    index: u32,
+    pinned: &crate::cleanup::plan::ReviewedFile,
+    trash: bool,
+    home: &Path,
+) -> Result<String, String> {
+    use std::os::fd::AsFd;
+    let trash_directories = if trash {
+        Some(
+            crate::cleanup::trash::open_trash(home)
+                .map_err(|error| format!("Trash unavailable: {error}"))?,
+        )
+    } else {
+        None
+    };
+    let files = trash_directories
+        .as_ref()
+        .map(|pair| &pair.0)
+        .unwrap_or(&pinned.parent);
+    let info = trash_directories
+        .as_ref()
+        .map(|pair| &pair.1)
+        .unwrap_or(&pinned.parent);
+    let reply = batch
+        .connection
+        .call_method(
+            Some("io.github.maintainerapp.Helper"),
+            "/io/github/maintainerapp/Helper",
+            Some("io.github.maintainerapp.Helper"),
+            "RemoveReviewedBatchFile",
+            &(
+                batch.grant.as_str(),
+                index,
+                zbus::zvariant::Fd::from(pinned.parent.as_fd()),
+                zbus::zvariant::Fd::from(pinned.file.as_fd()),
+                pinned.basename.as_str(),
+                trash,
+                zbus::zvariant::Fd::from(files.as_fd()),
+                zbus::zvariant::Fd::from(info.as_fd()),
+            ),
+        )
+        .map_err(|error| format!("File removal unavailable: {error}"))?;
+    let (success, message): (bool, String) = reply
+        .body()
+        .deserialize()
+        .map_err(|error| error.to_string())?;
+    if success { Ok(message) } else { Err(message) }
 }
 
 /// Current Unix timestamp in seconds.
@@ -334,12 +384,44 @@ mod tests {
     use crate::jobs::{CancellationToken, NullProgress};
     use crate::persistence::database::Database;
     use crate::persistence::history::SqliteHistoryRepository;
-    use std::fs::File;
+    use std::fs::{self, File};
     use std::io::Write;
     use std::os::unix::fs::MetadataExt;
 
     fn test_db() -> Database {
         Database::open_in_memory().unwrap()
+    }
+
+    #[test]
+    fn persisted_cleanup_errors_use_private_bounded_categories() {
+        let home = tempfile::tempdir().unwrap();
+        let cache_dir = home.path().join(".cache/thumbnails");
+        fs::create_dir_all(&cache_dir).unwrap();
+        let target = make_file(&cache_dir, "private-name.png", b"content");
+        let path = target.path.clone();
+        let plan = CleanupPlan::from_targets(vec![target], home.path()).unwrap();
+        let request = ExecutionRequest {
+            plan_id: plan.id,
+            selected_item_ids: vec![plan.items[0].id],
+            confirm_permanent: true,
+        };
+        fs::remove_file(path).unwrap();
+
+        let db = test_db();
+        let repo = SqliteHistoryRepository::new(&db);
+        let result = CleanupExecutor::new(home.path()).execute(
+            &plan,
+            &request,
+            &CancellationToken::new(),
+            &NullProgress,
+            &repo,
+        );
+
+        assert!(result.is_ok());
+        let errors = repo.recent(1).unwrap()[0].errors.clone().unwrap();
+        assert_eq!(errors, r#"["file-cleanup-failed"]"#);
+        assert!(!errors.contains("private-name.png"));
+        assert!(!errors.contains(home.path().to_string_lossy().as_ref()));
     }
 
     fn make_file(dir: &Path, name: &str, content: &[u8]) -> CleanupTarget {
@@ -361,7 +443,7 @@ mod tests {
     }
 
     #[test]
-    fn execute_permanently_deletes_confirmed_items() {
+    fn execute_refuses_confirmed_items_without_deleting_or_crediting_space() {
         let home = tempfile::tempdir().unwrap();
         let cache_dir = home.path().join(".cache/thumbnails");
         fs::create_dir_all(&cache_dir).unwrap();
@@ -385,15 +467,15 @@ mod tests {
             .execute(&plan, &request, &token, &NullProgress, &repo)
             .unwrap();
 
-        assert_eq!(result.outcome.succeeded, 1);
-        assert_eq!(result.outcome.failed, 0);
-        assert_eq!(result.actual_recovered_bytes, 512);
-        assert!(!file_path.exists());
+        assert_eq!(result.outcome.succeeded, 0);
+        assert_eq!(result.outcome.failed, 1);
+        assert_eq!(result.actual_recovered_bytes, 0);
+        assert!(file_path.exists());
 
         let history = repo.recent(1).unwrap();
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].operation, "cleanup");
-        assert_eq!(history[0].status, OperationStatus::Success);
+        assert_eq!(history[0].status, OperationStatus::Failure);
     }
 
     #[test]
@@ -426,7 +508,7 @@ mod tests {
     }
 
     #[test]
-    fn execute_detects_inode_change() {
+    fn stale_inode_cannot_enable_mutation() {
         let home = tempfile::tempdir().unwrap();
         let cache_dir = home.path().join(".cache/thumbnails");
         fs::create_dir_all(&cache_dir).unwrap();
@@ -459,6 +541,131 @@ mod tests {
         assert_eq!(result.outcome.failed, 1);
         assert_eq!(result.outcome.succeeded, 0);
         assert!(file_path.exists());
+    }
+
+    fn assert_denied(plan: &CleanupPlan, home: &Path, confirmed: bool) {
+        let db = test_db();
+        let repo = SqliteHistoryRepository::new(&db);
+        let result = CleanupExecutor::new(home)
+            .execute(
+                plan,
+                &ExecutionRequest {
+                    plan_id: plan.id,
+                    selected_item_ids: plan.items.iter().map(|item| item.id).collect(),
+                    confirm_permanent: confirmed,
+                },
+                &CancellationToken::new(),
+                &NullProgress,
+                &repo,
+            )
+            .unwrap();
+        assert_eq!(result.outcome.succeeded, 0);
+        assert_eq!(result.outcome.failed, plan.items.len() as u64);
+        assert_eq!(result.actual_recovered_bytes, 0);
+        assert!(result.item_results.iter().all(|item| matches!(item,
+            ItemResult::Failed { message, .. } if message.contains("unavailable") || message.contains("confirmed")
+        )));
+        let history = repo.recent(1).unwrap();
+        assert_eq!(history[0].status, OperationStatus::Failure);
+        assert_eq!(history[0].recovered_bytes, 0);
+    }
+
+    #[test]
+    fn replacement_leaf_is_preserved_for_both_confirmation_states() {
+        let home = tempfile::tempdir().unwrap();
+        let directory = home.path().join(".cache/thumbnails");
+        fs::create_dir_all(&directory).unwrap();
+        let target = make_file(&directory, "reviewed", b"original");
+        let path = target.path.clone();
+        let plan = CleanupPlan::from_targets(vec![target], home.path()).unwrap();
+        fs::rename(&path, directory.join("retained-original")).unwrap();
+        fs::write(&path, b"replacement").unwrap();
+        for confirmed in [false, true] {
+            assert_denied(&plan, home.path(), confirmed);
+            assert_eq!(fs::read(&path).unwrap(), b"replacement");
+            assert_eq!(
+                fs::read(directory.join("retained-original")).unwrap(),
+                b"original"
+            );
+        }
+    }
+
+    #[test]
+    fn replacement_ancestor_does_not_touch_outside_victim() {
+        let home = tempfile::tempdir().unwrap();
+        let directory = home.path().join(".cache/thumbnails");
+        fs::create_dir_all(&directory).unwrap();
+        let target = make_file(&directory, "reviewed", b"original");
+        let plan = CleanupPlan::from_targets(vec![target], home.path()).unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(outside.path().join("reviewed"), b"outside victim").unwrap();
+        let retained = home.path().join("retained-original");
+        fs::rename(&directory, &retained).unwrap();
+        std::os::unix::fs::symlink(outside.path(), &directory).unwrap();
+        assert_denied(&plan, home.path(), true);
+        assert_eq!(
+            fs::read(outside.path().join("reviewed")).unwrap(),
+            b"outside victim"
+        );
+        assert_eq!(fs::read(retained.join("reviewed")).unwrap(), b"original");
+    }
+
+    #[test]
+    fn added_descendants_and_existing_open_writer_remain_untouched() {
+        let home = tempfile::tempdir().unwrap();
+        let directory = home.path().join(".cache/thumbnails");
+        fs::create_dir_all(&directory).unwrap();
+        let mut target = make_file(&directory, "reviewed", b"original");
+        let mut writer = fs::OpenOptions::new()
+            .append(true)
+            .open(&target.path)
+            .unwrap();
+        target.path = directory.clone();
+        let metadata = fs::symlink_metadata(&directory).unwrap();
+        target.inode = metadata.ino();
+        target.device = metadata.dev();
+        let plan = CleanupPlan::from_targets(vec![target], home.path()).unwrap();
+        fs::write(directory.join("added-after-review"), b"unapproved").unwrap();
+        writer.write_all(b" writer change").unwrap();
+        assert_denied(&plan, home.path(), true);
+        writer.write_all(b" still open").unwrap();
+        assert_eq!(
+            fs::read(directory.join("reviewed")).unwrap(),
+            b"original writer change still open"
+        );
+        assert_eq!(
+            fs::read(directory.join("added-after-review")).unwrap(),
+            b"unapproved"
+        );
+    }
+
+    #[test]
+    fn empty_or_unknown_selection_cannot_report_success() {
+        let home = tempfile::tempdir().unwrap();
+        let directory = home.path().join(".cache/thumbnails");
+        fs::create_dir_all(&directory).unwrap();
+        let target = make_file(&directory, "reviewed", b"original");
+        let plan = CleanupPlan::from_targets(vec![target], home.path()).unwrap();
+        let db = test_db();
+        let repo = SqliteHistoryRepository::new(&db);
+        for selected_item_ids in [vec![], vec![Uuid::new_v4()]] {
+            let result = CleanupExecutor::new(home.path()).execute(
+                &plan,
+                &ExecutionRequest {
+                    plan_id: plan.id,
+                    selected_item_ids,
+                    confirm_permanent: true,
+                },
+                &CancellationToken::new(),
+                &NullProgress,
+                &repo,
+            );
+            if let Ok(result) = result {
+                assert!(!result.outcome.is_complete_success());
+                assert_eq!(result.actual_recovered_bytes, 0);
+            }
+            assert_eq!(fs::read(directory.join("reviewed")).unwrap(), b"original");
+        }
     }
 
     #[test]
@@ -521,7 +728,7 @@ mod tests {
     }
 
     #[test]
-    fn execute_partial_failure_records_correctly() {
+    fn mixed_existing_and_missing_items_record_no_success() {
         let home = tempfile::tempdir().unwrap();
         let cache_dir = home.path().join(".cache/thumbnails");
         fs::create_dir_all(&cache_dir).unwrap();
@@ -549,15 +756,16 @@ mod tests {
             .execute(&plan, &request, &token, &NullProgress, &repo)
             .unwrap();
 
-        assert_eq!(result.outcome.succeeded, 1);
-        assert_eq!(result.outcome.failed, 1);
+        assert_eq!(result.outcome.succeeded, 0);
+        assert_eq!(result.outcome.failed, 2);
+        assert_eq!(result.actual_recovered_bytes, 0);
 
         let history = repo.recent(1).unwrap();
-        assert_eq!(history[0].status, OperationStatus::PartialFailure);
+        assert_eq!(history[0].status, OperationStatus::Failure);
     }
 
     #[test]
-    fn execute_trash_recoverable_item() {
+    fn trash_recoverable_item_stays_in_place() {
         let home = tempfile::tempdir().unwrap();
         let doc_dir = home.path().join("Documents");
         fs::create_dir_all(&doc_dir).unwrap();
@@ -595,9 +803,10 @@ mod tests {
             .execute(&plan, &request, &token, &NullProgress, &repo)
             .unwrap();
 
-        assert_eq!(result.outcome.succeeded, 1);
-        assert!(!file_path.exists());
+        assert_eq!(result.outcome.succeeded, 0);
+        assert!(file_path.exists());
         let trash_files = home.path().join(".local/share/Trash/files");
-        assert!(trash_files.exists());
+        assert!(!trash_files.exists() || fs::read_dir(trash_files).unwrap().next().is_none());
+        assert_eq!(result.actual_recovered_bytes, 0);
     }
 }
