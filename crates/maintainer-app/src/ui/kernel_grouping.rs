@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 pub struct KernelGroup {
     /// The kernel version string (e.g. "7.0.0-30").
     pub version: String,
-    /// Package names belonging to this group.
+    /// Architecture-qualified selection keys belonging to this group.
     pub package_names: Vec<String>,
     /// Number of packages in the group.
     pub package_count: usize,
@@ -76,7 +76,7 @@ pub fn group_kernel_candidates(candidates: &[UpdateCandidate]) -> Vec<DisplayRow
             let indices = &kernel_groups[&version];
             let package_names: Vec<String> = indices
                 .iter()
-                .map(|&idx| candidates[idx].name.clone())
+                .map(|&idx| candidates[idx].selection_key())
                 .collect();
             let package_count = package_names.len();
             let is_security = indices
@@ -280,6 +280,7 @@ mod tests {
         is_kernel: bool,
     ) -> UpdateCandidate {
         UpdateCandidate {
+            architecture: None,
             name: name.to_string(),
             installed_version: installed.map(|s| s.to_string()),
             available_version: available.to_string(),

@@ -1,19 +1,11 @@
-//! Kernel management section: lists installed kernels with status badges
-//! and safe removal via the privileged helper.
-//!
-//! Embedded in the Updates page. Handles loading, empty, unavailable, and
-//! error states explicitly. The running kernel row never exposes a delete
-//! action — this is a UI-layer defense-in-depth check independent of the
-//! two backend layers (core and helper) that also enforce this invariant.
+//! Installed kernel inspection and requests for a bound native removal review.
+//! Running kernels never expose an action, even with stale removability metadata.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use gtk4::prelude::*;
-use gtk4::{
-    Align, Box as GtkBox, Button, Dialog, DialogFlags, Image, Label, Orientation, ResponseType,
-    Spinner,
-};
+use gtk4::{Align, Box as GtkBox, Button, Image, Label, Orientation, Spinner};
 
 use maintainer_core::kernel::KernelInfo;
 
@@ -157,7 +149,8 @@ impl KernelSection {
             return;
         }
 
-        self.status_label.set_visible(false);
+        self.status_label.set_text("Review Removal resolves the complete plan before any change. The running kernel is protected.");
+        self.status_label.set_visible(true);
         for kernel in kernels {
             let row = self.build_kernel_row(kernel);
             self.list_container.append(&row);
@@ -253,7 +246,7 @@ impl KernelSection {
             badge.set_valign(Align::Center);
             row.append(&badge);
         } else if kernel.is_removable {
-            let badge = Label::new(Some("Removable"));
+            let badge = Label::new(Some("Not Running"));
             badge.add_css_class("maintainer_kernel_badge_removable");
             badge.set_valign(Align::Center);
             row.append(&badge);
@@ -289,107 +282,22 @@ impl KernelSection {
         op_status.add_css_class("maintainer_kernel_op_status");
         row.append(&op_status);
 
-        // Delete button: only for removable kernels.
-        // DEFENSE-IN-DEPTH: Even if is_removable is true, the button is DISABLED
-        // when is_running is true. This ensures a bug in the backend claiming
-        // removability for the running kernel cannot lead to accidental removal.
-        if kernel.is_removable {
-            let delete_btn = Button::with_label("Remove");
+        if kernel.is_removable && !kernel.is_running {
+            let delete_btn = Button::with_label("Review Removal");
             delete_btn.add_css_class("maintainer_destructive");
             delete_btn.set_valign(Align::Center);
-            delete_btn.set_tooltip_text(Some(&format!("Remove {}", kernel.package_name)));
-
-            // UI-LAYER DEFENSE-IN-DEPTH: disable for running kernel regardless
-            // of what is_removable claims.
-            if kernel.is_running {
-                delete_btn.set_sensitive(false);
-                delete_btn.set_tooltip_text(Some("Cannot remove the running kernel"));
-            }
-
-            let pkg_name = kernel.package_name.clone();
             let on_remove = self.on_remove.clone();
-            delete_btn.connect_clicked(move |btn| {
-                let window = btn.root().and_then(|r| r.downcast::<gtk4::Window>().ok());
-                if let Some(win) = window {
-                    show_kernel_removal_dialog(&win, &pkg_name, &on_remove);
+            let package = kernel.package_name.clone();
+            delete_btn.connect_clicked(move |_| {
+                if let Some(callback) = on_remove.borrow().as_ref() {
+                    callback(package.clone());
                 }
             });
-
             row.append(&delete_btn);
         }
 
         row
     }
-}
-
-/// Show a strong confirmation dialog before kernel removal.
-///
-/// This is an irreversible operation — the copy communicates finality and
-/// requires explicit confirmation, matching the AGENTS.md requirement for
-/// "explicit stronger confirmation" on permanent deletion.
-fn show_kernel_removal_dialog(
-    parent: &gtk4::Window,
-    package_name: &str,
-    on_remove: &RemoveCallback,
-) {
-    let dialog = Dialog::with_buttons(
-        Some("Remove Kernel Package"),
-        Some(parent),
-        DialogFlags::MODAL | DialogFlags::DESTROY_WITH_PARENT,
-        &[
-            ("Cancel", ResponseType::Cancel),
-            ("Remove Permanently", ResponseType::Accept),
-        ],
-    );
-
-    // Mark the destructive button
-    if let Some(btn) = dialog.widget_for_response(ResponseType::Accept) {
-        btn.add_css_class("maintainer_destructive");
-    }
-
-    let content = dialog.content_area();
-    content.set_margin_top(16);
-    content.set_margin_bottom(12);
-    content.set_margin_start(16);
-    content.set_margin_end(16);
-    content.set_spacing(10);
-
-    let warning_icon = Image::from_icon_name("dialog-warning-symbolic");
-    warning_icon.set_pixel_size(32);
-    warning_icon.add_css_class("maintainer_icon_warning");
-    warning_icon.set_halign(Align::Start);
-    content.append(&warning_icon);
-
-    let msg = Label::new(Some(&format!("Permanently remove \"{}\"?", package_name)));
-    msg.set_halign(Align::Start);
-    msg.add_css_class("heading");
-    msg.set_wrap(true);
-    content.append(&msg);
-
-    let detail = Label::new(Some(
-        "This will purge the kernel package from the system. \
-         This action cannot be undone — the package must be \
-         reinstalled from APT if needed again.\n\n\
-         Only proceed if you are certain this kernel version is \
-         no longer required.",
-    ));
-    detail.add_css_class("dim-label");
-    detail.set_halign(Align::Start);
-    detail.set_wrap(true);
-    content.append(&detail);
-
-    let pkg_name = package_name.to_string();
-    let on_rm = on_remove.clone();
-    dialog.connect_response(move |dlg, response| {
-        if response == ResponseType::Accept {
-            if let Some(ref cb) = *on_rm.borrow() {
-                cb(pkg_name.clone());
-            }
-        }
-        dlg.close();
-    });
-
-    dialog.present();
 }
 
 /// Helper: find the first Label with `heading` class in a row (the package name).
@@ -438,4 +346,42 @@ fn find_delete_button_in_row(row: &GtkBox) -> Option<Button> {
         child = widget.next_sibling();
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn running_kernel_cannot_request_removal_even_with_stale_backend_metadata() {
+        assert!(!gtk4::is_initialized() || gtk4::is_initialized_main_thread());
+        gtk4::init().expect("GTK display required; use scripts/test-native.sh");
+        let mut section = KernelSection::new();
+        let calls = Rc::new(std::cell::Cell::new(0));
+        let recorded = calls.clone();
+        section.connect_remove(move |_| recorded.set(recorded.get() + 1));
+        for is_running in [false, true] {
+            section.set_loading();
+            section.set_loaded(&[KernelInfo {
+                package_name: "linux-image-6.5.0-35-generic".into(),
+                version: "6.5.0-35".into(),
+                is_running,
+                is_removable: true,
+            }]);
+            assert!(section.status_label.text().contains("protected"));
+            let row = section
+                .list_container
+                .first_child()
+                .unwrap()
+                .downcast::<GtkBox>()
+                .unwrap();
+            let button = find_delete_button_in_row(&row);
+            if is_running {
+                assert!(button.is_none());
+            } else {
+                button.unwrap().emit_clicked();
+            }
+            assert_eq!(calls.get(), 1);
+        }
+    }
 }
