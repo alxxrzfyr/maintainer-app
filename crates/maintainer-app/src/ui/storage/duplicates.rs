@@ -17,7 +17,48 @@ use gio::prelude::*;
 
 use crate::state::{RemovalPlanRequest, StorageState};
 
-type SelectionCallback = Rc<RefCell<Option<Box<dyn Fn(usize, usize)>>>>;
+type SelectionCallback = Rc<RefCell<Option<Rc<dyn Fn(usize, usize)>>>>;
+
+struct DuplicateRowWidgets {
+    row: GtkBox,
+    check: CheckButton,
+    path: Label,
+    size: Label,
+}
+
+impl DuplicateRowWidgets {
+    fn from_item(item: &ListItem) -> Option<Self> {
+        let row = item.child().and_downcast::<GtkBox>()?;
+        let check = row.first_child().and_downcast::<CheckButton>()?;
+        let path = check.next_sibling().and_downcast::<Label>()?;
+        let size = path.next_sibling().and_downcast::<Label>()?;
+        if size.next_sibling().is_some() {
+            return None;
+        }
+        Some(Self {
+            row,
+            check,
+            path,
+            size,
+        })
+    }
+}
+
+fn clear_duplicate_binding(item: &ListItem) {
+    if let Some(child) = item.child() {
+        // Disable first: clearing a recycled checkbox must not change its model.
+        child.set_sensitive(false);
+        child.set_visible(false);
+    }
+    if let Some(widgets) = DuplicateRowWidgets::from_item(item) {
+        widgets.check.set_active(false);
+        widgets
+            .check
+            .update_property(&[gtk4::accessible::Property::Label("")]);
+        widgets.path.set_text("");
+        widgets.size.set_text("");
+    }
+}
 
 /// GObject for a row in the duplicates list (one file within a group).
 mod imp {
@@ -148,7 +189,6 @@ impl DuplicatesView {
         let on_selection_for_setup = on_selection_changed.clone();
         let factory = SignalListItemFactory::new();
         factory.connect_setup(move |_, item| {
-            let item = item.downcast_ref::<ListItem>().unwrap();
             let row = GtkBox::new(Orientation::Horizontal, 8);
             row.set_margin_start(12);
             row.set_margin_end(12);
@@ -163,6 +203,12 @@ impl DuplicatesView {
                 let Some(item) = item_weak.upgrade() else {
                     return;
                 };
+                let Some(widgets) = DuplicateRowWidgets::from_item(&item) else {
+                    return;
+                };
+                if widgets.check != *check || !widgets.row.is_sensitive() {
+                    return;
+                }
                 let Some(obj) = item.item().and_downcast::<DuplicateRowObject>() else {
                     return;
                 };
@@ -170,7 +216,8 @@ impl DuplicatesView {
                     return;
                 }
                 obj.set_selected(check.is_active());
-                if let Some(callback) = on_selection.borrow().as_ref() {
+                let callback = on_selection.borrow().clone();
+                if let Some(callback) = callback {
                     callback(obj.group_idx() as usize, obj.file_idx() as usize);
                 }
             });
@@ -190,13 +237,19 @@ impl DuplicatesView {
             item.set_child(Some(&row));
         });
         factory.connect_bind(|_, item| {
-            let item = item.downcast_ref::<ListItem>().unwrap();
-            let obj = item.item().and_downcast::<DuplicateRowObject>().unwrap();
-            let row = item.child().and_downcast::<GtkBox>().unwrap();
-
-            let check = row.first_child().and_downcast::<CheckButton>().unwrap();
-            let path_label = check.next_sibling().and_downcast::<Label>().unwrap();
-            let size_label = path_label.next_sibling().and_downcast::<Label>().unwrap();
+            clear_duplicate_binding(item);
+            let Some(obj) = item.item().and_downcast::<DuplicateRowObject>() else {
+                return;
+            };
+            let Some(DuplicateRowWidgets {
+                row,
+                check,
+                path: path_label,
+                size: size_label,
+            }) = DuplicateRowWidgets::from_item(item)
+            else {
+                return;
+            };
 
             if obj.is_group_header() {
                 check.set_visible(false);
@@ -224,7 +277,10 @@ impl DuplicatesView {
                 size_label.remove_css_class("duplicates-keep-hint");
                 size_label.add_css_class("dim-label");
             }
+            row.set_sensitive(true);
+            row.set_visible(true);
         });
+        factory.connect_unbind(|_, item| clear_duplicate_binding(item));
 
         let list_view = ListView::new(Some(selection), Some(factory));
         list_view.set_vexpand(true);
@@ -339,7 +395,7 @@ impl DuplicatesView {
 
     /// Connect duplicate selection changes.
     pub fn connect_selection_changed<F: Fn(usize, usize) + 'static>(&self, callback: F) {
-        *self.on_selection_changed.borrow_mut() = Some(Box::new(callback));
+        *self.on_selection_changed.borrow_mut() = Some(Rc::new(callback));
     }
 
     /// Connect the review button.
@@ -383,5 +439,254 @@ fn format_bytes(bytes: u64) -> String {
         format!("{:.1} KiB", bytes as f64 / KIB as f64)
     } else {
         format!("{bytes} B")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn initialize_gtk() {
+        assert!(
+            !gtk4::is_initialized() || gtk4::is_initialized_main_thread(),
+            "Run each GTK test in its own process using scripts/test-native.sh"
+        );
+        gtk4::init().expect("GTK display required; use scripts/test-native.sh");
+    }
+
+    fn factory(view: &DuplicatesView) -> SignalListItemFactory {
+        view.list_view
+            .factory()
+            .and_downcast::<SignalListItemFactory>()
+            .expect("duplicates factory")
+    }
+
+    fn widgets(item: &ListItem) -> (GtkBox, CheckButton, Label, Label) {
+        let row = item.child().and_downcast::<GtkBox>().expect("row");
+        let check = row
+            .first_child()
+            .and_downcast::<CheckButton>()
+            .expect("check");
+        let path = check.next_sibling().and_downcast::<Label>().expect("path");
+        let size = path.next_sibling().and_downcast::<Label>().expect("size");
+        (row, check, path, size)
+    }
+
+    fn realize(view: &DuplicatesView, model: &gio::ListStore) -> (gtk4::Window, ListItem) {
+        let captured = Rc::new(RefCell::new(None));
+        let captured_for_bind = captured.clone();
+        factory(view).connect_bind(move |_, object| {
+            *captured_for_bind.borrow_mut() = object.downcast_ref::<ListItem>().cloned();
+        });
+        let selection = SingleSelection::new(Some(model.clone()));
+        selection.set_autoselect(false);
+        view.list_view.set_model(Some(&selection));
+        let window = gtk4::Window::builder()
+            .default_width(700)
+            .default_height(400)
+            .child(view.widget())
+            .build();
+        window.present();
+        let context = glib::MainContext::default();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while captured.borrow().is_none() && std::time::Instant::now() < deadline {
+            context.iteration(false);
+        }
+        let item = captured.borrow().clone().expect("realized duplicate row");
+        (window, item)
+    }
+
+    #[test]
+    fn duplicate_factory_ignores_missing_data() {
+        initialize_gtk();
+        let view = DuplicatesView::new();
+        let factory = factory(&view);
+        let item = glib::Object::new::<ListItem>();
+        factory.emit_by_name::<()>("setup", &[&item]);
+        factory.emit_by_name::<()>("bind", &[&item]);
+        let (row, check, path, size) = widgets(&item);
+        assert!(!row.is_visible());
+        assert!(!row.is_sensitive());
+        assert!(!check.is_active());
+        assert!(path.text().is_empty());
+        assert!(size.text().is_empty());
+    }
+
+    #[test]
+    fn duplicate_factory_rejects_malformed_rows_and_detached_checkboxes() {
+        initialize_gtk();
+        let view = DuplicatesView::new();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let calls_for_selection = calls.clone();
+        view.connect_selection_changed(move |group, file| {
+            calls_for_selection.borrow_mut().push((group, file));
+        });
+        let object = DuplicateRowObject::new("/fixture/copy", 2, 3, "4 KiB", "digest", true, false);
+        let model = gio::ListStore::new::<DuplicateRowObject>();
+        model.append(&object);
+        let (window, item) = realize(&view, &model);
+        let factory = factory(&view);
+        let (row, check, _, size) = widgets(&item);
+        assert!(check.is_active());
+        row.remove(&size);
+        factory.emit_by_name::<()>("bind", &[&item]);
+        assert!(!row.is_visible());
+        assert!(!row.is_sensitive());
+        check.set_active(false);
+        assert!(object.selected());
+        assert!(calls.borrow().is_empty());
+
+        factory.emit_by_name::<()>("setup", &[&item]);
+        factory.emit_by_name::<()>("bind", &[&item]);
+        let (_, current_check, _, _) = widgets(&item);
+        check.set_active(true);
+        check.set_active(false);
+        assert!(object.selected());
+        assert!(current_check.is_active());
+        assert!(calls.borrow().is_empty());
+
+        for malformed_position in 0..4 {
+            let malformed = GtkBox::new(Orientation::Horizontal, 8);
+            if malformed_position == 0 {
+                malformed.append(&Label::new(Some("unexpected checkbox")));
+            } else {
+                malformed.append(&CheckButton::new());
+            }
+            if malformed_position == 1 {
+                malformed.append(&Button::new());
+            } else {
+                malformed.append(&Label::new(Some("stale path")));
+            }
+            if malformed_position == 2 {
+                malformed.append(&Button::new());
+            } else {
+                malformed.append(&Label::new(Some("stale size")));
+            }
+            if malformed_position == 3 {
+                malformed.append(&Label::new(Some("unexpected extra widget")));
+            }
+            item.set_child(Some(&malformed));
+            factory.emit_by_name::<()>("bind", &[&item]);
+            assert!(!malformed.is_visible());
+            assert!(!malformed.is_sensitive());
+            current_check.set_active(false);
+            current_check.set_active(true);
+            assert!(object.selected());
+            assert!(calls.borrow().is_empty());
+        }
+
+        let unexpected = Label::new(Some("stale data"));
+        item.set_child(Some(&unexpected));
+        factory.emit_by_name::<()>("bind", &[&item]);
+        assert!(!unexpected.is_visible());
+        assert!(!unexpected.is_sensitive());
+        item.set_child(gtk4::Widget::NONE);
+        factory.emit_by_name::<()>("bind", &[&item]);
+        window.close();
+    }
+
+    #[test]
+    fn duplicate_row_recycling_preserves_selection_and_resets_presentation() {
+        initialize_gtk();
+        let view = DuplicatesView::new();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let calls_for_selection = calls.clone();
+        view.connect_selection_changed(move |group, file| {
+            calls_for_selection.borrow_mut().push((group, file));
+        });
+        let object =
+            DuplicateRowObject::new("/fixture/first", 1, 0, "4 KiB", "digest", false, false);
+        view.model.append(&object);
+        let (window, item) = realize(&view, &view.model);
+        let factory = factory(&view);
+        let (row, check, path, size) = widgets(&item);
+        assert!(!check.is_active());
+        assert!(calls.borrow().is_empty());
+        check.set_active(true);
+        assert!(object.selected());
+        assert_eq!(*calls.borrow(), [(1, 0)]);
+
+        object.set_is_group_header(true);
+        factory.emit_by_name::<()>("bind", &[&item]);
+        assert!(!check.is_visible());
+        assert!(!check.is_active());
+        assert!(row.has_css_class("duplicates-group-header"));
+        assert!(size.has_css_class("duplicates-keep-hint"));
+        assert!(path.text().contains("digest"));
+        assert_eq!(*calls.borrow(), [(1, 0)]);
+
+        object.set_is_group_header(false);
+        object.set_selected(false);
+        object.set_path("/fixture/second");
+        object.set_file_idx(4);
+        object.set_size_display("8 KiB");
+        factory.emit_by_name::<()>("bind", &[&item]);
+        assert!(row.is_visible());
+        assert!(row.is_sensitive());
+        assert!(check.is_visible());
+        assert!(!check.is_active());
+        assert!(!row.has_css_class("duplicates-group-header"));
+        assert!(!size.has_css_class("duplicates-keep-hint"));
+        assert!(size.has_css_class("dim-label"));
+        assert_eq!(path.text(), "/fixture/second");
+        assert_eq!(size.text(), "8 KiB");
+        check.set_active(true);
+        assert_eq!(*calls.borrow(), [(1, 0), (1, 4)]);
+
+        factory.emit_by_name::<()>("unbind", &[&item]);
+        assert!(!row.is_visible());
+        assert!(!check.is_active());
+        assert!(object.selected());
+        check.set_active(true);
+        check.set_active(false);
+        assert!(object.selected());
+        assert_eq!(*calls.borrow(), [(1, 0), (1, 4)]);
+        factory.emit_by_name::<()>("bind", &[&item]);
+        assert!(check.is_active());
+        assert_eq!(*calls.borrow(), [(1, 0), (1, 4)]);
+        window.close();
+    }
+
+    #[test]
+    fn duplicate_factory_ignores_unexpected_model_type() {
+        initialize_gtk();
+        let view = DuplicatesView::new();
+        let model = gio::ListStore::new::<glib::Object>();
+        model.append(&glib::Object::new::<glib::Object>());
+        let (window, item) = realize(&view, &model);
+        let (row, check, path, size) = widgets(&item);
+        assert!(!row.is_visible());
+        assert!(!row.is_sensitive());
+        assert!(!check.is_active());
+        assert!(path.text().is_empty());
+        assert!(size.text().is_empty());
+        window.close();
+    }
+
+    #[test]
+    fn duplicate_checkbox_callback_can_replace_itself() {
+        initialize_gtk();
+        let view = DuplicatesView::new();
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let calls_for_selection = calls.clone();
+        let view_for_selection = view.clone();
+        view.connect_selection_changed(move |group, file| {
+            calls_for_selection.borrow_mut().push((group, file));
+            view_for_selection.connect_selection_changed(|_, _| {});
+        });
+        let object =
+            DuplicateRowObject::new("/fixture/copy", 2, 3, "4 KiB", "digest", false, false);
+        view.model.append(&object);
+        let (window, item) = realize(&view, &view.model);
+        let (_, check, _, _) = widgets(&item);
+        assert!(!check.is_active());
+        assert!(calls.borrow().is_empty());
+        check.set_active(true);
+        assert!(object.selected());
+        assert_eq!(*calls.borrow(), [(2, 3)]);
+        check.set_active(false);
+        assert!(!object.selected());
+        assert_eq!(*calls.borrow(), [(2, 3)]);
+        window.close();
     }
 }
