@@ -7,10 +7,12 @@
 use std::fmt;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
+use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
 use crate::error::MaintainerError;
 use crate::jobs::Cancellation;
+use crate::storage::mounts::DeviceInode;
 
 /// Size of the prefix and suffix chunks read for partial hashing.
 const PARTIAL_CHUNK_BYTES: u64 = 4096;
@@ -72,12 +74,32 @@ pub fn partial_hash(
     file_size_bytes: u64,
     cancel: &dyn Cancellation,
 ) -> crate::error::Result<ContentDigest> {
+    partial_hash_inner(path, file_size_bytes, None, cancel)
+}
+
+pub(crate) fn partial_hash_expected(
+    path: &Path,
+    file_size_bytes: u64,
+    identity: DeviceInode,
+    cancel: &dyn Cancellation,
+) -> crate::error::Result<ContentDigest> {
+    partial_hash_inner(path, file_size_bytes, Some(identity), cancel)
+}
+
+fn partial_hash_inner(
+    path: &Path,
+    file_size_bytes: u64,
+    expected_identity: Option<DeviceInode>,
+    cancel: &dyn Cancellation,
+) -> crate::error::Result<ContentDigest> {
     if cancel.is_cancelled() {
         return Err(MaintainerError::Cancelled);
     }
 
     let context = || format!("partial hash of {}", path.display());
-    let mut file = File::open(path).map_err(|e| MaintainerError::io(context(), e))?;
+    let mut file = open_hash_file(path, expected_identity, Some(file_size_bytes))
+        .map_err(|e| MaintainerError::io(context(), e))?;
+    let before = HashSnapshot::capture(&file).map_err(|e| MaintainerError::io(context(), e))?;
 
     let mut hasher = blake3::Hasher::new();
 
@@ -104,6 +126,7 @@ pub fn partial_hash(
         hasher.update(&suffix);
     }
 
+    ensure_hash_file_unchanged(&file, &before)?;
     let hash = hasher.finalize();
     Ok(ContentDigest::from_bytes(*hash.as_bytes()))
 }
@@ -120,12 +143,32 @@ pub fn full_hash(
     path: &Path,
     cancel: &dyn Cancellation,
 ) -> crate::error::Result<(ContentDigest, u64)> {
+    full_hash_inner(path, None, None, cancel)
+}
+
+pub(crate) fn full_hash_expected(
+    path: &Path,
+    identity: DeviceInode,
+    size_bytes: u64,
+    cancel: &dyn Cancellation,
+) -> crate::error::Result<(ContentDigest, u64)> {
+    full_hash_inner(path, Some(identity), Some(size_bytes), cancel)
+}
+
+fn full_hash_inner(
+    path: &Path,
+    expected_identity: Option<DeviceInode>,
+    expected_size: Option<u64>,
+    cancel: &dyn Cancellation,
+) -> crate::error::Result<(ContentDigest, u64)> {
     if cancel.is_cancelled() {
         return Err(MaintainerError::Cancelled);
     }
 
     let context = || format!("full hash of {}", path.display());
-    let mut file = File::open(path).map_err(|e| MaintainerError::io(context(), e))?;
+    let mut file = open_hash_file(path, expected_identity, expected_size)
+        .map_err(|e| MaintainerError::io(context(), e))?;
+    let before = HashSnapshot::capture(&file).map_err(|e| MaintainerError::io(context(), e))?;
 
     let mut hasher = blake3::Hasher::new();
     let mut buf = vec![0u8; HASH_BUFFER_BYTES];
@@ -142,12 +185,78 @@ pub fn full_hash(
         if n == 0 {
             break;
         }
-        hasher.update(&buf[..n]);
         total_bytes += n as u64;
+        if total_bytes > before.size {
+            return Err(MaintainerError::invalid_data(
+                "duplicate scan",
+                "file grew while hashing",
+            ));
+        }
+        hasher.update(&buf[..n]);
     }
 
+    ensure_hash_file_unchanged(&file, &before)?;
     let hash = hasher.finalize();
     Ok((ContentDigest::from_bytes(*hash.as_bytes()), total_bytes))
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct HashSnapshot {
+    device: u64,
+    inode: u64,
+    size: u64,
+    modified_secs: i64,
+    modified_nsecs: i64,
+    changed_secs: i64,
+    changed_nsecs: i64,
+}
+
+impl HashSnapshot {
+    fn capture(file: &File) -> std::io::Result<Self> {
+        let metadata = file.metadata()?;
+        Ok(Self {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+            size: metadata.size(),
+            modified_secs: metadata.mtime(),
+            modified_nsecs: metadata.mtime_nsec(),
+            changed_secs: metadata.ctime(),
+            changed_nsecs: metadata.ctime_nsec(),
+        })
+    }
+}
+
+fn open_hash_file(
+    path: &Path,
+    expected_identity: Option<DeviceInode>,
+    expected_size: Option<u64>,
+) -> std::io::Result<File> {
+    let file = crate::storage::policy::open_anchored(path, false)?;
+    let metadata = file.metadata()?;
+    if !metadata.file_type().is_file()
+        || expected_size.is_some_and(|size| metadata.len() != size)
+        || expected_identity.is_some_and(|identity| {
+            metadata.dev() != identity.device || metadata.ino() != identity.inode
+        })
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "file identity or size changed before hashing",
+        ));
+    }
+    Ok(file)
+}
+
+fn ensure_hash_file_unchanged(file: &File, before: &HashSnapshot) -> crate::error::Result<()> {
+    let after = HashSnapshot::capture(file)
+        .map_err(|error| MaintainerError::io("checking hashed file", error))?;
+    if &after != before {
+        return Err(MaintainerError::invalid_data(
+            "duplicate scan",
+            "file changed while hashing",
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -320,5 +429,45 @@ mod tests {
         let (full1, _) = full_hash(&p1, &cancel).unwrap();
         let (full2, _) = full_hash(&p2, &cancel).unwrap();
         assert_eq!(full1, full2);
+    }
+
+    #[test]
+    fn hash_rejects_fifo_without_waiting_for_a_writer() {
+        use std::os::unix::ffi::OsStrExt;
+        let temporary = TempDir::new().unwrap();
+        let path = temporary.path().join("fifo");
+        let name = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+        // SAFETY: name is a valid NUL-terminated path in this test's private directory.
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        assert!(full_hash(&path, &no_cancel()).is_err());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn candidate_hash_rejects_symlink_and_replaced_identity() {
+        use std::os::unix::fs as unix_fs;
+
+        let tmp = TempDir::new().unwrap();
+        let target = tmp.path().join("target");
+        let link = tmp.path().join("link");
+        std::fs::write(&target, b"same").unwrap();
+        unix_fs::symlink(&target, &link).unwrap();
+        let metadata = std::fs::symlink_metadata(&target).unwrap();
+        let identity = DeviceInode::from_metadata(&metadata);
+        let cancel = no_cancel();
+
+        assert!(partial_hash_expected(&link, 4, identity, &cancel).is_err());
+        assert!(
+            partial_hash_expected(
+                &target,
+                4,
+                DeviceInode {
+                    device: 0,
+                    inode: 0
+                },
+                &cancel
+            )
+            .is_err()
+        );
     }
 }

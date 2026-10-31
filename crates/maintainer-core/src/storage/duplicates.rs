@@ -16,7 +16,7 @@ use std::time::SystemTime;
 
 use crate::error::MaintainerError;
 use crate::jobs::{Cancellation, JobProgress, ProgressSink};
-use crate::storage::hash::{ContentDigest, full_hash, partial_hash};
+use crate::storage::hash::{ContentDigest, full_hash_expected, partial_hash_expected};
 use crate::storage::mounts::DeviceInode;
 
 /// Minimum file size to consider for duplicate scanning.
@@ -61,12 +61,23 @@ pub struct DuplicateScanResult {
     pub groups: Vec<DuplicateGroup>,
     /// Recoverable issues encountered.
     pub issues: Vec<DuplicateIssue>,
+    pub omitted_issues: u64,
     /// Whether the scan was cancelled.
     pub was_cancelled: bool,
     /// Total bytes hashed during the scan.
     pub bytes_hashed: u64,
     /// Total files considered as candidates.
     pub files_considered: u64,
+}
+
+impl DuplicateScanResult {
+    fn record_issue(&mut self, issue: DuplicateIssue) {
+        if self.issues.len() < 1_000 {
+            self.issues.push(issue);
+        } else {
+            self.omitted_issues = self.omitted_issues.saturating_add(1);
+        }
+    }
 }
 
 /// Input candidate for duplicate scanning: a file with its metadata.
@@ -130,10 +141,34 @@ impl<'a> DuplicateScanner<'a> {
         &self,
         candidates: Vec<DuplicateCandidate>,
     ) -> crate::error::Result<DuplicateScanResult> {
+        // Reserve headroom for size/hash maps, index vectors, confirmed paths and
+        // bounded issues while candidates remain alive. Reject before grouping.
+        let retained = candidates
+            .capacity()
+            .saturating_mul(std::mem::size_of::<DuplicateCandidate>())
+            .saturating_add(
+                candidates
+                    .iter()
+                    .map(|candidate| {
+                        candidate
+                            .path
+                            .capacity()
+                            .saturating_mul(4)
+                            .saturating_add(1024)
+                    })
+                    .fold(0usize, usize::saturating_add),
+            );
+        if retained > 64 * 1024 * 1024 {
+            return Err(MaintainerError::invalid_data(
+                "duplicate scan",
+                "64 MiB working-set budget reached before hashing; results are incomplete",
+            ));
+        }
         let files_considered = candidates.len() as u64;
         let mut result = DuplicateScanResult {
             groups: Vec::new(),
             issues: Vec::new(),
+            omitted_issues: 0,
             was_cancelled: false,
             bytes_hashed: 0,
             files_considered,
@@ -176,11 +211,11 @@ impl<'a> DuplicateScanner<'a> {
                 if partial_matches.len() < 2 {
                     continue;
                 }
-                if distinct_inode_count_candidates(&partial_matches) < 2 {
+                if distinct_inode_count_candidates(&files, &partial_matches) < 2 {
                     continue;
                 }
 
-                self.full_hash_group(size, partial_matches, &mut result)?;
+                self.full_hash_group(size, &files, partial_matches, &mut result)?;
             }
         }
 
@@ -221,26 +256,23 @@ impl<'a> DuplicateScanner<'a> {
         size: u64,
         files: &[DuplicateCandidate],
         result: &mut DuplicateScanResult,
-    ) -> HashMap<ContentDigest, Vec<DuplicateCandidate>> {
-        let mut partial_groups: HashMap<ContentDigest, Vec<DuplicateCandidate>> = HashMap::new();
+    ) -> HashMap<ContentDigest, Vec<usize>> {
+        let mut partial_groups: HashMap<ContentDigest, Vec<usize>> = HashMap::new();
 
-        for candidate in files {
+        for (index, candidate) in files.iter().enumerate() {
             if self.cancel.is_cancelled() {
                 return partial_groups;
             }
 
-            match partial_hash(&candidate.path, size, self.cancel) {
+            match partial_hash_expected(&candidate.path, size, candidate.identity, self.cancel) {
                 Ok(digest) => {
-                    partial_groups
-                        .entry(digest)
-                        .or_default()
-                        .push(candidate.clone());
+                    partial_groups.entry(digest).or_default().push(index);
                 }
                 Err(MaintainerError::Cancelled) => {
                     return partial_groups;
                 }
                 Err(e) => {
-                    result.issues.push(DuplicateIssue {
+                    result.record_issue(DuplicateIssue {
                         path: candidate.path.clone(),
                         message: format!("partial hash failed: {e}"),
                     });
@@ -255,12 +287,14 @@ impl<'a> DuplicateScanner<'a> {
     fn full_hash_group(
         &self,
         size: u64,
-        candidates: Vec<DuplicateCandidate>,
+        candidates: &[DuplicateCandidate],
+        indexes: Vec<usize>,
         result: &mut DuplicateScanResult,
     ) -> crate::error::Result<()> {
         let mut confirmed: HashMap<ContentDigest, Vec<DuplicateFile>> = HashMap::new();
 
-        for candidate in &candidates {
+        for index in indexes {
+            let candidate = &candidates[index];
             if self.cancel.is_cancelled() {
                 result.was_cancelled = true;
                 return Ok(());
@@ -269,7 +303,7 @@ impl<'a> DuplicateScanner<'a> {
             let pre_stat = match FileSnapshot::capture(&candidate.path) {
                 Ok(s) => s,
                 Err(e) => {
-                    result.issues.push(DuplicateIssue {
+                    result.record_issue(DuplicateIssue {
                         path: candidate.path.clone(),
                         message: format!("pre-hash stat failed: {e}"),
                     });
@@ -281,21 +315,26 @@ impl<'a> DuplicateScanner<'a> {
                 || pre_stat.device != candidate.identity.device
                 || pre_stat.inode != candidate.identity.inode
             {
-                result.issues.push(DuplicateIssue {
+                result.record_issue(DuplicateIssue {
                     path: candidate.path.clone(),
                     message: "file changed between discovery and hashing".into(),
                 });
                 continue;
             }
 
-            let (digest, bytes_read) = match full_hash(&candidate.path, self.cancel) {
+            let (digest, bytes_read) = match full_hash_expected(
+                &candidate.path,
+                candidate.identity,
+                candidate.size_bytes,
+                self.cancel,
+            ) {
                 Ok(v) => v,
                 Err(MaintainerError::Cancelled) => {
                     result.was_cancelled = true;
                     return Ok(());
                 }
                 Err(e) => {
-                    result.issues.push(DuplicateIssue {
+                    result.record_issue(DuplicateIssue {
                         path: candidate.path.clone(),
                         message: format!("full hash failed: {e}"),
                     });
@@ -307,7 +346,7 @@ impl<'a> DuplicateScanner<'a> {
             let post_stat = match FileSnapshot::capture(&candidate.path) {
                 Ok(s) => s,
                 Err(e) => {
-                    result.issues.push(DuplicateIssue {
+                    result.record_issue(DuplicateIssue {
                         path: candidate.path.clone(),
                         message: format!("post-hash stat failed: {e}"),
                     });
@@ -316,7 +355,7 @@ impl<'a> DuplicateScanner<'a> {
             };
 
             if pre_stat != post_stat {
-                result.issues.push(DuplicateIssue {
+                result.record_issue(DuplicateIssue {
                     path: candidate.path.clone(),
                     message: "file changed during hashing".into(),
                 });
@@ -355,8 +394,13 @@ fn distinct_inode_count(files: &[DuplicateCandidate]) -> usize {
 }
 
 /// Count distinct inodes in candidates (used after partial hash grouping).
-fn distinct_inode_count_candidates(files: &[DuplicateCandidate]) -> usize {
-    distinct_inode_count(files)
+fn distinct_inode_count_candidates(files: &[DuplicateCandidate], indexes: &[usize]) -> usize {
+    let mut seen = std::collections::HashSet::new();
+    for index in indexes {
+        let file = &files[*index];
+        seen.insert((file.identity.device, file.identity.inode));
+    }
+    seen.len()
 }
 
 /// Count distinct inodes in confirmed duplicate files.
@@ -374,6 +418,22 @@ mod tests {
     use crate::jobs::{CancellationToken, NullProgress};
     use std::os::unix::fs::MetadataExt;
     use tempfile::TempDir;
+
+    #[test]
+    fn duplicate_issue_samples_are_bounded_with_omitted_count() {
+        let cancel = CancellationToken::new();
+        let mut result = DuplicateScanner::new(&cancel, &NullProgress)
+            .scan(Vec::new())
+            .unwrap();
+        for _ in 0..1_003 {
+            result.record_issue(DuplicateIssue {
+                path: PathBuf::new(),
+                message: "unreadable file".into(),
+            });
+        }
+        assert_eq!(result.issues.len(), 1_000);
+        assert_eq!(result.omitted_issues, 3);
+    }
 
     fn make_candidate(path: &Path) -> DuplicateCandidate {
         let meta = path.symlink_metadata().unwrap();
