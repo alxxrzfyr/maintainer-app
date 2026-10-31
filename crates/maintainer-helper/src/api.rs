@@ -27,6 +27,12 @@ pub enum HelperError {
     #[error("helper is busy: concurrent request limit reached")]
     Busy,
 
+    #[error("the process has exited")]
+    ProcessVanished,
+
+    #[error("stable process references are unavailable on this system")]
+    ProcessUnavailable,
+
     #[error("pid reuse detected: process start time changed")]
     PidReuse,
 }
@@ -38,7 +44,7 @@ pub struct OperationResponse {
     pub message: String,
 }
 
-/// Request to terminate a process by PID with start-time revalidation.
+/// Review metadata accompanying the retained process descriptor.
 ///
 /// The signal is always SIGTERM. No signal field is exposed.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -94,6 +100,7 @@ pub enum InstallUpdatesRequest {
 }
 /// Polkit action identifiers for each operation.
 pub mod actions {
+    pub const CLEANUP_FILES: &str = "io.github.maintainerapp.cleanup-files";
     pub const TERMINATE_PROCESS: &str = "io.github.maintainerapp.terminate-process";
     pub const CLEAN_PACKAGE_CACHE: &str = "io.github.maintainerapp.clean-package-cache";
     pub const VACUUM_JOURNAL: &str = "io.github.maintainerapp.vacuum-journal";
@@ -116,7 +123,11 @@ pub struct RemoveKernelRequest {
 
 /// The fixed helper API trait. Each method maps to one D-Bus method and one Polkit action.
 pub trait HelperApi {
-    fn terminate_process(&self, request: TerminateProcessRequest) -> HelperResult;
+    fn terminate_process(
+        &self,
+        request: TerminateProcessRequest,
+        process_fd: std::os::fd::BorrowedFd<'_>,
+    ) -> HelperResult;
     fn clean_package_cache(&self, request: PackageCacheRequest) -> HelperResult;
     fn vacuum_journal(&self, request: JournalVacuumRequest) -> HelperResult;
     fn refresh_smart(&self, request: SmartRefreshRequest) -> HelperResult;

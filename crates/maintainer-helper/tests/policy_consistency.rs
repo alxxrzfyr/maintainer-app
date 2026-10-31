@@ -56,6 +56,7 @@ fn policy_xml_action_ids_match_code_constants() {
 
     let code_ids: HashSet<String> = [
         actions::TERMINATE_PROCESS,
+        actions::CLEANUP_FILES,
         actions::CLEAN_PACKAGE_CACHE,
         actions::VACUUM_JOURNAL,
         actions::REFRESH_SMART,
@@ -77,7 +78,7 @@ fn policy_xml_action_ids_match_code_constants() {
         missing_in_code.is_empty(),
         "Policy XML actions not found in code constants: {missing_in_code:?}"
     );
-    assert_eq!(xml_ids.len(), 6, "Expected exactly 6 policy actions");
+    assert_eq!(xml_ids.len(), 7, "Expected exactly 7 policy actions");
 }
 
 #[test]
