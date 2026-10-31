@@ -4,7 +4,9 @@
 //! sensors become `Unavailable` entries rather than zero Celsius.
 
 use std::fs;
+use std::os::unix::fs::{FileExt, MetadataExt};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use crate::capability::{Capability, UnavailableReason};
 use crate::error::MaintainerError;
@@ -143,49 +145,58 @@ fn read_hwmon_temps(
 }
 
 /// A discovered sensor: the value file plus the metadata that never changes.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct SensorPath {
     input_path: PathBuf,
+    input_file: Result<fs::File, String>,
     hwmon_name: String,
     label: Option<String>,
 }
 
-/// Samples temperatures without re-discovering hwmon topology every time.
-///
-/// [`read_temperatures`] re-reads every hwmon directory entry plus each `name`
-/// and `temp*_label` file on every call, which dominates the cost of a sampling
-/// tick. Device topology and sensor labels are fixed while the machine is
-/// running, so they are discovered once and only `temp*_input` is read per
-/// sample. Discovery is retried on the next call if it yielded no sensors, so a
-/// driver that loads later is still picked up.
+/// Samples cached sensor paths, refreshing topology every 30 seconds.
+/// Failed or empty samples retry discovery after at least ten seconds, so
+/// missing devices recover without rediscovering permanently unreadable sensors
+/// on every monitoring tick.
 #[derive(Debug, Default)]
 pub struct TemperatureCollector {
     sensors: Vec<SensorPath>,
-    discovered: bool,
+    last_discovery: Option<Instant>,
+    rediscovery_needed: bool,
 }
 
 impl TemperatureCollector {
     /// Create a collector with no cached topology.
     pub fn new() -> Self {
-        Self {
-            sensors: Vec::new(),
-            discovered: false,
-        }
+        Self::default()
     }
 
-    /// Read current values for all known sensors, discovering them if needed.
+    /// Read current values, periodically refreshing cached sensor topology.
     pub fn read(&mut self, sys_path: &Path) -> Result<Vec<TemperatureReading>, MaintainerError> {
-        if !self.discovered || self.sensors.is_empty() {
+        let now = Instant::now();
+        let discovery_due = self.last_discovery.is_none_or(|last| {
+            let interval = if self.rediscovery_needed {
+                Duration::from_secs(10)
+            } else {
+                Duration::from_secs(30)
+            };
+            now.duration_since(last) >= interval
+        });
+        if discovery_due {
+            // Record attempts too: discovery failures must not cause a retry storm.
+            self.last_discovery = Some(now);
+            self.rediscovery_needed = true;
             self.sensors = discover_sensors(sys_path)?;
-            self.discovered = true;
         }
 
         let mut readings = Vec::with_capacity(self.sensors.len());
+        self.rediscovery_needed = self.sensors.is_empty();
         for sensor in &self.sensors {
+            let celsius = read_celsius(sensor);
+            self.rediscovery_needed |= !matches!(celsius, Capability::Available(_));
             readings.push(TemperatureReading {
                 hwmon_name: sensor.hwmon_name.clone(),
                 label: sensor.label.clone(),
-                celsius: read_celsius(&sensor.input_path),
+                celsius,
             });
         }
         Ok(readings)
@@ -193,13 +204,30 @@ impl TemperatureCollector {
 }
 
 /// Parse one `temp*_input` file, which holds millidegrees Celsius.
-fn read_celsius(input_path: &Path) -> Capability<f64> {
-    match fs::read_to_string(input_path) {
+fn read_celsius(sensor: &SensorPath) -> Capability<f64> {
+    // Offset-zero reads ask sysfs for a fresh value without repeating the
+    // pathname lookup and open/close work on every monitoring tick. Removed
+    // sysfs devices fail the read; nlink also detects unlinked fixture files.
+    let content = (|| {
+        let file = sensor.input_file.as_ref().map_err(Clone::clone)?;
+        let metadata = file.metadata().map_err(|error| error.to_string())?;
+        if metadata.nlink() == 0 {
+            return Err("Temperature sensor was removed".to_string());
+        }
+        let mut buffer = [0_u8; 128];
+        let length = file
+            .read_at(&mut buffer, 0)
+            .map_err(|error| error.to_string())?;
+        std::str::from_utf8(&buffer[..length])
+            .map(str::to_owned)
+            .map_err(|error| error.to_string())
+    })();
+    match content {
         Ok(content) => match content.trim().parse::<i64>() {
             Ok(millidegrees) => Capability::Available(millidegrees as f64 / 1000.0),
             Err(_) => Capability::Unavailable(UnavailableReason {
                 code: "temp-parse",
-                message: format!("Could not parse {}", input_path.display()),
+                message: format!("Could not parse {}", sensor.input_path.display()),
                 remediation: None,
             }),
         },
@@ -270,6 +298,8 @@ fn discover_sensors(sys_path: &Path) -> Result<Vec<SensorPath>, MaintainerError>
                 .map(|s| s.trim().to_string());
             sensors.push(SensorPath {
                 input_path: hwmon_path.join(format!("temp{idx}_input")),
+                input_file: fs::File::open(hwmon_path.join(format!("temp{idx}_input")))
+                    .map_err(|error| error.to_string()),
                 hwmon_name: hwmon_name.clone(),
                 label,
             });
@@ -469,6 +499,88 @@ mod tests {
             assert_eq!(a.label, b.label);
             assert_eq!(a.celsius.as_value().copied(), b.celsius.as_value().copied());
         }
+    }
+
+    #[test]
+    fn retained_sensor_reads_current_values_and_rejects_replaced_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let device = temp.path().join("class/hwmon/hwmon0");
+        fs::create_dir_all(&device).unwrap();
+        fs::write(device.join("name"), "chip").unwrap();
+        let input = device.join("temp1_input");
+        fs::write(&input, "42000").unwrap();
+        let mut collector = TemperatureCollector::new();
+        assert_eq!(
+            collector.read(temp.path()).unwrap()[0].celsius.as_value(),
+            Some(&42.0)
+        );
+        fs::write(&input, "51000").unwrap();
+        assert_eq!(
+            collector.read(temp.path()).unwrap()[0].celsius.as_value(),
+            Some(&51.0)
+        );
+
+        let replacement = device.join("replacement");
+        fs::write(&replacement, "63000").unwrap();
+        fs::rename(&replacement, &input).unwrap();
+        assert!(matches!(
+            collector.read(temp.path()).unwrap()[0].celsius,
+            Capability::Unavailable(_)
+        ));
+        collector.last_discovery = Some(Instant::now() - Duration::from_secs(10));
+        assert_eq!(
+            collector.read(temp.path()).unwrap()[0].celsius.as_value(),
+            Some(&63.0)
+        );
+    }
+
+    #[test]
+    fn collector_recovers_replaced_sensor_with_bounded_discovery() {
+        let temp = tempfile::tempdir().unwrap();
+        let hwmon = temp.path().join("class/hwmon");
+        let old = hwmon.join("hwmon0");
+        fs::create_dir_all(&old).unwrap();
+        fs::write(old.join("name"), "old-chip").unwrap();
+        fs::write(old.join("temp1_input"), "42000").unwrap();
+        let mut collector = TemperatureCollector::new();
+        assert_eq!(
+            collector.read(temp.path()).unwrap()[0].hwmon_name,
+            "old-chip"
+        );
+
+        fs::remove_dir_all(&old).unwrap();
+        let replacement = hwmon.join("hwmon1");
+        fs::create_dir_all(&replacement).unwrap();
+        fs::write(replacement.join("name"), "replacement-chip").unwrap();
+        fs::write(replacement.join("temp1_input"), "51000").unwrap();
+        let unavailable = collector.read(temp.path()).unwrap();
+        assert!(matches!(unavailable[0].celsius, Capability::Unavailable(_)));
+        let last_attempt = collector.last_discovery;
+        collector.read(temp.path()).unwrap();
+        assert_eq!(collector.last_discovery, last_attempt);
+
+        collector.last_discovery = Some(Instant::now() - Duration::from_secs(10));
+        let recovered = collector.read(temp.path()).unwrap();
+        assert_eq!(recovered.len(), 1);
+        assert_eq!(recovered[0].hwmon_name, "replacement-chip");
+        assert_eq!(recovered[0].celsius.as_value(), Some(&51.0));
+    }
+
+    #[test]
+    fn collector_periodically_refreshes_labels_even_when_input_path_survives() {
+        let temp = tempfile::tempdir().unwrap();
+        let device = temp.path().join("class/hwmon/hwmon0");
+        fs::create_dir_all(&device).unwrap();
+        fs::write(device.join("name"), "old-chip").unwrap();
+        fs::write(device.join("temp1_input"), "42000").unwrap();
+        let mut collector = TemperatureCollector::new();
+        collector.read(temp.path()).unwrap();
+        fs::write(device.join("name"), "replacement-chip").unwrap();
+        collector.last_discovery = Some(Instant::now() - Duration::from_secs(30));
+        assert_eq!(
+            collector.read(temp.path()).unwrap()[0].hwmon_name,
+            "replacement-chip"
+        );
     }
 
     #[test]

@@ -35,11 +35,25 @@ pub struct WifiInfo {
 /// Returns `None` fields for anything that cannot be read rather than
 /// panicking. This function is safe to call from any thread.
 pub fn read_connection_details() -> ConnectionDetails {
+    read_connection_details_cancellable(&crate::jobs::CancellationToken::new())
+}
+
+pub fn read_connection_details_cancellable(
+    cancel: &dyn crate::jobs::Cancellation,
+) -> ConnectionDetails {
+    if cancel.is_cancelled() {
+        return ConnectionDetails::default();
+    }
+    let runner = crate::command::SystemCommandRunner;
     let default_iface = read_default_interface("/proc/net/route");
-    let ip_address = default_iface.as_deref().and_then(read_ip_for_interface);
+    let ip_address = default_iface
+        .as_deref()
+        .and_then(|iface| read_ip_for_interface(iface, &runner, cancel));
     let gateway = read_default_gateway_from("/proc/net/route");
     let dns_servers = read_dns_from("/etc/resolv.conf").unwrap_or_default();
-    let wifi = default_iface.as_deref().and_then(read_wifi_for_interface);
+    let wifi = default_iface
+        .as_deref()
+        .and_then(|iface| read_wifi_for_interface(iface, &runner, cancel));
 
     ConnectionDetails {
         ip_address,
@@ -116,18 +130,20 @@ fn read_dns_from(resolv_path: &str) -> Option<Vec<String>> {
 }
 
 /// Read IP address for a given interface using `ip` command.
-fn read_ip_for_interface(iface: &str) -> Option<String> {
-    let output = std::process::Command::new("ip")
-        .args(["-4", "-o", "addr", "show", iface])
-        .output()
-        .ok()?;
-
-    if !output.status.success() {
+fn read_ip_for_interface(
+    iface: &str,
+    runner: &dyn crate::command::CommandRunner,
+    cancel: &dyn crate::jobs::Cancellation,
+) -> Option<String> {
+    let spec = crate::command::CommandSpec::new("ip", ["-4", "-o", "addr", "show", "dev", iface])
+        .ok()?
+        .with_timeout(std::time::Duration::from_secs(3))
+        .with_output_cap(64 * 1024);
+    let output = runner.run(&spec, cancel).ok()?;
+    if !output.success() || output.stdout_truncated {
         return None;
     }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    parse_ip_from_output(&stdout)
+    parse_ip_from_output(&output.stdout)
 }
 
 /// Parse IP/prefix from `ip -4 -o addr show` output.
@@ -141,20 +157,26 @@ pub fn parse_ip_from_output(output: &str) -> Option<String> {
 }
 
 /// Read WiFi details for a given interface using `/proc/net/wireless` and `iw`.
-fn read_wifi_for_interface(iface: &str) -> Option<WifiInfo> {
+fn read_wifi_for_interface(
+    iface: &str,
+    runner: &dyn crate::command::CommandRunner,
+    cancel: &dyn crate::jobs::Cancellation,
+) -> Option<WifiInfo> {
     // Verify this interface is wireless.
     let wireless = std::fs::read_to_string("/proc/net/wireless").ok()?;
     if !is_wireless_interface(&wireless, iface) {
         return None;
     }
 
-    let iw_output = std::process::Command::new("iw")
-        .args(["dev", iface, "link"])
-        .output()
-        .ok()?;
-
-    let stdout = String::from_utf8_lossy(&iw_output.stdout);
-    Some(parse_iw_link_output(&stdout))
+    let spec = crate::command::CommandSpec::new("iw", ["dev", iface, "link"])
+        .ok()?
+        .with_timeout(std::time::Duration::from_secs(3))
+        .with_output_cap(64 * 1024);
+    let output = runner.run(&spec, cancel).ok()?;
+    if !output.success() || output.stdout_truncated {
+        return None;
+    }
+    Some(parse_iw_link_output(&output.stdout))
 }
 
 /// Check if a given interface appears in `/proc/net/wireless`.
@@ -218,6 +240,50 @@ pub fn parse_wireless_interface(content: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    struct RecordingRunner(Mutex<Option<crate::command::CommandSpec>>);
+
+    impl crate::command::CommandRunner for RecordingRunner {
+        fn run(
+            &self,
+            spec: &crate::command::CommandSpec,
+            _cancel: &dyn crate::jobs::Cancellation,
+        ) -> crate::error::Result<crate::command::CommandOutput> {
+            *self.0.lock().unwrap() = Some(spec.clone());
+            Ok(crate::command::CommandOutput {
+                exit_code: Some(0),
+                stdout: "2: eth0 inet 192.0.2.8/24 scope global eth0".into(),
+                stderr: String::new(),
+                stdout_truncated: false,
+                stderr_truncated: false,
+            })
+        }
+    }
+
+    #[test]
+    fn ip_details_use_bounded_runner_and_literal_arguments() {
+        let runner = RecordingRunner(Mutex::new(None));
+        let cancel = crate::jobs::CancellationToken::new();
+        let result = read_ip_for_interface("eth0; touch /tmp/unwanted", &runner, &cancel);
+
+        assert_eq!(result.as_deref(), Some("192.0.2.8/24"));
+        let spec = runner.0.lock().unwrap().clone().unwrap();
+        assert_eq!(spec.program(), "ip");
+        assert_eq!(
+            spec.args(),
+            [
+                "-4",
+                "-o",
+                "addr",
+                "show",
+                "dev",
+                "eth0; touch /tmp/unwanted"
+            ]
+        );
+        assert_eq!(spec.timeout(), std::time::Duration::from_secs(3));
+        assert_eq!(spec.output_cap_bytes(), 64 * 1024);
+    }
 
     #[test]
     fn parse_gateway_hex_little_endian() {

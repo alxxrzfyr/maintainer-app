@@ -4,7 +4,6 @@
 //! This properly accounts for reclaimable cache and buffers.
 
 use std::collections::HashMap;
-use std::fs;
 use std::path::Path;
 
 use crate::error::MaintainerError;
@@ -33,8 +32,7 @@ pub struct MemorySnapshot {
 /// Parse `/proc/meminfo` from the given base path.
 pub fn read_memory(proc_path: &Path) -> Result<MemorySnapshot, MaintainerError> {
     let meminfo_path = proc_path.join("meminfo");
-    let content = fs::read_to_string(&meminfo_path)
-        .map_err(|e| MaintainerError::io(format!("reading {}", meminfo_path.display()), e))?;
+    let content = crate::metrics::read_proc_text(&meminfo_path)?;
 
     parse_meminfo(&content)
 }
