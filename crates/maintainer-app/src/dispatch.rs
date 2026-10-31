@@ -359,6 +359,72 @@ pub fn dispatch_cleanup_recovery(
     );
 }
 
+/// Hardware collection is scheduled by the lazy page controller, never by widgets.
+pub(crate) fn dispatch_hardware_collection(
+    executor: &Arc<JobExecutor>,
+    collect: impl FnOnce()
+        -> maintainer_core::error::Result<maintainer_core::hardware::HardwareSnapshot>
+    + Send
+    + 'static,
+    on_done: impl FnOnce(Result<maintainer_core::hardware::HardwareSnapshot, String>) + 'static,
+) {
+    let job = move || Ok(collect().map_err(|error| error.to_string()));
+    let receiver = executor.execute_sized(vec![job], CancellationToken::new(), |outcome| {
+        std::mem::size_of_val(outcome)
+            + match outcome {
+                Ok(snapshot) => {
+                    let gpu = &snapshot.gpu;
+                    let bios = &snapshot.bios;
+                    [
+                        &gpu.brand,
+                        &gpu.name,
+                        &gpu.pci_id,
+                        &gpu.driver,
+                        &gpu.opengl,
+                        &gpu.opengl_es,
+                        &gpu.vulkan,
+                        &gpu.video_playback,
+                        &bios.vendor,
+                        &bios.version,
+                        &bios.release_date,
+                        &bios.motherboard,
+                    ]
+                    .into_iter()
+                    .map(String::capacity)
+                    .sum::<usize>()
+                        + vector_bytes(&snapshot.usb_devices, |device| {
+                            [
+                                &device.name,
+                                &device.id,
+                                &device.speed,
+                                &device.power,
+                                &device.bus,
+                            ]
+                            .into_iter()
+                            .map(String::capacity)
+                            .sum::<usize>()
+                        })
+                        + vector_bytes(&snapshot.pci_devices, |device| {
+                            [
+                                &device.slot,
+                                &device.dev_type,
+                                &device.brand,
+                                &device.device,
+                                &device.id,
+                                &device.driver,
+                            ]
+                            .into_iter()
+                            .map(String::capacity)
+                            .sum::<usize>()
+                        })
+                        + vector_bytes(&snapshot.collection_issues, String::capacity)
+                }
+                Err(message) => message.capacity(),
+            }
+    });
+    install_result_poller(receiver, on_done, Err);
+}
+
 /// Diagnostics scan result.
 pub enum DiagnosticsScanOutcome {
     Completed {

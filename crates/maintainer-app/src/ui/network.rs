@@ -50,8 +50,6 @@ enum SpeedTestPhase {
 /// The network detail page.
 pub struct NetworkPage {
     root: ScrolledWindow,
-    #[allow(dead_code)]
-    content: GtkBox,
     // Top live summary
     summary_rx_label: Label,
     summary_tx_label: Label,
@@ -62,20 +60,7 @@ pub struct NetworkPage {
     // Connection details
     adapter_info_box: GtkBox,
     // Speed test panel
-    #[allow(dead_code)]
     speed_test_section: GtkBox,
-    #[allow(dead_code)]
-    speed_test_status: Label,
-    #[allow(dead_code)]
-    speed_test_result_box: GtkBox,
-    #[allow(dead_code)]
-    speed_test_run_btn: Button,
-    #[allow(dead_code)]
-    speed_test_cancel_btn: Button,
-    #[allow(dead_code)]
-    speed_test_phase: Rc<RefCell<SpeedTestPhase>>,
-    #[allow(dead_code)]
-    speed_test_cancel_flag: Arc<AtomicBool>,
     // Unavailable state
     unavailable_box: GtkBox,
     unavailable_label: Label,
@@ -399,7 +384,6 @@ impl NetworkPage {
 
         Self {
             root,
-            content,
             summary_rx_label,
             summary_tx_label,
             summary_link_label,
@@ -409,12 +393,6 @@ impl NetworkPage {
             unavailable_box,
             unavailable_label,
             speed_test_section,
-            speed_test_status,
-            speed_test_result_box,
-            speed_test_run_btn,
-            speed_test_cancel_btn,
-            speed_test_phase,
-            speed_test_cancel_flag,
         }
     }
 

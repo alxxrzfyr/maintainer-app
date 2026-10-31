@@ -270,6 +270,26 @@ impl Runtime {
         }))
     }
 
+    #[cfg(test)]
+    pub(crate) fn isolated_for_test() -> RuntimeHandle {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        Rc::new(RefCell::new(Self {
+            db: Some(db.clone()),
+            db_failure: None,
+            db_loading: false,
+            settings: SettingsSnapshot::default(),
+            monitoring: MonitoringState::default(),
+            executor: Arc::new(JobExecutor::new(1).unwrap()),
+            helper: create_helper_client(),
+            collector: SystemCollector::new(),
+            database_init_rx: None,
+            settings_writer: Some(SettingsWriter::start(db).unwrap()),
+            settings_write_failure: None,
+            clearing_settings: false,
+            unsaved_settings: None,
+        }))
+    }
+
     /// Apply the background database result without blocking the main thread.
     /// Returns the saved theme when initialization succeeds.
     pub fn poll_database_initialization(&mut self) -> Option<crate::state::Theme> {

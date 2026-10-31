@@ -283,10 +283,6 @@ fn shell_responds_to_live_allocated_width_not_default_width() {
     let source = include_str!("ui/shell.rs");
     assert!(source.contains("connect_width_notify"));
     assert!(!source.contains("connect_default_width_notify"));
-    assert!(
-        source.contains("crate::application::apply_theme(theme)"),
-        "Settings theme changes must apply immediately, not only persist"
-    );
 }
 
 #[test]

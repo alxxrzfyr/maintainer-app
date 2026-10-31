@@ -27,21 +27,11 @@ pub struct ProcessesPage {
     process_count_label: Label,
     overflow_label: Label,
     rows: RefCell<HashMap<ProcessIdentity, ProcessRow>>,
-    #[allow(dead_code)]
-    sort_buttons: SortButtons,
     operation_status: Label,
     unavailable_box: GtkBox,
     unavailable_label: Label,
     on_sort_changed: SortCallback,
     on_terminate: TerminateCallback,
-}
-
-#[allow(dead_code)]
-struct SortButtons {
-    cpu_btn: Button,
-    memory_btn: Button,
-    name_btn: Button,
-    pid_btn: Button,
 }
 
 struct ProcessRow {
@@ -277,12 +267,6 @@ impl ProcessesPage {
             process_count_label,
             overflow_label,
             rows: RefCell::new(HashMap::new()),
-            sort_buttons: SortButtons {
-                cpu_btn,
-                memory_btn,
-                name_btn,
-                pid_btn,
-            },
             operation_status,
             unavailable_box,
             unavailable_label,
