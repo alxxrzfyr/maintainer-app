@@ -56,437 +56,667 @@ pub struct HardwareSnapshot {
     pub usb_devices: Vec<UsbDevice>,
     pub pci_devices: Vec<PciDevice>,
     pub bios: BiosInfo,
+    /// Optional collection failures; readable fallback data remains available.
+    pub collection_issues: Vec<String>,
 }
 
 /// Read all hardware inspection data.
 pub fn read_hardware_snapshot() -> HardwareSnapshot {
+    read_snapshot_with(&SystemCommandRunner, Path::new("/sys"))
+}
+
+fn read_snapshot_with(runner: &dyn CommandRunner, sys: &Path) -> HardwareSnapshot {
+    let mut collection_issues = Vec::new();
+    let pci_devices = read_pci_with(runner, sys, &mut collection_issues);
     HardwareSnapshot {
-        gpu: read_gpu_info(),
-        usb_devices: read_usb_devices(),
-        pci_devices: read_pci_devices(),
-        bios: read_bios_info(),
+        gpu: gpu_from_pci(&pci_devices),
+        usb_devices: read_usb_with(runner, sys, &mut collection_issues),
+        pci_devices,
+        bios: read_bios_with(sys),
+        collection_issues,
     }
 }
 
-/// Query primary GPU and hardware acceleration capabilities.
+/// Query primary GPU identity. Acceleration requires an API probe, not device nodes.
 pub fn read_gpu_info() -> GpuInfo {
-    let mut brand = "Unknown".to_string();
-    let mut name = "Integrated Graphics".to_string();
-    let mut pci_id = "—".to_string();
-    let mut driver = "—".to_string();
+    gpu_from_pci(&read_pci_devices())
+}
 
-    if let Some(stdout) = run_local_command("lspci", &["-mm", "-nn"]) {
-        for line in stdout.lines() {
-            if line.contains("VGA compatible controller")
-                || line.contains("3D controller")
-                || line.contains("Display controller")
-            {
-                let parts: Vec<&str> = line
-                    .split('"')
-                    .enumerate()
-                    .filter_map(|(idx, s)| if idx % 2 == 1 { Some(s.trim()) } else { None })
-                    .collect();
-                if parts.len() >= 3 {
-                    brand = parts[1].replace(" Corporation", "").replace(" Inc.", "");
-                    name = parts[2].to_string();
-                    if let Some(start) = line.find('[') {
-                        if let Some(end) = line[start..].find(']') {
-                            let id_str = &line[start + 1..start + end];
-                            if id_str.contains(':') {
-                                pci_id = id_str.to_string();
-                            }
-                        }
-                    }
-                    break;
-                }
-            }
-        }
-    }
-
-    if let Ok(entries) = fs::read_dir("/sys/bus/pci/devices") {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if let Ok(class) = fs::read_to_string(path.join("class")) {
-                let class_trimmed = class.trim();
-                if class_trimmed.starts_with("0x0300")
-                    || class_trimmed.starts_with("0x0302")
-                    || class_trimmed.starts_with("0x0380")
-                {
-                    if let Ok(drv_link) = fs::read_link(path.join("driver")) {
-                        if let Some(drv_name) = drv_link.file_name() {
-                            driver = drv_name.to_string_lossy().into_owned();
-                        }
-                    }
-                    if pci_id == "—" {
-                        let vendor = fs::read_to_string(path.join("vendor"))
-                            .unwrap_or_default()
-                            .trim()
-                            .trim_start_matches("0x")
-                            .to_string();
-                        let device = fs::read_to_string(path.join("device"))
-                            .unwrap_or_default()
-                            .trim()
-                            .trim_start_matches("0x")
-                            .to_string();
-                        if !vendor.is_empty() && !device.is_empty() {
-                            pci_id = format!("{vendor}:{device}");
-                        }
-                    }
-                    break;
-                }
-            }
-        }
-    }
-
-    let dri_exists =
-        Path::new("/dev/dri/renderD128").exists() || Path::new("/dev/dri/card0").exists();
-    let opengl = if dri_exists {
-        "Enabled".to_string()
-    } else {
-        "Software".to_string()
-    };
-    let opengl_es = if dri_exists {
-        "Enabled".to_string()
-    } else {
-        "Disabled".to_string()
-    };
-    let vulkan = if Path::new("/usr/share/vulkan/icd.d").exists()
-        || Path::new("/etc/vulkan/icd.d").exists()
-    {
-        "Enabled".to_string()
-    } else {
-        "Disabled".to_string()
-    };
-    let video_playback = if dri_exists {
-        "Enabled (VA-API)".to_string()
-    } else {
-        "Disabled".to_string()
-    };
-
+fn gpu_from_pci(devices: &[PciDevice]) -> GpuInfo {
+    let gpu = devices.iter().find(|device| {
+        matches!(
+            device.dev_type.as_str(),
+            "VGA compatible controller" | "3D controller" | "Display controller"
+        )
+    });
     GpuInfo {
-        brand,
-        name,
-        pci_id,
-        driver,
-        opengl,
-        opengl_es,
-        vulkan,
-        video_playback,
+        brand: gpu.map_or_else(|| "Unavailable".into(), |gpu| gpu.brand.clone()),
+        name: gpu.map_or_else(|| "No GPU identified".into(), |gpu| gpu.device.clone()),
+        pci_id: gpu.map_or_else(|| "Unavailable".into(), |gpu| gpu.id.clone()),
+        driver: gpu.map_or_else(|| "Unavailable".into(), |gpu| gpu.driver.clone()),
+        // A DRM node or installed ICD does not prove working hardware acceleration.
+        opengl: "Unverified (OpenGL probe not run)".into(),
+        opengl_es: "Unverified (OpenGL ES probe not run)".into(),
+        vulkan: "Unverified (Vulkan probe not run)".into(),
+        video_playback: "Unverified (VA-API probe not run)".into(),
     }
 }
 
 /// Read list of USB devices connected to the system.
 pub fn read_usb_devices() -> Vec<UsbDevice> {
+    read_usb_with(&SystemCommandRunner, Path::new("/sys"), &mut Vec::new())
+}
+
+fn read_usb_with(
+    runner: &dyn CommandRunner,
+    sys: &Path,
+    issues: &mut Vec<String>,
+) -> Vec<UsbDevice> {
     let mut devices = Vec::new();
-
-    if let Some(stdout) = run_local_command("lsusb", &[]) {
-        for line in stdout.lines() {
-            if let Some(id_idx) = line.find("ID ") {
-                let rest = &line[id_idx + 3..];
-                let mut parts = rest.splitn(2, ' ');
-                let id = parts.next().unwrap_or("").trim().to_string();
-                let name = parts.next().unwrap_or("").trim().to_string();
-
-                let bus_part = if line.starts_with("Bus ") {
-                    line.split(':').next().unwrap_or("").trim().to_string()
-                } else {
-                    "USB".to_string()
+    match fs::read_dir(sys.join("bus/usb/devices")) {
+        Ok(entries) => {
+            for entry in entries {
+                let entry = match entry {
+                    Ok(entry) => entry,
+                    Err(error) => {
+                        issues.push(format!("USB sysfs entry unavailable: {}", error.kind()));
+                        continue;
+                    }
                 };
-
-                let is_hub = name.to_lowercase().contains("root hub")
-                    || name.to_lowercase().contains("controller");
-                let speed = if is_hub && (name.contains("3.0") || name.contains("3.1")) {
-                    "5000 Mbps".to_string()
-                } else if is_hub || name.to_lowercase().contains("camera") {
-                    "480 Mbps".to_string()
-                } else {
-                    "12 Mbps".to_string()
+                let path = entry.path();
+                let vendor = read_trimmed(&path.join("idVendor"));
+                let product_id = read_trimmed(&path.join("idProduct"));
+                if vendor.is_empty() || product_id.is_empty() {
+                    continue; // Interface entries have no device descriptors.
+                }
+                let id = format!("{vendor}:{product_id}");
+                let manufacturer = read_trimmed(&path.join("manufacturer"));
+                let product = read_trimmed(&path.join("product"));
+                let name = match (manufacturer.is_empty(), product.is_empty()) {
+                    (false, false) if product.starts_with(&manufacturer) => product,
+                    (false, false) => format!("{manufacturer} {product}"),
+                    (true, false) => product,
+                    (false, true) => manufacturer,
+                    (true, true) => format!("USB Device [{id}]"),
                 };
-
-                let power = if is_hub {
-                    "0 mA max".to_string()
-                } else {
-                    "100 mA".to_string()
+                let speed = read_trimmed(&path.join("speed"));
+                let speed = match speed.parse::<f64>() {
+                    Ok(value) if value.is_finite() && value > 0.0 => format!("{speed} Mbps"),
+                    _ => "Unavailable".into(),
                 };
-
+                let power = read_trimmed(&path.join("bMaxPower"));
+                let power = match power.strip_suffix("mA").map(str::trim) {
+                    Some(value) if value.parse::<u32>().is_ok() => format!("{value} mA max"),
+                    _ => "Unavailable".into(),
+                };
+                let bus = read_trimmed(&path.join("busnum"));
+                let device = read_trimmed(&path.join("devnum"));
+                let bus = match (bus.parse::<u32>(), device.parse::<u32>()) {
+                    (Ok(bus), Ok(device)) => format!("Bus {bus:03} Device {device:03}"),
+                    _ => "USB Bus (address unavailable)".into(),
+                };
                 devices.push(UsbDevice {
-                    name: if name.is_empty() {
-                        format!("USB Device [{id}]")
-                    } else {
-                        name
-                    },
+                    name,
                     id,
                     speed,
                     power,
-                    is_hub,
-                    bus: bus_part,
+                    is_hub: read_trimmed(&path.join("bDeviceClass")) == "09",
+                    bus,
                 });
             }
         }
+        Err(error) => issues.push(format!("USB sysfs unavailable: {}", error.kind())),
     }
 
-    if devices.is_empty() {
-        if let Ok(entries) = fs::read_dir("/sys/bus/usb/devices") {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                let id_vendor = fs::read_to_string(path.join("idVendor"))
-                    .unwrap_or_default()
-                    .trim()
-                    .to_string();
-                let id_product = fs::read_to_string(path.join("idProduct"))
-                    .unwrap_or_default()
-                    .trim()
-                    .to_string();
-                if id_vendor.is_empty() || id_product.is_empty() {
-                    continue;
-                }
-                let manufacturer = fs::read_to_string(path.join("manufacturer"))
-                    .unwrap_or_default()
-                    .trim()
-                    .to_string();
-                let product = fs::read_to_string(path.join("product"))
-                    .unwrap_or_default()
-                    .trim()
-                    .to_string();
-                let speed_val = fs::read_to_string(path.join("speed"))
-                    .unwrap_or_default()
-                    .trim()
-                    .to_string();
-                let speed = if !speed_val.is_empty() {
-                    format!("{speed_val} Mbps")
+    // lsusb provides names and IDs, but does not report link speed or power.
+    match run_local_command(runner, "lsusb", &[]) {
+        Ok(stdout) => {
+            let parsed = parse_lsusb(&stdout);
+            if parsed.is_empty() && !stdout.trim().is_empty() {
+                issues.push(
+                    "USB names unavailable: lsusb returned unrecognized device records".into(),
+                );
+            }
+            for device in parsed {
+                if let Some(existing) = devices
+                    .iter_mut()
+                    .find(|existing| existing.bus == device.bus && existing.id == device.id)
+                {
+                    if existing.name.starts_with("USB Device [") {
+                        existing.name = device.name;
+                    }
                 } else {
-                    "12 Mbps".to_string()
-                };
-                let power = fs::read_to_string(path.join("bMaxPower"))
-                    .unwrap_or_default()
-                    .trim()
-                    .to_string();
-
-                let full_name = match (!manufacturer.is_empty(), !product.is_empty()) {
-                    (true, true) => format!("{manufacturer} {product}"),
-                    (false, true) => product,
-                    (true, false) => manufacturer,
-                    (false, false) => format!("USB Device [{id_vendor}:{id_product}]"),
-                };
-
-                let is_hub = full_name.to_lowercase().contains("root hub");
-                devices.push(UsbDevice {
-                    name: full_name,
-                    id: format!("{id_vendor}:{id_product}"),
-                    speed,
-                    power: if power.is_empty() {
-                        "100 mA".to_string()
-                    } else {
-                        power
-                    },
-                    is_hub,
-                    bus: "USB Bus".to_string(),
-                });
+                    devices.push(device);
+                }
             }
         }
+        Err(reason) => issues.push(reason),
     }
-
+    devices.sort_by(|left, right| left.bus.cmp(&right.bus).then(left.id.cmp(&right.id)));
     devices
+}
+
+fn parse_lsusb(stdout: &str) -> Vec<UsbDevice> {
+    stdout
+        .lines()
+        .filter_map(|line| {
+            let (address, description) = line.split_once(": ID ")?;
+            let fields: Vec<_> = address.split_whitespace().collect();
+            if fields.len() != 4 || fields[0] != "Bus" || fields[2] != "Device" {
+                return None;
+            }
+            let bus = fields[1].parse::<u32>().ok()?;
+            let device = fields[3].parse::<u32>().ok()?;
+            let mut parts = description.splitn(2, char::is_whitespace);
+            let id = parts.next()?;
+            let (vendor, product) = id.split_once(':')?;
+            if !valid_hex_id(vendor) || !valid_hex_id(product) {
+                return None;
+            }
+            let name = parts.next().unwrap_or_default().trim();
+            Some(UsbDevice {
+                name: if name.is_empty() {
+                    format!("USB Device [{id}]")
+                } else {
+                    name.into()
+                },
+                id: id.into(),
+                speed: "Unavailable".into(),
+                power: "Unavailable".into(),
+                is_hub: name.to_lowercase().contains("root hub"),
+                bus: format!("Bus {bus:03} Device {device:03}"),
+            })
+        })
+        .collect()
 }
 
 /// Read list of PCI devices on the system.
 pub fn read_pci_devices() -> Vec<PciDevice> {
+    read_pci_with(&SystemCommandRunner, Path::new("/sys"), &mut Vec::new())
+}
+
+fn read_pci_with(
+    runner: &dyn CommandRunner,
+    sys: &Path,
+    issues: &mut Vec<String>,
+) -> Vec<PciDevice> {
     let mut devices = Vec::new();
-
-    if let Some(stdout) = run_local_command("lspci", &["-mm", "-nn", "-k"]) {
-        let mut current_slot = String::new();
-        let mut current_type = String::new();
-        let mut current_brand = String::new();
-        let mut current_device = String::new();
-        let mut current_id = String::new();
-        let mut current_driver = String::new();
-
-        for line in stdout.lines() {
-            if line.starts_with("Slot:\t") {
-                if !current_slot.is_empty() {
-                    devices.push(PciDevice {
-                        slot: current_slot.clone(),
-                        dev_type: current_type.clone(),
-                        brand: current_brand.clone(),
-                        device: current_device.clone(),
-                        id: current_id.clone(),
-                        driver: if current_driver.is_empty() {
-                            "—".to_string()
-                        } else {
-                            current_driver.clone()
-                        },
-                    });
-                    current_driver.clear();
-                    current_id.clear();
-                }
-                current_slot = line.trim_start_matches("Slot:\t").trim().to_string();
-            } else if line.starts_with("Class:\t") {
-                let raw_type = line.trim_start_matches("Class:\t").trim();
-                current_type = raw_type
-                    .split('[')
-                    .next()
-                    .unwrap_or(raw_type)
-                    .trim()
-                    .to_string();
-            } else if line.starts_with("Vendor:\t") {
-                let raw_vendor = line.trim_start_matches("Vendor:\t").trim();
-                current_brand = raw_vendor
-                    .split('[')
-                    .next()
-                    .unwrap_or(raw_vendor)
-                    .trim()
-                    .replace(" Corporation", "")
-                    .replace(" Inc.", "")
-                    .replace(" Co., Ltd.", "");
-            } else if line.starts_with("Device:\t") {
-                let raw_dev = line.trim_start_matches("Device:\t").trim();
-                current_device = raw_dev
-                    .split('[')
-                    .next()
-                    .unwrap_or(raw_dev)
-                    .trim()
-                    .to_string();
-                if let Some(start) = raw_dev.find('[') {
-                    if let Some(end) = raw_dev[start..].find(']') {
-                        current_id = raw_dev[start + 1..start + end].to_string();
+    match fs::read_dir(sys.join("bus/pci/devices")) {
+        Ok(entries) => {
+            for entry in entries {
+                let entry = match entry {
+                    Ok(entry) => entry,
+                    Err(error) => {
+                        issues.push(format!("PCI sysfs entry unavailable: {}", error.kind()));
+                        continue;
                     }
-                }
-            } else if line.starts_with("Driver:\t") {
-                current_driver = line.trim_start_matches("Driver:\t").trim().to_string();
-            }
-        }
-
-        if !current_slot.is_empty() {
-            devices.push(PciDevice {
-                slot: current_slot,
-                dev_type: current_type,
-                brand: current_brand,
-                device: current_device,
-                id: current_id,
-                driver: if current_driver.is_empty() {
-                    "—".to_string()
-                } else {
-                    current_driver
-                },
-            });
-        }
-    }
-
-    if devices.is_empty() {
-        if let Ok(entries) = fs::read_dir("/sys/bus/pci/devices") {
-            for entry in entries.flatten() {
+                };
                 let path = entry.path();
-                let slot = entry.file_name().to_string_lossy().into_owned();
-                let vendor = fs::read_to_string(path.join("vendor"))
-                    .unwrap_or_default()
-                    .trim()
+                let vendor = read_trimmed(&path.join("vendor"))
                     .trim_start_matches("0x")
-                    .to_string();
-                let device = fs::read_to_string(path.join("device"))
-                    .unwrap_or_default()
-                    .trim()
+                    .to_owned();
+                let device = read_trimmed(&path.join("device"))
                     .trim_start_matches("0x")
-                    .to_string();
-                let driver = fs::read_link(path.join("driver"))
-                    .ok()
-                    .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
-                    .unwrap_or_else(|| "—".to_string());
+                    .to_owned();
+                if !valid_hex_id(&vendor) || !valid_hex_id(&device) {
+                    continue;
+                }
+                let class = read_trimmed(&path.join("class"));
+                let dev_type = if class.starts_with("0x0300") {
+                    "VGA compatible controller"
+                } else if class.starts_with("0x0302") {
+                    "3D controller"
+                } else if class.starts_with("0x0380") {
+                    "Display controller"
+                } else {
+                    "PCI Controller"
+                };
+                let driver = match fs::read_link(path.join("driver")) {
+                    Ok(link) => link
+                        .file_name()
+                        .map(|name| name.to_string_lossy().into_owned()),
+                    Err(_) => None,
+                }
+                .unwrap_or_else(|| "Unavailable (no bound driver reported)".into());
                 let brand = match vendor.as_str() {
                     "8086" => "Intel",
                     "10de" => "NVIDIA",
                     "1002" => "AMD",
                     "10ec" => "Realtek",
                     _ => "PCI",
-                }
-                .to_string();
-
+                };
                 devices.push(PciDevice {
-                    slot,
-                    dev_type: "PCI Controller".to_string(),
-                    brand,
+                    slot: entry.file_name().to_string_lossy().into_owned(),
+                    dev_type: dev_type.into(),
+                    brand: brand.into(),
                     device: format!("PCI Device [{vendor}:{device}]"),
                     id: format!("{vendor}:{device}"),
                     driver,
                 });
             }
         }
+        Err(error) => issues.push(format!("PCI sysfs unavailable: {}", error.kind())),
     }
-
+    match run_local_command(runner, "lspci", &["-D", "-vmm", "-nn", "-k"]) {
+        Ok(stdout) => {
+            let parsed = parse_lspci(&stdout);
+            if parsed.is_empty() && !stdout.trim().is_empty() {
+                issues.push(
+                    "PCI names unavailable: lspci returned unrecognized device records".into(),
+                );
+            }
+            for device in parsed {
+                if let Some(existing) = devices
+                    .iter_mut()
+                    .find(|existing| existing.slot == device.slot)
+                {
+                    let driver = if device.driver.starts_with("Unavailable") {
+                        existing.driver.clone()
+                    } else {
+                        device.driver.clone()
+                    };
+                    *existing = PciDevice { driver, ..device };
+                } else {
+                    devices.push(device);
+                }
+            }
+        }
+        Err(reason) => issues.push(reason),
+    }
+    devices.sort_by(|left, right| left.slot.cmp(&right.slot));
     devices
 }
 
-fn run_local_command(program: &str, args: &[&str]) -> Option<String> {
-    let spec = CommandSpec::new(program, args.iter().copied())
-        .ok()?
-        .with_timeout(std::time::Duration::from_secs(3))
-        .with_output_cap(256 * 1024);
-    let output = SystemCommandRunner
-        .run(&spec, &CancellationToken::new())
-        .ok()?;
-    (output.success() && !output.stdout_truncated).then_some(output.stdout)
+fn parse_lspci(stdout: &str) -> Vec<PciDevice> {
+    let mut devices = Vec::new();
+    for record in stdout.split("\n\n") {
+        let mut device = PciDevice {
+            slot: String::new(),
+            dev_type: String::new(),
+            brand: String::new(),
+            device: String::new(),
+            id: String::new(),
+            driver: "Unavailable (no bound driver reported)".into(),
+        };
+        let mut vendor_id = None;
+        let mut device_id = None;
+        for line in record.lines() {
+            let Some((key, value)) = line.split_once(':') else {
+                continue;
+            };
+            let value = value.trim();
+            let (name, id) = split_pci_name_id(value);
+            match key {
+                "Slot" => device.slot = value.into(),
+                "Class" => device.dev_type = name.into(),
+                "Vendor" => {
+                    device.brand = name.replace(" Corporation", "").replace(" Inc.", "");
+                    vendor_id = id;
+                }
+                "Device" => {
+                    device.device = name.into();
+                    device_id = id;
+                }
+                "Driver" => device.driver = value.into(),
+                _ => {}
+            }
+        }
+        if let (Some(vendor_id), Some(device_id)) = (vendor_id, device_id) {
+            if !device.slot.is_empty() && !device.dev_type.is_empty() {
+                device.id = format!("{vendor_id}:{device_id}");
+                devices.push(device);
+            }
+        }
+    }
+    devices
 }
 
-/// Read BIOS and Motherboard information from DMI.
-pub fn read_bios_info() -> BiosInfo {
-    let vendor = fs::read_to_string("/sys/class/dmi/id/bios_vendor")
-        .or_else(|_| fs::read_to_string("/sys/devices/virtual/dmi/id/bios_vendor"))
-        .unwrap_or_default()
-        .trim()
-        .to_string();
-    let version = fs::read_to_string("/sys/class/dmi/id/bios_version")
-        .or_else(|_| fs::read_to_string("/sys/devices/virtual/dmi/id/bios_version"))
-        .unwrap_or_default()
-        .trim()
-        .to_string();
-    let release_date = fs::read_to_string("/sys/class/dmi/id/bios_date")
-        .or_else(|_| fs::read_to_string("/sys/devices/virtual/dmi/id/bios_date"))
-        .unwrap_or_default()
-        .trim()
-        .to_string();
-    let motherboard = fs::read_to_string("/sys/class/dmi/id/board_name")
-        .or_else(|_| fs::read_to_string("/sys/class/dmi/id/product_name"))
-        .unwrap_or_default()
-        .trim()
-        .to_string();
+fn split_pci_name_id(value: &str) -> (&str, Option<&str>) {
+    if let Some((name, id)) = value.rsplit_once(" [") {
+        if let Some(id) = id.strip_suffix(']') {
+            if valid_hex_id(id) {
+                return (name, Some(id));
+            }
+        }
+    }
+    (value, None)
+}
 
+fn valid_hex_id(id: &str) -> bool {
+    id.len() == 4 && id.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn read_trimmed(path: &Path) -> String {
+    fs::read_to_string(path)
+        .unwrap_or_default()
+        .trim()
+        .to_owned()
+}
+
+fn run_local_command(
+    runner: &dyn CommandRunner,
+    program: &str,
+    args: &[&str],
+) -> Result<String, String> {
+    let spec = CommandSpec::new(program, args.iter().copied())
+        .map_err(|error| format!("{program} unavailable: {error}"))?
+        .with_timeout(std::time::Duration::from_secs(3))
+        .with_output_cap(256 * 1024);
+    let output = runner
+        .run(&spec, &CancellationToken::new())
+        .map_err(|error| format!("{program} unavailable: {error}"))?;
+    if !output.success() {
+        return Err(format!(
+            "{program} unavailable: command exited with status {:?}",
+            output.exit_code
+        ));
+    }
+    if output.stdout_truncated {
+        return Err(format!(
+            "{program} unavailable: output exceeded capture limit"
+        ));
+    }
+    Ok(output.stdout)
+}
+
+/// Read BIOS and motherboard information from DMI.
+pub fn read_bios_info() -> BiosInfo {
+    read_bios_with(Path::new("/sys"))
+}
+
+fn read_bios_with(sys: &Path) -> BiosInfo {
     BiosInfo {
-        vendor: if vendor.is_empty() {
-            "Standard".to_string()
-        } else {
-            vendor
-        },
-        version: if version.is_empty() {
-            "1.0".to_string()
-        } else {
-            version
-        },
-        release_date: if release_date.is_empty() {
-            "—".to_string()
-        } else {
-            release_date
-        },
-        motherboard: if motherboard.is_empty() {
-            "Motherboard".to_string()
-        } else {
-            motherboard
-        },
+        vendor: read_dmi_value(sys, &["bios_vendor"]),
+        version: read_dmi_value(sys, &["bios_version"]),
+        release_date: read_dmi_value(sys, &["bios_date"]),
+        motherboard: read_dmi_value(sys, &["board_name", "product_name"]),
+    }
+}
+
+fn read_dmi_value(sys: &Path, fields: &[&str]) -> String {
+    let mut permission_required = false;
+    for field in fields {
+        for directory in ["class/dmi/id", "devices/virtual/dmi/id"] {
+            match fs::read_to_string(sys.join(directory).join(field)) {
+                Ok(value) if !value.trim().is_empty() => return value.trim().to_owned(),
+                Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+                    permission_required = true;
+                }
+                _ => {}
+            }
+        }
+    }
+    if permission_required {
+        "Unavailable (DMI permission required)".into()
+    } else {
+        "Unavailable (DMI field missing or unreadable)".into()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::command::CommandOutput;
+    use crate::jobs::Cancellation;
+    use std::sync::Mutex;
 
-    #[test]
-    fn test_bios_info_does_not_panic() {
-        let bios = read_bios_info();
-        assert!(!bios.vendor.is_empty());
+    const PCI: &str = include_str!("../tests/fixtures/hardware/lspci.txt");
+    const USB: &str = include_str!("../tests/fixtures/hardware/lsusb.txt");
+
+    #[derive(Default)]
+    struct FixtureRunner {
+        calls: Mutex<Vec<(String, Vec<String>)>>,
+    }
+
+    impl CommandRunner for FixtureRunner {
+        fn run(
+            &self,
+            spec: &CommandSpec,
+            _: &dyn Cancellation,
+        ) -> crate::error::Result<CommandOutput> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push((spec.program().into(), spec.args().to_vec()));
+            Ok(CommandOutput {
+                exit_code: Some(0),
+                stdout: match spec.program() {
+                    "lspci" => PCI,
+                    "lsusb" => USB,
+                    _ => panic!("unexpected command"),
+                }
+                .into(),
+                stderr: String::new(),
+                stdout_truncated: false,
+                stderr_truncated: false,
+            })
+        }
+    }
+
+    fn fixture_sys() -> std::path::PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/hardware/sys")
     }
 
     #[test]
-    fn test_hardware_snapshot_reads_data() {
-        let snap = read_hardware_snapshot();
-        assert!(!snap.gpu.brand.is_empty());
-        assert!(!snap.bios.vendor.is_empty());
+    fn hardware_commands_are_allowed() {
+        for (program, args) in [
+            ("lspci", vec!["-D", "-vmm", "-nn", "-k"]),
+            ("lsusb", vec![]),
+        ] {
+            assert!(
+                CommandSpec::new(program, args).is_ok(),
+                "{program} must reach its runner"
+            );
+        }
+    }
+
+    #[test]
+    fn hardware_commands_reach_runner_and_preserve_named_devices() {
+        let runner = FixtureRunner::default();
+        let snapshot = read_snapshot_with(&runner, &fixture_sys());
+        let calls = runner.calls.lock().unwrap();
+        assert_eq!(
+            calls.as_slice(),
+            &[
+                (
+                    "lspci".into(),
+                    vec!["-D".into(), "-vmm".into(), "-nn".into(), "-k".into()]
+                ),
+                ("lsusb".into(), vec![]),
+            ]
+        );
+        assert!(snapshot.collection_issues.is_empty());
+        assert_eq!(snapshot.gpu.name, "HD Graphics 530");
+        assert_eq!(snapshot.gpu.pci_id, "8086:191b");
+        assert_eq!(snapshot.gpu.driver, "i915");
+        assert_eq!(snapshot.pci_devices.len(), 2);
+    }
+
+    #[test]
+    fn pci_fixture_parses_tagged_records_and_does_not_reuse_driver() {
+        let devices = parse_lspci(PCI);
+        assert_eq!(devices.len(), 2);
+        assert_eq!(devices[0].brand, "Intel");
+        assert_eq!(devices[0].id, "8086:191b");
+        assert_eq!(devices[1].id, "8086:a12f");
+        assert_eq!(devices[1].driver, "Unavailable (no bound driver reported)");
+        assert!(parse_lspci("Slot:\t0000:00:01.0\nClass:\tVGA controller\n").is_empty());
+    }
+
+    #[test]
+    fn acceleration_is_unverified_even_with_a_bound_gpu_driver() {
+        let gpu = gpu_from_pci(&parse_lspci(PCI));
+        assert_eq!(gpu.driver, "i915");
+        for value in [
+            &gpu.opengl,
+            &gpu.opengl_es,
+            &gpu.vulkan,
+            &gpu.video_playback,
+        ] {
+            assert!(value.starts_with("Unverified"), "{value}");
+        }
+        assert_eq!(gpu_from_pci(&[]).name, "No GPU identified");
+    }
+
+    #[test]
+    fn usb_fixture_uses_measured_speed_descriptor_power_and_unknowns() {
+        let devices = read_usb_with(&FixtureRunner::default(), &fixture_sys(), &mut Vec::new());
+        assert_eq!(devices.len(), 3);
+        assert_eq!(devices[0].name, "Example Camera");
+        assert_eq!(devices[0].speed, "5000 Mbps");
+        assert_eq!(devices[0].power, "224 mA max");
+        assert!(!devices[0].is_hub);
+        assert_eq!(devices[1].speed, "Unavailable");
+        assert_eq!(devices[1].power, "Unavailable");
+        // An lsusb-only root hub has no observed speed or power, despite its name.
+        assert!(devices[2].is_hub);
+        assert_eq!(devices[2].speed, "Unavailable");
+        assert_eq!(devices[2].power, "Unavailable");
+    }
+
+    #[test]
+    fn lsusb_fixture_rejects_bad_records_without_guessing_speed() {
+        let devices = parse_lsusb(USB);
+        assert_eq!(devices.len(), 3);
+        assert_eq!(devices[0].id, "1234:abcd");
+        assert_eq!(devices[0].bus, "Bus 001 Device 002");
+        assert!(parse_lsusb("Bus 001 Device 002: ID invalid Camera").is_empty());
+        assert!(
+            devices
+                .iter()
+                .all(|device| device.speed == "Unavailable" && device.power == "Unavailable")
+        );
+    }
+
+    struct FailedRunner;
+
+    impl CommandRunner for FailedRunner {
+        fn run(
+            &self,
+            _: &CommandSpec,
+            _: &dyn Cancellation,
+        ) -> crate::error::Result<CommandOutput> {
+            Err(crate::error::MaintainerError::io(
+                "spawning command",
+                std::io::Error::from(std::io::ErrorKind::NotFound),
+            ))
+        }
+    }
+
+    #[test]
+    fn unavailable_commands_keep_reasons_and_sysfs_evidence() {
+        let snapshot = read_snapshot_with(&FailedRunner, &fixture_sys());
+        assert_eq!(snapshot.collection_issues.len(), 2);
+        assert!(snapshot.collection_issues[0].contains("lspci unavailable"));
+        assert!(snapshot.collection_issues[1].contains("lsusb unavailable"));
+        assert_eq!(snapshot.gpu.pci_id, "8086:191b");
+        assert_eq!(snapshot.usb_devices[0].speed, "5000 Mbps");
+        assert_eq!(snapshot.usb_devices[0].power, "224 mA max");
+    }
+
+    struct OutputRunner(CommandOutput);
+
+    impl CommandRunner for OutputRunner {
+        fn run(
+            &self,
+            _: &CommandSpec,
+            _: &dyn Cancellation,
+        ) -> crate::error::Result<CommandOutput> {
+            Ok(self.0.clone())
+        }
+    }
+
+    #[test]
+    fn rejected_failed_and_truncated_commands_report_reasons() {
+        let runner = FixtureRunner::default();
+        assert!(
+            run_local_command(&runner, "unapproved-hardware-tool", &[])
+                .unwrap_err()
+                .contains("allowlist")
+        );
+        assert!(runner.calls.lock().unwrap().is_empty());
+        for (exit_code, stdout_truncated, expected) in [
+            (Some(7), false, "command exited with status"),
+            (Some(0), true, "output exceeded capture limit"),
+        ] {
+            let runner = OutputRunner(CommandOutput {
+                exit_code,
+                stdout_truncated,
+                stdout: "private device output".into(),
+                stderr: "private diagnostic output".into(),
+                stderr_truncated: false,
+            });
+            let reason = run_local_command(&runner, "lspci", &[]).unwrap_err();
+            assert!(reason.contains(expected));
+            assert!(!reason.contains("private"));
+        }
+    }
+
+    #[test]
+    fn malformed_command_output_reports_unavailable_instead_of_empty_success() {
+        let runner = OutputRunner(CommandOutput {
+            exit_code: Some(0),
+            stdout: "not a device record".into(),
+            stderr: String::new(),
+            stdout_truncated: false,
+            stderr_truncated: false,
+        });
+        let snapshot = read_snapshot_with(&runner, &fixture_sys());
+        assert!(
+            snapshot
+                .collection_issues
+                .iter()
+                .any(|reason| reason.starts_with("USB names unavailable:"))
+        );
+        assert!(
+            snapshot
+                .collection_issues
+                .iter()
+                .any(|reason| reason.starts_with("PCI names unavailable:"))
+        );
+        assert_eq!(snapshot.gpu.pci_id, "8086:191b");
+    }
+
+    #[test]
+    fn bios_fixture_preserves_reported_values() {
+        let bios = read_bios_with(&fixture_sys());
+        assert_eq!(bios.vendor, "Example Firmware");
+        assert_eq!(bios.version, "2.7.4");
+        assert_eq!(bios.release_date, "10/15/2026");
+        assert_eq!(bios.motherboard, "Example Board");
+    }
+
+    #[test]
+    fn missing_bios_fields_are_unavailable_instead_of_invented() {
+        let directory = tempfile::tempdir().unwrap();
+        let bios = read_bios_with(directory.path());
+        for value in [
+            &bios.vendor,
+            &bios.version,
+            &bios.release_date,
+            &bios.motherboard,
+        ] {
+            assert_eq!(value, "Unavailable (DMI field missing or unreadable)");
+        }
+    }
+
+    #[test]
+    fn missing_sysfs_keeps_command_evidence_and_reports_reason() {
+        let directory = tempfile::tempdir().unwrap();
+        let snapshot = read_snapshot_with(&FixtureRunner::default(), directory.path());
+        assert_eq!(snapshot.pci_devices.len(), 2);
+        assert_eq!(snapshot.usb_devices.len(), 3);
+        assert!(
+            snapshot
+                .collection_issues
+                .iter()
+                .any(|issue| issue.starts_with("USB sysfs unavailable:"))
+        );
+        assert!(
+            snapshot
+                .collection_issues
+                .iter()
+                .any(|issue| issue.starts_with("PCI sysfs unavailable:"))
+        );
     }
 }

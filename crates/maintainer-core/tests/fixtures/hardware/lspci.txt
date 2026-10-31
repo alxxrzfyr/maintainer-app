@@ -1,0 +1,11 @@
+Slot:	0000:00:02.0
+Class:	VGA compatible controller [0300]
+Vendor:	Intel Corporation [8086]
+Device:	HD Graphics 530 [191b]
+Driver:	i915
+
+Slot:	0000:00:14.0
+Class:	USB controller [0c03]
+Vendor:	Intel Corporation [8086]
+Device:	USB Controller [a12f]
+

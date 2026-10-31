@@ -57,6 +57,8 @@ static ALLOWED_RELATIVE: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
         "umount",
         "blkid",
         "lscpu",
+        "lspci",
+        "lsusb",
         "nproc",
         "xdg-open",
         "gio",
