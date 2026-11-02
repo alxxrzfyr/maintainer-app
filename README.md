@@ -11,14 +11,15 @@
 A native GTK4 app for Ubuntu-based Linux.<br>
 Inspect storage, manage updates, and understand system health in one place.
 
-[Features](#features) · [Install](#install) · [Development](#development) · [Documentation](docs/README.md) · [Releases](https://github.com/alxxrzfyr/maintainer-app/releases)
+[Features](#features) · [Installation](#installation) · [Development Setup](#development-setup) · [Documentation](docs/README.md) · [Releases](https://github.com/alxxrzfyr/maintainer-app/releases)
 
 <br>
 
-[![CI](https://github.com/alxxrzfyr/maintainer-app/actions/workflows/ci.yml/badge.svg)](https://github.com/alxxrzfyr/maintainer-app/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/alxxrzfyr/maintainer-app)](https://github.com/alxxrzfyr/maintainer-app/releases)
 [![Ubuntu](https://img.shields.io/badge/Ubuntu-22.04%2B-E95420?logo=ubuntu&logoColor=white)](https://ubuntu.com)
+[![Linux Mint](https://img.shields.io/badge/Linux_Mint-87CF3E?logo=linuxmint&logoColor=white)](#requirements)
+[![Pop!_OS](https://img.shields.io/badge/Pop!__OS-48B9C7?logo=popos&logoColor=white)](#requirements)
 [![Rust](https://img.shields.io/badge/Rust-1.85%2B-000000?logo=rust&logoColor=white)](https://www.rust-lang.org)
+[![Release](https://img.shields.io/github/v/release/alxxrzfyr/maintainer-app)](https://github.com/alxxrzfyr/maintainer-app/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 <br>
@@ -33,9 +34,10 @@ System data stays on your computer. There is no telemetry, cloud account, or
 permanent background daemon, and maintenance requires explicit user action.
 Live metric history stays in memory; SQLite stores settings and application history.
 
-**Current status:** 1.3.0 is an unpublished development candidate. CPU acceptance
-and manual system validation remain open. See [release status](docs/release-status.md)
-for the latest evidence and remaining work.
+Feel free to check the [release status](docs/release-status.md) for development
+progress, validation results, and remaining work before the next release.
+
+<br>
 
 ## Features
 
@@ -64,10 +66,13 @@ for the latest evidence and remaining work.
 
 <br>
 
-## Install
+<a id="install"></a>
+
+## Installation
 
 Download the `amd64` or `arm64` Debian package from
-[Releases](https://github.com/alxxrzfyr/maintainer-app/releases). Replace `VERSION`
+[Releases](https://github.com/alxxrzfyr/maintainer-app/releases). Choose `amd64`
+for 64-bit Intel/AMD systems or `arm64` for 64-bit ARM systems. Replace `VERSION`
 and `ARCH` below with the downloaded filename's values. APT installs the required
 package dependencies:
 
@@ -88,24 +93,52 @@ sudo apt remove maintainer
 sudo apt purge maintainer
 ```
 
+<br>
+
 ## Requirements
 
-- Ubuntu 22.04 or newer; Ubuntu-based derivatives are target platforms.
-- GTK 4.6+, GLib 2.72+, system SQLite, D-Bus, Polkit, systemd, and APT/dpkg.
-- Native X11 or Wayland session. Tested environments are listed in release status;
-  target-platform wording is not a completed compatibility matrix.
-- UDisks2 for SMART; `flatpak`/`fwupdmgr` for optional update inspection,
-  `curl` for the confirmed speed test, and `iw` for detailed Wi-Fi information.
-  Optional `pciutils`/`usbutils` tools add hardware names; sysfs supplies native
-  device evidence. Acceleration stays unverified until its API is actually probed.
+APT installs the declared runtime dependencies when you follow the
+[installation steps](#installation). Rust and development packages are needed
+only when [building from source](#development-setup).
 
-Missing optional integrations produce an explained unavailable/permission state.
-The speed test resolves `curl` in its worker after confirmation and displays a
-failure reason if it is unavailable. Opening Network does not probe for `curl`.
+| Component | Requirement |
+| --- | --- |
+| Operating system | Ubuntu 22.04 or newer. Ubuntu-based derivatives are also target platforms. |
+| Package architecture | `amd64` (64-bit Intel/AMD) or `arm64` (64-bit ARM). |
+| Desktop session | Native X11 or Wayland, running as a regular user. |
+| Desktop libraries | GTK 4.6 or newer and GLib 2.72 or newer. |
+| Local storage | System SQLite for settings and application history. |
+| Package management | APT/dpkg, Python 3, and `python3-apt` for native package operations. |
+| System services | D-Bus for service communication, Polkit for authorization, and systemd for service management. |
+
+See [release status](docs/release-status.md) for tested environments and remaining
+validation. The target platforms above do not imply that every configuration has
+been tested.
 
 <br>
 
-## Architecture and safety
+### Optional features
+
+These packages support additional features. Install them as needed:
+
+| Feature | Ubuntu package | What it provides |
+| --- | --- | --- |
+| Drive health | `udisks2` | S.M.A.R.T. health information for compatible drives; authorization may be required. |
+| Flatpak updates | `flatpak` | Inspection of available Flatpak updates. |
+| Firmware updates | `fwupd` | Inspection of available firmware updates through `fwupdmgr`. |
+| Network speed test | `curl` | Runs a speed test after you confirm it. |
+| Wi-Fi details | `iw` | Additional information about the wireless connection. |
+| PCI device names | `pciutils` | Adds readable device names through `lspci`. |
+| USB device names | `usbutils` | Adds readable device names through `lsusb`. |
+
+When an integration is missing or needs permission, Maintainer explains the
+affected feature's status. The speed test checks for `curl` only after confirmation
+and reports if it is missing. Opening Network does not perform that check.
+Hardware information also comes from Linux sysfs; graphics acceleration remains
+unverified until its API is probed.
+
+
+## Architecture and Security
 
 Maintainer separates presentation, system services, and privileged operations:
 
@@ -122,7 +155,9 @@ these controls, supported cases, and remaining risks.
 
 <br>
 
-## Development
+<a id="development"></a>
+
+## Development Setup
 
 Install [rustup](https://rustup.rs/) and the build/verification prerequisites.
 Rustup selects the toolchain pinned in `rust-toolchain.toml`:
@@ -148,6 +183,8 @@ including Ubuntu 22.04's SQLite 3.37; no bundled SQLite is required.
 Privileged workflows require the installed services; do not launch the GUI or a
 bare development helper with sudo.
 
+<br>
+
 ### Verify changes
 
 ```bash
@@ -164,21 +201,24 @@ Each GTK case runs in a separate process with Xvfb and a private session bus.
 Do not substitute a parallel whole-workspace Cargo test run for this script.
 For a focused core check, use `cargo test --locked -p maintainer-core persistence::`.
 
+
 ### Dependency maintenance
 
-[Dependabot](.github/dependabot.yml) checks the Cargo workspace and GitHub Actions
-every Monday at 09:00 Asia/Singapore, with up to five open version-update pull
-requests per ecosystem. Related GTK Rust bindings are grouped together; other
-minor and patch updates are grouped by ecosystem, while other major updates are
-proposed separately. These groups apply to version updates; security updates use
-GitHub's separate handling when enabled in the repository settings.
+[Dependabot](.github/dependabot.yml) checks Cargo dependencies and GitHub Actions
+every Monday at **09:00 Singapore time**, with up to five open version-update
+pull requests each for Cargo and Actions:
 
-Review each update and its checks before merging. Preserve exact Cargo version
-pins and full commit hashes for Actions, and verify compatibility with the pinned
-Rust toolchain and supported Ubuntu libraries. Toolchain changes and updates to
-utilities downloaded by scripts or workflow shell steps require manual review.
-See the [GitHub configuration reference](https://docs.github.com/en/code-security/reference/supply-chain-security/dependabot-options-reference)
-for the supported options.
+- **GTK Rust bindings:** related crates share one pull request for compatibility review.
+- **Other dependencies:** minor and patch updates are grouped separately for Cargo
+  and Actions; major updates get individual pull requests.
+
+Security updates follow the repository's GitHub security settings and are handled
+separately from these version-update groups.
+
+Before merging, review the changes and CI results. Keep exact Cargo version pins
+and full commit hashes for Actions, and check compatibility with the pinned Rust
+toolchain and supported Ubuntu libraries. Update the Rust toolchain and any tools
+downloaded by scripts or workflow shell steps manually.
 
 ### Build a candidate
 
@@ -247,6 +287,8 @@ A short diagnostic or one passing page does not certify the full protocol.
 
 Report problems through [GitHub Issues](https://github.com/alxxrzfyr/maintainer-app/issues),
 including your distribution, reproduction steps, and any relevant redacted output.
+
+<br>
 
 ## License
 
