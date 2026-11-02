@@ -164,6 +164,22 @@ Each GTK case runs in a separate process with Xvfb and a private session bus.
 Do not substitute a parallel whole-workspace Cargo test run for this script.
 For a focused core check, use `cargo test --locked -p maintainer-core persistence::`.
 
+### Dependency maintenance
+
+[Dependabot](.github/dependabot.yml) checks the Cargo workspace and GitHub Actions
+every Monday at 09:00 Asia/Singapore, with up to five open version-update pull
+requests per ecosystem. Related GTK Rust bindings are grouped together; other
+minor and patch updates are grouped by ecosystem, while other major updates are
+proposed separately. These groups apply to version updates; security updates use
+GitHub's separate handling when enabled in the repository settings.
+
+Review each update and its checks before merging. Preserve exact Cargo version
+pins and full commit hashes for Actions, and verify compatibility with the pinned
+Rust toolchain and supported Ubuntu libraries. Toolchain changes and updates to
+utilities downloaded by scripts or workflow shell steps require manual review.
+See the [GitHub configuration reference](https://docs.github.com/en/code-security/reference/supply-chain-security/dependabot-options-reference)
+for the supported options.
+
 ### Build a candidate
 
 ```bash

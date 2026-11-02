@@ -1,0 +1,51 @@
+# Configuration reference: https://docs.github.com/en/code-security/reference/supply-chain-security/dependabot-options-reference
+version: 2
+
+updates:
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Asia/Singapore"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+    groups:
+      # Keep the GTK Rust bindings on compatible release lines, including majors.
+      gtk-rs:
+        applies-to: "version-updates"
+        patterns:
+          - "gtk4*"
+          - "gdk4*"
+          - "gsk4*"
+          - "glib*"
+          - "gio*"
+          - "gobject-sys"
+          - "cairo-*"
+          - "pango*"
+          - "gdk-pixbuf*"
+          - "graphene-*"
+      cargo-minor-and-patch:
+        applies-to: "version-updates"
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Asia/Singapore"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"
+      include: "scope"
+    groups:
+      actions-minor-and-patch:
+        applies-to: "version-updates"
+        patterns: ["*"]
+        update-types: ["minor", "patch"]

@@ -5,6 +5,14 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Dependabot checks Cargo dependencies and GitHub Actions weekly, with bounded
+  version-update pull requests, grouped GTK bindings and minor/patch updates,
+  and documented compatibility review requirements.
+
 ## [1.3.0] - 2026-11-01
 
 Publication status and outstanding acceptance checks are tracked in
